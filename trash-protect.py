@@ -12,8 +12,9 @@ sleep = 1
 ## Number of acceptable pgmajfaults during the above interval
 fault_threshold = 5
 
-## number of pagefaults between each process scanning
-process_scanning_threshold = fault_threshold * 3
+## number of pagefaults between each process scanning, when the
+## protection doesn't kick in.
+process_scanning_threshold = fault_threshold * 5
 
 ## process name whitelist
 cmd_whitelist = ['sshd', 'bash', 'xinit', 'X', 'spectrwm']
@@ -32,6 +33,7 @@ def get_pagefaults():
                 return int(line[12:])
 
 def scan_processes():
+    ## TODO: consider using oom_score instead of major page faults?
     ## TODO: garbage collection
     global pagefault_by_pid
     global last_scan_pagefaults
@@ -65,15 +67,15 @@ def scan_processes():
                 worstpid = pid
     return worstpid
 
+## hard coded logic as for now.  One state file and one log file.
+## state file can be monitored, i.e. through nagios.  todo: support
+## smtp etc.
 def log_frozen(pid):
     with open("/var/log/trash-protect.log", 'a') as logfile:
         logfile.write("%s - frozen pid %s\n" % (time.time(), pid))
     with open("/tmp/trash-protect-frozen-pid-list", "w") as logfile:
         logfile.write(" ".join([str(x) for x in frozen_pids]))
 
-## hard coded logic as for now.  One state file and one log file.
-## state file can be monitored, i.e. through nagios.  todo: support
-## smtp etc.
 def log_unfrozen(pid):
     with open("/var/log/trash-protect.log", 'a') as logfile:
         logfile.write("%s - unfrozen pid %s\n" % (time.time(), pid))
@@ -84,26 +86,48 @@ def log_unfrozen(pid):
         os.unlink("/tmp/trash-protect-frozen-pid-list")
 
 def freeze_something():
+    global frozen_pids
+    global num_freezes
     pid_to_freeze = scan_processes()
     if not pid_to_freeze:
+        ## process disappeared. ignore failure
         return
-    os.kill(pid_to_freeze, signal.SIGSTOP)
-    frozen_pids.insert(0, pid_to_freeze)
+    try:
+        os.kill(pid_to_freeze, signal.SIGSTOP)
+    except ProcessLookupError:
+        return
+    frozen_pids.append(pid_to_freeze)
     ## Logging after freezing - as logging itself may be resource- and timeconsuming.
     ## Perhaps we should even fork it out.
     log_frozen(pid_to_freeze)
+    num_freezes += 1
 
 def unfreeze_something():
+    global frozen_pids
+    global num_unfreezes
     if frozen_pids:
-        pid_to_unfreeze = frozen_pids.pop()
-        os.kill(pid_to_unfreeze, signal.SIGCONT)
+        ## queue or stack?  Seems like both approaches are problematic
+        if num_unfreezes % 5 == 0:
+            pid_to_unfreeze = frozen_pids.pop()
+        else:
+            ## no list.get() in python?
+            pid_to_unfreeze = frozen_pids[0]
+            frozen_pids = frozen_pids[1:]
+        try:
+            os.kill(pid_to_unfreeze, signal.SIGCONT)
+        except ProcessLookupError:
+            ## ignore failure
+            return
         log_unfrozen(pid_to_unfreeze)
+        num_unfreezes += 1
 
 ## Globals
 last_observed_pagefaults = get_pagefaults()
 last_scan_pagefaults = 0
 pagefault_by_pid = {}
 frozen_pids = []
+num_freezes = 0
+num_unfreezes = 0
 
 while True:
     current_pagefaults = get_pagefaults()
