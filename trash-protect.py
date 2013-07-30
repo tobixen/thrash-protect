@@ -19,7 +19,7 @@ process_scanning_threshold = fault_threshold * 5
 ## process name whitelist
 cmd_whitelist = ['sshd', 'bash', 'xinit', 'X', 'spectrwm']
 
-## Unfreezing processes: Ratio of POP compared to GET:
+## Unfreezing processes: Ratio of POP compared to GET (integer)
 unfreeze_pop_ratio = 5
 
 import time
@@ -110,7 +110,7 @@ def unfreeze_something():
     global num_unfreezes
     if frozen_pids:
         ## queue or stack?  Seems like both approaches are problematic
-        if num_unfreezes % 5 == 0:
+        if num_unfreezes % unfreeze_pop_ratio == 0:
             pid_to_unfreeze = frozen_pids.pop()
         else:
             ## no list.get() in python?
