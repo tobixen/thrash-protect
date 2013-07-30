@@ -24,16 +24,29 @@ on configurable intervals (i.e. twice a second).  If the number of
 page faults changes more than a configurable threshold value (say,
 10), the script will actively do "kill -STOP" on the currently running
 process doing most of the major page faults.  If the number of page
-faults is 0, the script will do "kill -CONT" on the last stopped
-process.
+faults is 0, the script will do "kill -CONT" on the stopped process(es).
 
 The script should also trigger alarms (i.e. by sending email, SMS or
 trigging an alarm in an external monitoring system, like
 nagios/icinga).
 
+Important processes (say, sshd) can be whitelisted.
+
+With this approach, hopefully the most-thrashing processes will be
+breaked sufficiently that it will always be possible to ssh into a
+thrashing box and see what's going on.
+
 Implementation
 --------------
 
-A prototype will be made in python, but eventually it should be
+A prototype has been made in python, but eventually it should be
 implemented in C for smallest possible footstep, memory consumption
 and fastest possible action.
+
+I realized that both a queue approach and a stack approach has it's
+problems (the stack may permanently freeze relatively innocent
+processes, the queue is inefficient and causes quite much paging) so I
+made some logic "get from the head of the list sometimes, pop from the
+tail most of the times".  I guess there are a lot of other ways to
+tweak and tune this script, though I'm worried that the simplicity
+will go down the drain if doing too much tweaking.

@@ -15,6 +15,9 @@ fault_threshold = 5
 ## number of pagefaults between each process scanning
 process_scanning_threshold = fault_threshold * 3
 
+## Unfreezing processes: Ratio of POP compared to GET:
+unfreeze_pop_ratio = 5
+
 import time
 import glob
 
