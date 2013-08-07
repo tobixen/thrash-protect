@@ -71,6 +71,15 @@ box is really trashing (that is, actively moving stuff both into and out
 from swap during an interval) etc) but it would
 probably be better to make a C-implementation.
 
+Experiences
+-----------
+
+This script has been run in production and has saved me from several
+logins into the remote management interface and the servers from
+being rebooted.  Best of all, I didn't need to do anything except
+adding a bit more swap and monitoring the situation - problem resolved 
+itself thanks to this script.
+
 Drawbacks
 ---------
 
