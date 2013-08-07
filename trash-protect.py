@@ -110,7 +110,7 @@ def unfreeze_something():
     global num_unfreezes
     if frozen_pids:
         ## queue or stack?  Seems like both approaches are problematic
-        if num_unfreezes % unfreeze_pop_ratio == 0:
+        if num_unfreezes % unfreeze_pop_ratio:
             pid_to_unfreeze = frozen_pids.pop()
         else:
             ## no list.get() in python?
