@@ -84,4 +84,5 @@ Drawbacks
 ---------
 
 * Some parent processes may behave unexpectedly when the children gets
-  suspended.
+  suspended - particularly, the suspension of interactive programs
+  under the login shell (say, "less") may be annoying.
