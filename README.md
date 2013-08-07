@@ -80,6 +80,13 @@ being rebooted.  Best of all, I didn't need to do anything except
 adding a bit more swap and monitoring the situation - problem resolved 
 itself thanks to this script.
 
+Other thoughts
+--------------
+
+This should eventually be a kernel-feature - ultra slow context 
+switching between swapping processes would probably "solve" a majority 
+of trashing-issues.
+
 Drawbacks
 ---------
 
