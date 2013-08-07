@@ -86,7 +86,10 @@ def log_unfrozen(pid):
         with open("/tmp/trash-protect-frozen-pid-list", "w") as logfile:
             logfile.write(" ".join([str(pid) for pid in frozen_pids]) + "\n")
     else:
-        os.unlink("/tmp/trash-protect-frozen-pid-list")
+        try:
+            os.unlink("/tmp/trash-protect-frozen-pid-list")
+        except FileNotFoundError:
+            pass
 
 def freeze_something():
     global frozen_pids
