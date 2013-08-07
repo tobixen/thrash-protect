@@ -11,7 +11,8 @@ Swapping things out is good as long as the the swapped-out data is
 really inactive.  Unfortunately, if actively used memory ends up being
 swapped out (actively running applications using more memory than
 what's available), linux has a tendency to become completely
-unresponsive - to the point that it's often needed to reboot the box.
+unresponsive - to the point that it's often needed to reboot the box
+through hardware button or remote management.
 
 It can be frustrating enough when it happens on a laptop or a work
 station; on a production server it's just unacceptable.
@@ -26,14 +27,13 @@ page faults changes more than a configurable threshold value (say,
 process doing most of the major page faults.  If the number of page
 faults is 0, the script will do "kill -CONT" on the stopped process(es).
 
-The script should also trigger alarms (i.e. by sending email, SMS or
-trigging an alarm in an external monitoring system, like
-nagios/icinga).
+The script creates a file on /tmp when there are frozen processes, nrpe 
+can eventually be set up to monitor the existance of such a file
 
 Important processes (say, sshd) can be whitelisted.
 
 With this approach, hopefully the most-thrashing processes will be
-breaked sufficiently that it will always be possible to ssh into a
+slowed down sufficiently that it will always be possible to ssh into a
 thrashing box and see what's going on.
 
 Implementation
@@ -65,7 +65,10 @@ sluggish than usual due to the trash-protect stopping it all the time.
 
 The python script could be tweaked, refactored and optimized a bit
 (i.e. using re instead of split, garbage collection of old processes
-from the pid/pagefault dict, improved log handling, etc) but it would
+from the pid/pagefault dict, improved log handling, tweaking the 
+monitoring of /proc-files so that the script only kicks in when the 
+box is really trashing (that is, actively moving stuff both into and out 
+from swap during an interval) etc) but it would
 probably be better to make a C-implementation.
 
 Drawbacks
