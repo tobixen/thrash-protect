@@ -1,5 +1,3 @@
-#!/usr/bin/python3
-
 ### This is a rapid prototype implementation.  It's consuming surprisingly much cpu and memory.  I hope the C version will be smoother.
 ### This is stub - work in process.
 
@@ -28,12 +26,13 @@ import os
 import signal
 
 def get_pagefaults():
-    with open('/proc/vmstat', 'r') as vmstat:
-        line = ''
-        while line is not None:
-            line = vmstat.readline()
-            if line.startswith('pgmajfault '):
-                return int(line[12:])
+    vmstat=open('/proc/vmstat', 'r')
+    line = ''
+    while line is not None:
+        line = vmstat.readline()
+        if line.startswith('pgmajfault '):
+            vmstat.close()
+            return int(line[12:])
 
 def scan_processes():
     ## TODO: consider using oom_score instead of major page faults?
@@ -50,11 +49,12 @@ def scan_processes():
         except ValueError:
             continue
         try:
-            with open(fn, 'r') as stat_file:
-                stats = stat_file.readline().split(' ')
-                majflt = int(stats[11])
-                cmd = stats[1][1:].split('/')[0].split(')')[0]
-        except FileNotFoundError:
+            stat_file=open(fn, 'r')
+            stats = stat_file.readline().split(' ')
+            majflt = int(stats[11])
+            cmd = stats[1][1:].split('/')[0].split(')')[0]
+            stat_file.close()
+        except IOError:
             pass
         if majflt > 0:
             prev = pagefault_by_pid.get(pid, 0)
@@ -74,19 +74,26 @@ def scan_processes():
 ## state file can be monitored, i.e. through nagios.  todo: support
 ## smtp etc.
 def log_frozen(pid):
-    with open("/var/log/trash-protect.log", 'a') as logfile:
-        logfile.write("%s - frozen pid %s\n" % (time.time(), pid))
-    with open("/tmp/trash-protect-frozen-pid-list", "w") as logfile:
-        logfile.write(" ".join([str(x) for x in frozen_pids]))
+    logfile=open("/var/log/trash-protect.log", 'a')
+    logfile.write("%s - frozen pid %s\n" % (time.time(), pid))
+    logfile.close()
+    logfile=open("/tmp/trash-protect-frozen-pid-list", "w")
+    logfile.write(" ".join([str(x) for x in frozen_pids]))
+    logfile.close()
 
 def log_unfrozen(pid):
-    with open("/var/log/trash-protect.log", 'a') as logfile:
-        logfile.write("%s - unfrozen pid %s\n" % (time.time(), pid))
+    logfile=open("/var/log/trash-protect.log", 'a')
+    logfile.write("%s - unfrozen pid %s\n" % (time.time(), pid))
+    logfile.close()
     if frozen_pids:
-        with open("/tmp/trash-protect-frozen-pid-list", "w") as logfile:
-            logfile.write(" ".join([str(pid) for pid in frozen_pids]) + "\n")
+        logfile=open("/tmp/trash-protect-frozen-pid-list", "w")
+        logfile.write(" ".join([str(pid) for pid in frozen_pids]) + "\n")
+        logfile.close()
     else:
-        os.unlink("/tmp/trash-protect-frozen-pid-list")
+        try:
+            os.unlink("/tmp/trash-protect-frozen-pid-list")
+        except IOError:
+	    pass
 
 def freeze_something():
     global frozen_pids
@@ -97,7 +104,7 @@ def freeze_something():
         return
     try:
         os.kill(pid_to_freeze, signal.SIGSTOP)
-    except ProcessLookupError:
+    except OSError:
         return
     frozen_pids.append(pid_to_freeze)
     ## Logging after freezing - as logging itself may be resource- and timeconsuming.
@@ -110,7 +117,7 @@ def unfreeze_something():
     global num_unfreezes
     if frozen_pids:
         ## queue or stack?  Seems like both approaches are problematic
-        if num_unfreezes % unfreeze_pop_ratio == 0:
+        if num_unfreezes % unfreeze_pop_ratio:
             pid_to_unfreeze = frozen_pids.pop()
         else:
             ## no list.get() in python?
@@ -118,7 +125,7 @@ def unfreeze_something():
             frozen_pids = frozen_pids[1:]
         try:
             os.kill(pid_to_unfreeze, signal.SIGCONT)
-        except ProcessLookupError:
+        except OSError:
             ## ignore failure
             return
         log_unfrozen(pid_to_unfreeze)
