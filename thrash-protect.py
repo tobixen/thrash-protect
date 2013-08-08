@@ -74,20 +74,20 @@ def scan_processes():
 ## state file can be monitored, i.e. through nagios.  todo: support
 ## smtp etc.
 def log_frozen(pid):
-    with open("/var/log/trash-protect.log", 'a') as logfile:
+    with open("/var/log/thrash-protect.log", 'a') as logfile:
         logfile.write("%s - frozen pid %s\n" % (time.time(), pid))
-    with open("/tmp/trash-protect-frozen-pid-list", "w") as logfile:
+    with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
         logfile.write(" ".join([str(x) for x in frozen_pids]))
 
 def log_unfrozen(pid):
-    with open("/var/log/trash-protect.log", 'a') as logfile:
+    with open("/var/log/thrash-protect.log", 'a') as logfile:
         logfile.write("%s - unfrozen pid %s\n" % (time.time(), pid))
     if frozen_pids:
-        with open("/tmp/trash-protect-frozen-pid-list", "w") as logfile:
+        with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
             logfile.write(" ".join([str(pid) for pid in frozen_pids]) + "\n")
     else:
         try:
-            os.unlink("/tmp/trash-protect-frozen-pid-list")
+            os.unlink("/tmp/thrash-protect-frozen-pid-list")
         except FileNotFoundError:
             pass
 
