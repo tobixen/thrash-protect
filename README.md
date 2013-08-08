@@ -1,4 +1,4 @@
-trash-protect
+thrash-protect
 =============
 
 Simple-Stupid user-space program attempting to protect a linux host from thrashing.
@@ -61,13 +61,13 @@ same time.  With the current implementation, when some application
 (say, an interactive big thing like emacs or firefox) has been
 inactive for a while and has significant amounts of memory have been
 moved to swap, resuming the application will become a lot more
-sluggish than usual due to the trash-protect stopping it all the time.
+sluggish than usual due to the thrash-protect stopping it all the time.
 
 The python script could be tweaked, refactored and optimized a bit
 (i.e. using re instead of split, garbage collection of old processes
 from the pid/pagefault dict, improved log handling, tweaking the 
 monitoring of /proc-files so that the script only kicks in when the 
-box is really trashing (that is, actively moving stuff both into and out 
+box is really thrashing (that is, actively moving stuff both into and out 
 from swap during an interval) etc) but it would
 probably be better to make a C-implementation.
 
@@ -85,7 +85,7 @@ Other thoughts
 
 This should eventually be a kernel-feature - ultra slow context 
 switching between swapping processes would probably "solve" a majority 
-of trashing-issues.
+of thrashing-issues.
 
 Drawbacks
 ---------
