@@ -20,7 +20,6 @@ pgmajfault_stop_threshold = int(os.getenv('THRASH_PROTECT_PGMAJFAULT_STOP_THRESH
 pgmajfault_scan_threshold = int(os.getenv('THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD', pgmajfault_stop_threshold * 5))
 
 ## process name whitelist 
-import pdb; pdb.set_trace()
 cmd_whitelist = os.getenv('THRASH_PROTECT_CMD_WHITELIST', '')
 cmd_whitelist = cmd_whitelist.split(' ') if cmd_whitelist else ['sshd', 'bash', 'xinit', 'X', 'spectrwm']
 cmd_blacklist = os.getenv('THRASH_PROTECT_CMD_BLACKLIST', '').split(' ')
