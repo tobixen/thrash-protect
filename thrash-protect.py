@@ -1,26 +1,33 @@
 #!/usr/bin/python3
 
-### This is a rapid prototype implementation.  It's consuming surprisingly much cpu and memory.  I hope the C version will be smoother.
+### This is a rapid prototype implementation.  I'm considering to implement in C.
+
 ### This is stub - work in process.
 
+#########################
 ## Configuration section
-## (TODO: better names)
+#########################
+
+import os
 
 ## Sleep interval, in seconds
-sleep = 1
+interval = int(os.getenv('THRASH_PROTECT_INTERVAL', '1'))
 
 ## Number of acceptable pgmajfaults during the above interval
-fault_threshold = 5
+pgmajfault_stop_threshold = int(os.getenv('THRASH_PROTECT_PGMAJFAULT_STOP_THRESHOLD', '5'))
 
-## number of pagefaults between each process scanning, when the
-## protection doesn't kick in.
-process_scanning_threshold = fault_threshold * 5
+## After X number of pagefaults, we should initiate a process scanning
+pgmajfault_scan_threshold = int(os.getenv('THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD', pgmajfault_stop_threshold * 5))
 
-## process name whitelist
-cmd_whitelist = ['sshd', 'bash', 'xinit', 'X', 'spectrwm']
+## process name whitelist 
+import pdb; pdb.set_trace()
+cmd_whitelist = os.getenv('THRASH_PROTECT_CMD_WHITELIST', '')
+cmd_whitelist = cmd_whitelist.split(' ') if cmd_whitelist else ['sshd', 'bash', 'xinit', 'X', 'spectrwm']
+cmd_blacklist = os.getenv('THRASH_PROTECT_CMD_BLACKLIST', '').split(' ')
+blacklist_penalty_multiplier = int(os.getenv('THRASH_PROTECT_BLACKLIST_PENALTY_MULTIPLIER', '5'))
 
 ## Unfreezing processes: Ratio of POP compared to GET (integer)
-unfreeze_pop_ratio = 5
+unfreeze_pop_ratio = int(os.getenv('THRASH_PROTECT_UNFREEZE_POP_RATIO', '5'))
 
 import time
 import glob
@@ -59,14 +66,17 @@ def scan_processes():
         if majflt > 0:
             prev = pagefault_by_pid.get(pid, 0)
             pagefault_by_pid[pid] = majflt
-            if majflt - prev > max:
+            diff = majflt - prev
+            if cmd in cmd_blacklist:
+                diff *= blacklist_penalty_multiplier
+            if diff > max:
                 ## ignore whitelisted
                 if cmd in cmd_whitelist:
                     continue
                 ## ignore self
                 if pid == os.getpid():
                     continue
-                max = majflt - prev
+                max = diff
                 worstpid = pid
     return worstpid
 
@@ -137,11 +147,11 @@ num_unfreezes = 0
 
 while True:
     current_pagefaults = get_pagefaults()
-    if current_pagefaults - last_observed_pagefaults > fault_threshold:
+    if current_pagefaults - last_observed_pagefaults > pgmajfault_stop_threshold:
         freeze_something()
     elif current_pagefaults - last_observed_pagefaults == 0:
         unfreeze_something()
-    if current_pagefaults - last_scan_pagefaults > process_scanning_threshold:
+    if current_pagefaults - last_scan_pagefaults > pgmajfault_scan_threshold:
         scan_processes()
     last_observed_pagefaults = current_pagefaults
-    time.sleep(sleep)
+    time.sleep(interval)

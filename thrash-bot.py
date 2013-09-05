@@ -22,6 +22,6 @@ while True:
         print("%s: %s %s" % (word, num, len(my_goblus.get(word,""))))
         foobar += 1
     my_count[word] = num + 1
-    my_goblus[word] = my_goblus.get(word, 'jalla') + prev_word * (num + 10000)
+    my_goblus[word] = my_goblus.get(word, 'jalla') + prev_word * (num*2 + 10000)
     prev_word = word
     prev_num = num
