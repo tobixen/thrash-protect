@@ -14,7 +14,7 @@ except NameError:
 try:
   FileNotFoundError
 except NameError:
-  FileNotFoundError=OSError
+  FileNotFoundError=IOError
 
 #########################
 ## Configuration section
