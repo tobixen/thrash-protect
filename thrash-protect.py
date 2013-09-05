@@ -1,5 +1,13 @@
 #!/usr/bin/python3
 
+## python3 is not available on a lot of servers, and those seems to be the 
+## only snag when running on python 2.5: 
+from __future__ import with_statement
+try:
+  ProcessLookupError
+except NameError:
+  ProcessLookupError=OSError
+
 ### This is a rapid prototype implementation.  It's consuming surprisingly much cpu and memory.  I hope the C version will be smoother.
 ### This is stub - work in process.
 
@@ -26,6 +34,8 @@ import time
 import glob
 import os
 import signal
+
+
 
 def get_pagefaults():
     with open('/proc/vmstat', 'r') as vmstat:
