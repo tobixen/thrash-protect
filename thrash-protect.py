@@ -1,16 +1,20 @@
 #!/usr/bin/python3
 
+### This is a rapid prototype implementation.  I'm considering to implement in C.
+
+### This is stub - work in process.
+
 ## python3 is not available on a lot of servers, and those seems to be the 
-## only snag when running on python 2.5: 
+## only snags when running on python 2.5: 
 from __future__ import with_statement
 try:
   ProcessLookupError
 except NameError:
   ProcessLookupError=OSError
-
-### This is a rapid prototype implementation.  I'm considering to implement in C.
-
-### This is stub - work in process.
+try:
+  FileNotFoundError
+except NameError:
+  FileNotFoundError=OSError
 
 #########################
 ## Configuration section
