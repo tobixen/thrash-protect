@@ -33,7 +33,7 @@ pgmajfault_scan_threshold = int(os.getenv('THRASH_PROTECT_PGMAJFAULT_SCAN_THRESH
 
 ## process name whitelist 
 cmd_whitelist = os.getenv('THRASH_PROTECT_CMD_WHITELIST', '')
-cmd_whitelist = cmd_whitelist.split(' ') if cmd_whitelist else ['sshd', 'bash', 'xinit', 'X', 'spectrwm']
+cmd_whitelist = cmd_whitelist.split(' ') if cmd_whitelist else ['sshd', 'bash', 'xinit', 'X', 'spectrwm', 'screen', 'SCREEN', 'mutt']
 cmd_blacklist = os.getenv('THRASH_PROTECT_CMD_BLACKLIST', '').split(' ')
 blacklist_penalty_multiplier = int(os.getenv('THRASH_PROTECT_BLACKLIST_PENALTY_MULTIPLIER', '5'))
 
@@ -144,6 +144,15 @@ def unfreeze_something():
             frozen_pids = frozen_pids[1:]
         try:
             os.kill(pid_to_unfreeze, signal.SIGCONT)
+            ## Sometimes the parent process also gets suspended.
+            ## TODO: we're doing some simple assumptions here; 
+            ## 1) this
+            ## problem only applies to process group id or session id
+            ## (we probably need to walk through all the parents)
+            ## 2) it is harmless to CONT the pgid and sid.  This may not always be so.
+            ## We need to traverse (in that case, we'll probably need to access /proc/<pid>/status recursively)
+            os.kill(os.getpgid(pid_to_freeze), signal.SIGCONT)
+            os.kill(os.getsid(pid_to_freeze), signal.SIGCONT)
         except ProcessLookupError:
             ## ignore failure
             return
