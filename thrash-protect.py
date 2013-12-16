@@ -153,8 +153,8 @@ def unfreeze_something():
             ## To correct this, we may need to traverse parents
             ## (peeking into /proc/<pid>/status recursively) prior to freezing the proc.
             ## all parents that aren't already frozen should be added to the unfreeze stack
-            os.kill(os.getpgid(pid_to_freeze), signal.SIGCONT)
-            os.kill(os.getsid(pid_to_freeze), signal.SIGCONT)
+            os.kill(os.getpgid(pid_to_unfreeze), signal.SIGCONT)
+            os.kill(os.getsid(pid_to_unfreeze), signal.SIGCONT)
         except ProcessLookupError:
             ## ignore failure
             return
