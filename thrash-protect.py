@@ -150,7 +150,9 @@ def unfreeze_something():
             ## problem only applies to process group id or session id
             ## (we probably need to walk through all the parents)
             ## 2) it is harmless to CONT the pgid and sid.  This may not always be so.
-            ## We need to traverse (in that case, we'll probably need to access /proc/<pid>/status recursively)
+            ## To correct this, we may need to traverse parents
+            ## (peeking into /proc/<pid>/status recursively) prior to freezing the proc.
+            ## all parents that aren't already frozen should be added to the unfreeze stack
             os.kill(os.getpgid(pid_to_freeze), signal.SIGCONT)
             os.kill(os.getsid(pid_to_freeze), signal.SIGCONT)
         except ProcessLookupError:
