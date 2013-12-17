@@ -4,6 +4,14 @@ thrash-protect
 Simple-Stupid user-space program attempting to protect a linux host
 from thrashing.
 
+Usage
+-----
+
+No init-script has been written so far.  Script has to be started up
+manually after each boot, or from crontab, with root permissions.
+Properly installed, the script should be available as
+/usr/sbin/thrash-protect
+
 Problem
 -------
 
