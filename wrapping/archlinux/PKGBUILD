@@ -10,7 +10,8 @@ depends=('python')
 source=("https://github.com/tobixen/$pkgname/archive/v$pkgver.tar.gz")
 
 package() {
-  cp "$srcdir/$pkgname-$pkgver/thrash-protect.py $pkgdir/usr/sbin/thrash-protect"
+  cp "$srcdir/$pkgname-$pkgver/thrash-protect.py" "$pkgdir/usr/sbin/thrash-protect"
 }
 
 ## md5sum should be added to this file using makepkg -g >> PKGBUILD
+
