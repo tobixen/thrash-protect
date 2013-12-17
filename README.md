@@ -115,3 +115,23 @@ Drawbacks and problems
   any options.  Configuration settings can be given through OS
   environment, but there exists no documentation.  I've always been
   running it without any special configuration.
+
+Roadmap
+-------
+
+In the 0.5.x version series the focus will be on packaging and
+wrapping.
+
+* Should be installable through yum, pacman and apt-get.
+
+* Should include System V startup scripts for debian and rhel, plus
+  configuration files for ubuntu upstart and systemd.
+
+* Puppet module
+
+* nrpe scripts
+
+* munin scripts
+
+Focus up until 1.0 is testing, testing, testing, bugfixing and
+eventually some tweaking but only if it's _really_ needed.
