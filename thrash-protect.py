@@ -1,11 +1,24 @@
-#!/usr/bin/python3
+#!/usr/bin/python
+
+### Simple-Stupid user-space program protecting a linux host from thrashing.
+### See the README for details.
+### Project home: https://github.com/tobixen/thrash-protect
 
 ### This is a rapid prototype implementation.  I'm considering to implement in C.
 
-### This is stub - work in process.
+__version__ = "0.5"
+__author__ = "Tobias Brox"
+__copyright__ = "Copyright 2013, Tobias Brox"
+__license__ = "GPL"
+__maintainer__ = "Tobias Brox"
+__email__ = "t-thrashprotect@tobixen.no"
+__status__ = "Development"
+__product__ = "thrash-protect"
 
-## python3 is not available on a lot of servers, and those seems to be the 
-## only snags when running on python 2.5: 
+## This was written for python3 (there exists a python24-branch, but
+## it won't be maintained).  python3 is not available on a lot of
+## servers, and those seems to be the only snags when running on
+## python 2.5:
 from __future__ import with_statement
 try:
   ProcessLookupError

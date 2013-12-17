@@ -27,8 +27,9 @@ page faults changes more than a configurable threshold value (say,
 process doing most of the major page faults.  If the number of page
 faults is 0, the script will do "kill -CONT" on the stopped process(es).
 
-The script creates a file on /tmp when there are frozen processes, nrpe 
-can eventually be set up to monitor the existance of such a file
+The script creates a file on /tmp when there are frozen processes,
+nrpe can eventually be set up to monitor the existance of such a file
+as well as the existance of suspended processes.
 
 Important processes (say, sshd) can be whitelisted.
 
@@ -39,9 +40,10 @@ thrashing box and see what's going on.
 Implementation
 --------------
 
-A prototype has been made in python, but eventually it should be
-implemented in C for smallest possible footstep, memory consumption
-and fastest possible action.
+A prototype has been made in python - my initial thought was to
+reimplement in C for smallest possible footstep, memory consumption
+and fastest possible action - though I'm not sure if it's worth the
+effort.
 
 Tweaking
 --------
@@ -74,11 +76,18 @@ probably be better to make a C-implementation.
 Experiences
 -----------
 
-This script has been run in production and has saved me from several
-logins into the remote management interface and the servers from
-being rebooted.  Best of all, I didn't need to do anything except
-adding a bit more swap and monitoring the situation - problem resolved 
-itself thanks to this script.
+This script is not really production-ready, but still I would
+recommend to give it a shot as a temporary stop-gap if you have a
+server that have had thrashing problem earlier, and where neither
+installing more memory or tweaking processes to eat less memory cannot
+be done in a flash.
+
+This script has been run both on my workstation and on production
+servers and has saved me from several logins into the remote
+management interface and the servers from being rebooted.  Best of
+all, I didn't need to do anything except adding a bit more swap and
+monitoring the situation - problem resolved itself thanks to this
+script.
 
 Other thoughts
 --------------
@@ -87,9 +96,21 @@ This should eventually be a kernel-feature - ultra slow context
 switching between swapping processes would probably "solve" a majority 
 of thrashing-issues.
 
-Drawbacks
----------
+Drawbacks and problems
+----------------------
 
 * Some parent processes may behave unexpectedly when the children gets
   suspended - particularly, the suspension of interactive programs
   under the login shell (say, "less") may be annoying.
+
+* I've observed situations where parent processes also have gone into
+  suspend-mode and been stuck there even as the child process got
+  resumed.  I've done a quick work-around on this by always running
+  SIGCONT on the session process id and group process id.  This may be
+  harmful if you're actively using SIGSTOP on processes having
+  children.
+
+* This was supposed to be a rapid prototype, so it doesn't recognize
+  any options.  Configuration settings can be given through OS
+  environment, but there exists no documentation.  I've always been
+  running it without any special configuration.
