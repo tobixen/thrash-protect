@@ -1,7 +1,7 @@
 thrash-protect
 =============
 
-Simple-Stupid user-space program attempting to protect a linux host from thrashing.
+Simple-Stupid user-space program protecting a linux host from thrashing.
 
 Problem
 -------
