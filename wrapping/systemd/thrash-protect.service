@@ -1,0 +1,11 @@
+[Unit]
+Description=Thrash protecting daemon
+
+[Service]
+ExecStart=/usr/sbin/thrash-protect
+KillMode=process
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+
