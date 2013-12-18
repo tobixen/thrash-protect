@@ -140,5 +140,17 @@ wrapping.
 
 * munin scripts
 
-Focus up until 1.0 is testing, testing, testing, bugfixing and
-eventually some tweaking but only if it's _really_ needed.
+Focus up until 1.0 is testing, production-hardening, testing, testing,
+bugfixing and eventually some tweaking but only if it's _really_
+needed.  Some things that should be considered:
+
+* Better handling of the parent suspension problemacy
+
+* Graceful handling of SIGTERM (any suspended processes should be reanimated)
+
+* Recovery on restart (read status file and resume any suspended processes)
+
+* Improved logging and error handling
+
+* Makefile (for "make install", "make rpm", "make PKGBUILD", etc)
+

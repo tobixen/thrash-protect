@@ -1,6 +1,6 @@
 # Maintainer: Tobias Brox <t-arch@tobixen.no>
 pkgname=thrash-protect
-pkgver=0.5
+pkgver=0.5.1
 pkgrel=1
 pkgdesc="Simple-Stupid user-space program protecting a linux host from thrashing."
 url="https://github.com/tobixen/thrash-protect"
@@ -11,7 +11,9 @@ source=("https://github.com/tobixen/$pkgname/archive/v$pkgver.tar.gz")
 
 package() {
   mkdir -p "$pkgdir/usr/sbin/"
+  mkdir -p "$pkgdir/usr/lib/systemd/system"
   cp "$srcdir/$pkgname-$pkgver/thrash-protect.py" "$pkgdir/usr/sbin/thrash-protect"
+  cp "$srcdir/$pkgname-$pkgver/wrapping/systemd/thrash-protect.service" "$pkgdir/usr/lib/systemd/system/"
 }
 
 ## md5sum should be added to this file using makepkg -g >> PKGBUILD

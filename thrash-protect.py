@@ -6,15 +6,6 @@
 
 ### This is a rapid prototype implementation.  I'm considering to implement in C.
 
-__version__ = "0.5"
-__author__ = "Tobias Brox"
-__copyright__ = "Copyright 2013, Tobias Brox"
-__license__ = "GPL"
-__maintainer__ = "Tobias Brox"
-__email__ = "t-thrashprotect@tobixen.no"
-__status__ = "Development"
-__product__ = "thrash-protect"
-
 ## This was written for python3 (there exists a python24-branch, but
 ## it won't be maintained).  python3 is not available on a lot of
 ## servers, and those seems to be the only snags when running on
@@ -28,6 +19,16 @@ try:
   FileNotFoundError
 except NameError:
   FileNotFoundError=IOError
+
+__version__ = "0.5"
+__author__ = "Tobias Brox"
+__copyright__ = "Copyright 2013, Tobias Brox"
+__license__ = "GPL"
+__maintainer__ = "Tobias Brox"
+__email__ = "t-thrashprotect@tobixen.no"
+__status__ = "Development"
+__product__ = "thrash-protect"
+
 
 #########################
 ## Configuration section
