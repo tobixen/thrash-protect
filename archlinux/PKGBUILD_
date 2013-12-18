@@ -12,8 +12,8 @@ source=("https://github.com/tobixen/$pkgname/archive/v$pkgver.tar.gz")
 package() {
   mkdir -p "$pkgdir/usr/sbin/"
   mkdir -p "$pkgdir/usr/lib/systemd/system"
-  cp "$srcdir/$pkgname-$pkgver/thrash-protect.py" "$pkgdir/usr/sbin/thrash-protect"
-  cp "$srcdir/$pkgname-$pkgver/wrapping/systemd/thrash-protect.service" "$pkgdir/usr/lib/systemd/system/"
+  cd "$srcdir/$pkgname-$pkgver/"
+  make install
 }
 
 ## This is a template missing md5sum and version
