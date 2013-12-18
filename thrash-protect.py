@@ -20,7 +20,7 @@ try:
 except NameError:
   FileNotFoundError=IOError
 
-__version__ = "0.5"
+__version__ = "0.5.2"
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013, Tobias Brox"
 __license__ = "GPL"
@@ -183,13 +183,27 @@ frozen_pids = []
 num_freezes = 0
 num_unfreezes = 0
 
-while True:
-    current_pagefaults = get_pagefaults()
-    if current_pagefaults - last_observed_pagefaults > pgmajfault_stop_threshold:
-        freeze_something()
-    elif current_pagefaults - last_observed_pagefaults == 0:
-        unfreeze_something()
-    if current_pagefaults - last_scan_pagefaults > pgmajfault_scan_threshold:
-        scan_processes()
-    last_observed_pagefaults = current_pagefaults
-    time.sleep(interval)
+if __name__ == '__main__':
+    try:
+        import argparse
+        p = argparse.ArgumentParser(description="protect a linux host from thrashing")
+        p.add_argument('--version', action='version', version='%(prog)s ' + __version__)
+        args = p.parse_args()
+    except ImportError:
+        ## argparse is only available from 2.7 and up
+        args = None
+    thrash_protect(args)
+
+def thrash_protect(args=None):
+    while True:
+        current_pagefaults = get_pagefaults()
+        if current_pagefaults - last_observed_pagefaults > pgmajfault_stop_threshold:
+            freeze_something()
+        elif current_pagefaults - last_observed_pagefaults == 0:
+            unfreeze_something()
+        if current_pagefaults - last_scan_pagefaults > pgmajfault_scan_threshold:
+            scan_processes()
+        last_observed_pagefaults = current_pagefaults
+        time.sleep(interval)
+
+
