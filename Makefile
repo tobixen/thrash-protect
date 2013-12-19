@@ -1,4 +1,5 @@
-export prefix = /usr/
+export install_root = /
+export prefix = $install_root/usr/
 export pkgname = "thrash-protect"
 
 ## can't do "thrash-protect.py --version" since it's unsupported in python versions lower than 2.7.
