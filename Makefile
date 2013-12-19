@@ -1,5 +1,5 @@
 export install_root = /
-export prefix = ${install_root}/usr/
+export prefix = ${install_root}usr/
 export pkgname = "thrash-protect"
 
 ## can't do "thrash-protect.py --version" since it's unsupported in python versions lower than 2.7.
@@ -10,7 +10,7 @@ ChangeLog.recent: ChangeLog
 
 install: thrash-protect.py
 	install "thrash-protect.py" $(prefix)/sbin/$(pkgname)
-	if [ -d $(prefix)/lib/systemd/system ]; then install systemd/thrash-protect.service $(prefix)/lib/systemd/system ; else install systemv/thrash-protect "/etc/init.d/thrash-protect" ; fi
+	if [ -d $(prefix)/lib/systemd/system ]; then install systemd/thrash-protect.service $(prefix)/lib/systemd/system ; else install systemv/thrash-protect "$(install_root)etc/init.d/thrash-protect" ; fi
 
 .tag.${version}: ChangeLog.recent
 	git status
