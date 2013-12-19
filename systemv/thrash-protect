@@ -17,21 +17,21 @@ error() {
 # Start the service
 start() {
 	[ -r /var/lock/subsys/thrash-protect ] && error "process already running or stale lock file /var/lock/subsys/thrash-protect"
-        initlog -c "echo -n Starting thrash-protect: "
+        echo -n $"Starting thrash-protect: "
         /usr/sbin/thrash-protect &
         ### Create the lock file ###
 	echo $! > /var/lock/subsys/thrash-protect
-        echo
+	success $"OK"
 }
 
 # Restart the service
 stop() {
-        initlog -c "echo -n Stopping thrash-protect: "
+        echo -n $"Stopping thrash-protect: "
         killproc thrash-protect
         ### Now, delete the lock file ###
         rm -f /var/lock/subsys/thrash-protect
-        echo
 }
+
 ### main logic ###
 case "$1" in
   start)
