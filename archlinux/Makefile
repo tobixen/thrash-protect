@@ -6,4 +6,4 @@ PKGBUILD: PKGBUILD_ ../thrash-protect.py ../ChangeLog
 	makepkg --source
 
 archlinux: "${pkgname}-${version}-1.src.tar.gz"
-	burp -C$HOME/.config/burp.cookies -k "${pkgname}-${version}-1.src.tar.gz"
+	burp -C${HOME}/.config/burp.cookies -k "${pkgname}-${version}-1.src.tar.gz"

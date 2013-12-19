@@ -12,7 +12,7 @@ install: thrash-protect.py
 	[ -d "$(prefix)/lib/systemd/system" ] && install systemd/thrash-protect.service "$(prefix)/lib/systemd/system"
 
 .tag.${version}: ChangeLog.recent
-	git commit
+	git status
 	cat ChangeLog.recent
 	git tag -s v${version} -F ChangeLog.recent
 	git push origin v${version}
