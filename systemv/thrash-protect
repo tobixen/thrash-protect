@@ -1,0 +1,54 @@
+#!/bin/bash
+#
+# chkconfig: 2345 29 71
+# description: Thrash-protect - simple-stupid program to avoid thrashing
+# processname: thrash-protect
+#
+# copied from http://www.cyberciti.biz/tips/linux-write-sys-v-init-script-to-start-stop-service.html
+
+# Get function from functions library
+. /etc/init.d/functions
+
+error() {
+	echo "$@" 1>&2
+	exit 255
+}
+
+# Start the service
+start() {
+	[ -r /var/lock/subsys/thrash-protect ] && error "process already running or stale lock file /var/lock/subsys/thrash-protect"
+        initlog -c "echo -n Starting thrash-protect: "
+        /usr/sbin/thrash-protect &
+        ### Create the lock file ###
+	echo $! > /var/lock/subsys/thrash-protect
+        echo
+}
+
+# Restart the service
+stop() {
+        initlog -c "echo -n Stopping thrash-protect: "
+        killproc thrash-protect
+        ### Now, delete the lock file ###
+        rm -f /var/lock/subsys/thrash-protect
+        echo
+}
+### main logic ###
+case "$1" in
+  start)
+        start
+        ;;
+  stop)
+        stop
+        ;;
+  status)
+        status thrash-protect
+        ;;
+  restart|reload|condrestart)
+        stop
+        start
+        ;;
+  *)
+        echo $"Usage: $0 {start|stop|restart|reload|status}"
+        exit 1
+esac
+exit 0

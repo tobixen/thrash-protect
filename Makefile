@@ -10,6 +10,7 @@ ChangeLog.recent: ChangeLog
 install: thrash-protect.py
 	install "thrash-protect.py" "$(prefix)/sbin/thrash-protect"
 	[ -d "$(prefix)/lib/systemd/system" ] && install systemd/thrash-protect.service "$(prefix)/lib/systemd/system"
+	[ -d "$(prefix)/lib/systemd/system" ] || install systemv/thrash-protect "/etc/init.d/thrash-protect"
 
 .tag.${version}: ChangeLog.recent
 	git status
