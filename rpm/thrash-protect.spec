@@ -1,10 +1,10 @@
 Name:           thrash-protect
 Version:        0.5.3
 Release:        1%{?dist}
-Summary:        Simple-Stupid user-space program protecting a linux host from thrashing.
+Summary:        Simple-Stupid user-space program protecting a linux host from thrashing
 BuildArch:      noarch
 Group:          System Environment/Daemons
-License:        GPL3
+License:        GPLv3
 URL:            https://github.com/tobixen/thrash-protect  
 Source0:        https://github.com/tobixen/%{name}/archive/v%{version}.tar.gz
 Requires:       python
@@ -24,8 +24,15 @@ problems, and in many cases the problems will resolve by themselves.
 true
 
 %install
+mkdir -p $RPM_BUILD_ROOT/lib/systemd/system
+mkdir -p $RPM_BUILD_ROOT/sbin
+mkdir -p $RPM_BUILD_ROOT%{_defaultdocdir}/%{name}-%{version}
 make install prefix=$RPM_BUILD_ROOT
 
+
+%files
+/sbin/thrash-protect
+/lib/systemd/system/thrash-protect.service
 
 %doc README.md ChangeLog
 
