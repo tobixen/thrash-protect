@@ -21,4 +21,7 @@ install: thrash-protect.py
 archlinux: .tag.${version} archlinux/PKGBUILD_ thrash-protect.py
 	${MAKE} -C $@ archlinux
 
+rpm: rpm/thrash-protect.spec thrash-protect.py
+	${MAKE} -C $@ rpm
+
 .PHONY: install

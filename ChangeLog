@@ -1,4 +1,5 @@
 2013-12-19  Tobias Brox  <tobias@redpill-linpro.com>
+        * rpm: work in progress to build rpm files
 	* archlinux/Makefile: allow for automatic build of PKGBUILD and upload to AUR
 	* Makefile: Working on release-management through Makefile; ideally all the work involved with making a release should be handled by a simple make command.  Pardon for all the stupid mini-releases, need to do quite some testing here.
 	* ChangeLog: Now with a ChangeLog file.  The entries will be used for the commit message when doing releases.

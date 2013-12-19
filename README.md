@@ -3,6 +3,13 @@ thrash-protect
 
 Simple-Stupid user-space program protecting a linux host from thrashing.
 
+The program will on fixed intervals check if there has been a lot of
+swapping since previous run, and if there are a lot of swapping, the
+program with the most page faults will be temporary suspended.  This
+way the host will never become so thrashed up that it won't be
+possible for a system administrator to ssh into the box and fix the
+problems, and in many cases the problems will resolve by themselves.
+
 Usage
 -----
 
@@ -56,7 +63,7 @@ effort.
 Tweaking
 --------
 
-I realized that both a queue approach and a stack approach has it's
+I realized that both a queue approach and a stack approach has its
 problems (the stack may permanently freeze relatively innocent
 processes, the queue is inefficient and causes quite much paging) so I
 made some logic "get from the head of the list sometimes, pop from the

@@ -1,4 +1,4 @@
-PKGBUILD: PKGBUILD_ ../thrash-protect.py ../ChangeLog
+PKGBUILD: PKGBUILD_ ../.tag.${version}
 	perl -pe 's/^\#\#.*$$//; s/^pkgver=xxx$$/pkgver=${version}/;' PKGBUILD_ > PKGBUILD
 	makepkg -g >> PKGBUILD
 
