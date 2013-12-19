@@ -1,5 +1,5 @@
 Name:           thrash-protect
-Version:        0.5.4.4
+Version:        0.5.4.5
 Release:        1%{?dist}
 Summary:        Simple-Stupid user-space program protecting a linux host from thrashing
 BuildArch:      noarch
@@ -27,11 +27,11 @@ true
 mkdir -p $RPM_BUILD_ROOT/etc/init.d
 mkdir -p $RPM_BUILD_ROOT/usr/sbin
 mkdir -p $RPM_BUILD_ROOT%{_defaultdocdir}/%{name}-%{version}
-make install install_root=$RPM_BUILD_ROOT
+make install install_root=$RPM_BUILD_ROOT/
 
 
 %files
-/sbin/thrash-protect
+/usr/sbin/thrash-protect
 /etc/init.d/thrash-protect
 
 %doc README.md ChangeLog
