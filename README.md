@@ -10,13 +10,15 @@ way the host will never become so thrashed up that it won't be
 possible for a system administrator to ssh into the box and fix the
 problems, and in many cases the problems will resolve by themselves.
 
-Usage
------
+Installation and usage
+----------------------
 
-No init-script has been written so far.  Script has to be started up
-manually after each boot, or from crontab, with root permissions.
-Properly installed, the script should be available as
-/usr/sbin/thrash-protect
+"make install" will hopefully do the right thing.  Archlinux users may
+also install through AUR.  There is a spec file included so it should
+be possible to build rpm packages - but "make rpm" probably won't work
+out as for now.  Script has to be run as root user.  While it's
+possible to adjust configuration through environment variables, best
+practice is probably to run it without any configuration.
 
 Problem
 -------
@@ -35,18 +37,21 @@ station; on a production server it's just unacceptable.
 Simple solution
 ---------------
 
-This script will be checking the pgmajfault variable in /proc/vmstat
-on configurable intervals (i.e. twice a second).  If the number of
-page faults changes more than a configurable threshold value (say,
-10), the script will actively do "kill -STOP" on the currently running
-process doing most of the major page faults.  If the number of page
-faults is 0, the script will do "kill -CONT" on the stopped process(es).
+This script will be checking the pswpin and pswpout variables in
+/proc/vmstat on configurable intervals (default: one second).  If both
+swap in and swap out is detected within the interval, the program will
+STOP the process that has had most major page faults since previous
+run - same if there has been significant amounts of swap in or swap
+out (default: 100 pages).  When the host has stopped swapping the host
+will resume one of the stopped processes.
 
 The script creates a file on /tmp when there are frozen processes,
 nrpe can eventually be set up to monitor the existance of such a file
 as well as the existance of suspended processes.
 
-Important processes (say, sshd) can be whitelisted.
+Important processes (say, sshd) can be whitelisted.  Note that the
+"whitelisting" is done by weighting - the intention is that if a
+whitelisted process is particularly nasty, it may still be stopped.
 
 With this approach, hopefully the most-thrashing processes will be
 slowed down sufficiently that it will always be possible to ssh into a
@@ -71,31 +76,23 @@ tail most of the times".  I guess there are a lot of other ways to
 tweak and tune this script, though I'm worried that the simplicity
 will go down the drain if doing too much tweaking.
 
-Current implementation is only counting page faults - this should be
-modified a bit.  Neither swap in nor swap out is a big problem by
-itself, the real problem is when swapin and swapout happens at the
-same time.  With the current implementation, when some application
-(say, an interactive big thing like emacs or firefox) has been
-inactive for a while and has significant amounts of memory have been
-moved to swap, resuming the application will become a lot more
-sluggish than usual due to the thrash-protect stopping it all the time.
+Selecting the process only by maj_page_faults may not be very
+accurate.  Should probably use other measurements instead or in
+addition, such as /proc/*/oom_score
 
-The python script could be tweaked, refactored and optimized a bit
-(i.e. using re instead of split, garbage collection of old processes
-from the pid/pagefault dict, improved log handling, tweaking the 
-monitoring of /proc-files so that the script only kicks in when the 
-box is really thrashing (that is, actively moving stuff both into and out 
-from swap during an interval) etc) but it would
-probably be better to make a C-implementation.
+It's important to do some research to learn if the program would
+benefit significantly from being rewritten into C.  If not, the python
+script should be tweaked, refactored and optimized a bit (i.e. using
+re instead of split, garbage collection of old processes from the
+pid/pagefault dict, read more options, improved log handling, etc).
 
 Experiences
 -----------
 
 This script is not really production-ready, but still I would
 recommend to give it a shot as a temporary stop-gap if you have a
-server that have had thrashing problem earlier, and where neither
-installing more memory or tweaking processes to eat less memory cannot
-be done in a flash.
+server that have had thrashing problem earlier, and where the problem
+cannot be solved (in a timely manner) by adding more memory.
 
 This script has been run both on my workstation and on production
 servers and has saved me from several logins into the remote
@@ -133,23 +130,9 @@ Drawbacks and problems
 Roadmap
 -------
 
-In the 0.5.x version series the focus will be on packaging and
-wrapping.
-
-* Should be installable through yum, pacman and apt-get.
-
-* Should include System V startup scripts for debian and rhel, plus
-  configuration files for ubuntu upstart and systemd.
-
-* Puppet module
-
-* nrpe scripts
-
-* munin scripts
-
-Focus up until 1.0 is testing, production-hardening, testing, testing,
-bugfixing and eventually some tweaking but only if it's _really_
-needed.  Some things that should be considered:
+Focus up until 1.0 is deployment, testing, production-hardening,
+testing, testing, bugfixing and eventually some tweaking but only if
+it's _really_ needed.  Some things that should be considered:
 
 * Better handling of the parent suspension problemacy
 
@@ -159,5 +142,7 @@ needed.  Some things that should be considered:
 
 * Improved logging and error handling
 
-* Makefile (for "make install", "make rpm", "make PKGBUILD", etc)
+* More work is needed on getting "make rpm" and "make debian" to work.
+
+* Package should include munin plugins
 

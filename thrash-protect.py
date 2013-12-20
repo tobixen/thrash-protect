@@ -20,7 +20,7 @@ try:
 except NameError:
   FileNotFoundError=IOError
 
-__version__ = "0.5.4.5"
+__version__ = "0.6"
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013, Tobias Brox"
 __license__ = "GPL"
@@ -39,17 +39,18 @@ import os
 ## Sleep interval, in seconds
 interval = int(os.getenv('THRASH_PROTECT_INTERVAL', '1'))
 
-## Number of acceptable pgmajfaults during the above interval
-pgmajfault_stop_threshold = int(os.getenv('THRASH_PROTECT_PGMAJFAULT_STOP_THRESHOLD', '5'))
+## Number of acceptable page swaps during the above interval
+swap_page_threshold = int(os.getenv('THRASH_PROTECT_SWAP_PAGE_THRESHOLD', '100'))
 
-## After X number of pagefaults, we should initiate a process scanning
-pgmajfault_scan_threshold = int(os.getenv('THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD', pgmajfault_stop_threshold * 5))
+## After X number of major pagefaults, we should initiate a process scanning
+pgmajfault_scan_threshold = int(os.getenv('THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD', swap_page_threshold))
 
 ## process name whitelist 
 cmd_whitelist = os.getenv('THRASH_PROTECT_CMD_WHITELIST', '')
-cmd_whitelist = cmd_whitelist.split(' ') if cmd_whitelist else ['sshd', 'bash', 'xinit', 'X', 'spectrwm', 'screen', 'SCREEN', 'mutt']
+cmd_whitelist = cmd_whitelist.split(' ') if cmd_whitelist else ['sshd', 'bash', 'xinit', 'X', 'spectrwm', 'screen', 'SCREEN', 'mutt', 'ssh', 'xterm', 'rxvt', 'urxvt']
 cmd_blacklist = os.getenv('THRASH_PROTECT_CMD_BLACKLIST', '').split(' ')
-blacklist_penalty_multiplier = int(os.getenv('THRASH_PROTECT_BLACKLIST_PENALTY_MULTIPLIER', '5'))
+blacklist_score_multiplier = int(os.getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', '5'))
+whitelist_score_divider = int(os.getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', str(blacklist_score_multiplier*2)))
 
 ## Unfreezing processes: Ratio of POP compared to GET (integer)
 unfreeze_pop_ratio = int(os.getenv('THRASH_PROTECT_UNFREEZE_POP_RATIO', '5'))
@@ -69,12 +70,28 @@ def get_pagefaults():
             if line.startswith('pgmajfault '):
                 return int(line[12:])
 
+def get_swapcount():
+    ret = []
+    with open('/proc/vmstat', 'r') as vmstat:
+        line = True
+        while line:
+            line = vmstat.readline()
+            if line.startswith('pswp'):
+                ret.append(int(line[7:]))
+    return tuple(ret)
+
+def check_swap_threshold(curr, prev):
+    global swap_page_threshold
+    ## will return True if we have bidirectional traffic to swap, or if we have
+    ## a big one-directional flow of data
+    return (curr[0]-prev[0]+1.0/swap_page_threshold) * (curr[1]-prev[1]+1.0/swap_page_threshold) > 1.0
+
 def scan_processes():
     ## TODO: consider using oom_score instead of major page faults?
     ## TODO: garbage collection
     global pagefault_by_pid
     global last_scan_pagefaults
-    last_scan_pagefaults = last_observed_pagefaults
+    last_scan_pagefaults = get_pagefaults()
     stat_files = glob.glob('/proc/*/stat')
     max = 0
     worstpid = None
@@ -95,11 +112,10 @@ def scan_processes():
             pagefault_by_pid[pid] = majflt
             diff = majflt - prev
             if cmd in cmd_blacklist:
-                diff *= blacklist_penalty_multiplier
+                diff *= blacklist_score_multiplier
+            if cmd in cmd_whitelist:
+                diff /= whitelist_score_divider
             if diff > max:
-                ## ignore whitelisted
-                if cmd in cmd_whitelist:
-                    continue
                 ## ignore self
                 if pid == os.getpid():
                     continue
@@ -171,27 +187,28 @@ def unfreeze_something():
             os.kill(os.getsid(pid_to_unfreeze), signal.SIGCONT)
         except ProcessLookupError:
             ## ignore failure
-            return
+            pass
         log_unfrozen(pid_to_unfreeze)
         num_unfreezes += 1
 
 def thrash_protect(args=None):
-    global last_observed_pagefaults
+    global last_observed_swapcount
     global last_scan_pagefaults
     while True:
+        current_swapcount = get_swapcount()
         current_pagefaults = get_pagefaults()
-        if current_pagefaults - last_observed_pagefaults > pgmajfault_stop_threshold:
+        if check_swap_threshold(current_swapcount, last_observed_swapcount):
             freeze_something()
-        elif current_pagefaults - last_observed_pagefaults == 0:
+        elif current_swapcount == last_observed_swapcount:
             unfreeze_something()
         if current_pagefaults - last_scan_pagefaults > pgmajfault_scan_threshold:
             scan_processes()
-        last_observed_pagefaults = current_pagefaults
+        last_observed_swapcount = current_swapcount
         time.sleep(interval)
 
 if __name__ == '__main__':
     ## Globals
-    last_observed_pagefaults = get_pagefaults()
+    last_observed_swapcount = get_swapcount()
     last_scan_pagefaults = 0
     pagefault_by_pid = {}
     frozen_pids = []

@@ -1,3 +1,10 @@
+2013-12-20  Tobias Brox  <tobias@redpill-linpro.com>
+	* general: bumping version number to 0.6
+	* thrash-protect.py: Major fix - changed from using the "major page fault"-counter to using the "page swap in" and "page swap out" counters.  Bidirectional swap or more than 100 pages in/out during a one second interval will trigger process suspension.
+	* thrash-protect.py: Made symmetry between the blacklisting and whitelisting; it's done by weighting instead of "stop this process first" or "don't stop this process".
+	* thrash-protect.py: Minor bugfix - unfrozen processes didn't get logged properly due to a ProcessLookupFailure when running CONT on the session or group id.
+	* puppet/: includes an erb-template for a nrpe config file, though might not work outside our puppet environment (depends on $nagios::nrpe::nagios_plugin_dir to be set)
+
 2013-12-19  Tobias Brox  <tobias@redpill-linpro.com>
 	* thrash-protect.py: made support for --version at python2.7 and up, and split out the main logic into a subroutine.
 	* rpm: work in progress to build rpm files
