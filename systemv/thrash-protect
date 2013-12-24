@@ -41,7 +41,7 @@ case "$1" in
         stop
         ;;
   status)
-        status thrash-protect
+        status thrash-protect || exit 1
         ;;
   restart|reload|condrestart)
         stop
