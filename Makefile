@@ -9,8 +9,10 @@ ChangeLog.recent: ChangeLog
 	perl -pe 'if (/^\d\d\d\d-\d\d-\d\d/) { $$q++; exit if $$q>1; }' ChangeLog > ChangeLog.recent
 
 install: thrash-protect.py
-	install "thrash-protect.py" $(prefix)/sbin/$(pkgname)
-	if [ -d $(prefix)/lib/systemd/system ]; then install systemd/thrash-protect.service $(prefix)/lib/systemd/system ; else install systemv/thrash-protect "$(install_root)etc/init.d/thrash-protect" ; fi
+	install "thrash-protect.py" "$(prefix)/sbin/thrash-protect"
+	[ -d "$(prefix)/lib/systemd/system" ] && install systemd/thrash-protect.service "$(prefix)/lib/systemd/system"
+	[ -d "/etc/init" ] && install upstart/thrash-protect.conf "/etc/init/thrash-protect.conf"
+	[ -d "$(prefix)/lib/systemd/system" ] || [ -d "/etc/init" ] || install systemv/thrash-protect "/etc/init.d/thrash-protect"
 
 .tag.${version}: ChangeLog.recent
 	git status
