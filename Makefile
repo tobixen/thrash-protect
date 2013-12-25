@@ -5,6 +5,16 @@ export pkgname = "thrash-protect"
 ## can't do "thrash-protect.py --version" since it's unsupported in python versions lower than 2.7.
 export version ::= $(shell grep '__version__.*=' thrash-protect.py | cut -f2 -d'"')
 
+.PHONY: build install clean distclean rpm archlinux
+
+build:
+	@echo "MAKE BUILD: so far this project consists of a python prototype, no build needed"
+
+clean:
+	git clean -fd
+
+distclean: clean
+
 ChangeLog.recent: ChangeLog
 	perl -pe 'if (/^\d\d\d\d-\d\d-\d\d/) { $$q++; exit if $$q>1; }' ChangeLog > ChangeLog.recent
 
@@ -27,4 +37,3 @@ archlinux: .tag.${version} archlinux/PKGBUILD_ thrash-protect.py
 rpm: .tag.${version} rpm/thrash-protect.spec thrash-protect.py
 	${MAKE} -C $@ rpm
 
-.PHONY: install
