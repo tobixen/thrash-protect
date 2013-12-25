@@ -1,11 +1,13 @@
-export install_root = /
-export prefix = ${install_root}usr/
+export INSTALL_ROOT = /
+export PREFIX = ${INSTALL_ROOT}usr/
 export pkgname = "thrash-protect"
 
 ## can't do "thrash-protect.py --version" since it's unsupported in python versions lower than 2.7.
 export version ::= $(shell grep '__version__.*=' thrash-protect.py | cut -f2 -d'"')
 
-.PHONY: build install clean distclean rpm archlinux
+.PHONY: build install clean distclean rpm archlinux dist
+
+all: build
 
 build:
 	@echo "MAKE BUILD: so far this project consists of a python prototype, no build needed"
@@ -14,6 +16,9 @@ clean:
 	git clean -fd
 
 distclean: clean
+
+dist: distclean
+	tar czf ${pkgname}-${version}.tar.gz --transform='s,^,${pkgname}-${version}/,' *
 
 ChangeLog.recent: ChangeLog
 	perl -pe 'if (/^\d\d\d\d-\d\d-\d\d/) { $$q++; exit if $$q>1; }' ChangeLog > ChangeLog.recent
