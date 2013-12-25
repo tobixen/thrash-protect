@@ -10,16 +10,6 @@ way the host will never become so thrashed up that it won't be
 possible for a system administrator to ssh into the box and fix the
 problems, and in many cases the problems will resolve by themselves.
 
-Installation and usage
-----------------------
-
-"make install" will hopefully do the right thing.  Archlinux users may
-also install through AUR.  There is a spec file included so it should
-be possible to build rpm packages - but "make rpm" probably won't work
-out as for now.  Script has to be run as root user.  While it's
-possible to adjust configuration through environment variables, best
-practice is probably to run it without any configuration.
-
 Problem
 -------
 
@@ -34,6 +24,27 @@ through hardware button or remote management.
 It can be frustrating enough when it happens on a laptop or a work
 station; on a production server it's just unacceptable.
 
+If asking around on how to solve problems with thrashing, the typical
+answer would be one out of three:
+
+* Install enough memory!  In the real world, that's not always
+  trivial; there may be physical, logistical and economical
+  constraints delaying or stopping a memory upgrade.  It may also be
+  non-trivial to determinate how much memory one would need to install
+  to have "enough" of it.  
+
+* Disable swap.  Together with the advice "install enough memory" this
+  is really a safe way to prevent thrashing.  However, in many
+  situations swap can be a very good thing - i.e. if having processes
+  with memory leakages, aggressive usage of tmpfs, some applications
+  simply expects swap (keeping large datasets in memory), etc.
+  Enabling swap can be a lifesaver when a much-needed memory upgrade
+  is delayed.
+
+* Tune the swap amount to prevent thrashing.  This doesn't actually
+  work - even a modest amount of swap can be sufficient to cause
+  severe thrash situations
+
 Simple solution
 ---------------
 
@@ -41,17 +52,19 @@ This script will be checking the pswpin and pswpout variables in
 /proc/vmstat on configurable intervals (default: one second).  If both
 swap in and swap out is detected within the interval, the program will
 STOP the process that has had most major page faults since previous
-run - same if there has been significant amounts of swap in or swap
-out (default: 100 pages).  When the host has stopped swapping the host
-will resume one of the stopped processes.
+run.  The same will happen if there has been significant amounts of
+swap in or swap out (default: 100 pages).  When the host has stopped
+swapping the host will resume one of the stopped processes.
 
 The script creates a file on /tmp when there are frozen processes,
 nrpe can eventually be set up to monitor the existance of such a file
 as well as the existance of suspended processes.
 
-Important processes (say, sshd) can be whitelisted.  Note that the
-"whitelisting" is done by weighting - the intention is that if a
-whitelisted process is particularly nasty, it may still be stopped.
+Important processes (say, sshd) can be whitelisted, and processes
+known to be nasty or unimportant can be blacklisted.  Note that the
+"black/whitelisting" is done by weighting - randomly stopping
+blacklisted processes may not be sufficient to stop thrashing, and a
+whitelisted process may still be particularly nasty and stopped.
 
 With this approach, hopefully the most-thrashing processes will be
 slowed down sufficiently that it will always be possible to ssh into a
