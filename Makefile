@@ -1,4 +1,4 @@
-export INSTALL_ROOT = ""
+export INSTALL_ROOT = "$(DESTDIR)"
 export PREFIX = ${INSTALL_ROOT}/usr
 export pkgname = "thrash-protect"
 
