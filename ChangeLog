@@ -1,4 +1,5 @@
 2013-12-26  Tobias Brox  <tobias@redpill-linpro.com>
+	* general: bump of version number to 0.6.1
 	* general: work to create a .deb-package
 	* INSTALL.md: new file - extracted the practical information out from all the blah-blah in README.md
 	* README.md: even more blah-blah - now information on the alternatives to thrash-protect
