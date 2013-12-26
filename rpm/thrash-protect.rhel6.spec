@@ -1,5 +1,5 @@
 Name:           thrash-protect
-Version:        0.5.4.5
+Version:        0.6
 Release:        1%{?dist}
 Summary:        Simple-Stupid user-space program protecting a linux host from thrashing
 BuildArch:      noarch
