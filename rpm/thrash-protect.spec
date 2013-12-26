@@ -27,12 +27,12 @@ true
 mkdir -p $RPM_BUILD_ROOT/lib/systemd/system
 mkdir -p $RPM_BUILD_ROOT/sbin
 mkdir -p $RPM_BUILD_ROOT%{_defaultdocdir}/%{name}-%{version}
-make install prefix=$RPM_BUILD_ROOT
+make INSTALL_ROOT=$RPM_BUILD_ROOT
 
 
 %files
-/sbin/thrash-protect
-/lib/systemd/system/thrash-protect.service
+/usr/sbin/thrash-protect
+/usr/lib/systemd/system/thrash-protect.service
 
 %doc README.md ChangeLog
 

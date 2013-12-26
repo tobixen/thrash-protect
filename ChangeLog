@@ -1,3 +1,13 @@
+2013-12-26  Tobias Brox  <tobias@redpill-linpro.com>
+	* general: bump of version number to 0.6.1
+	* general: work to create a .deb-package
+	* INSTALL.md: new file - extracted the practical information out from all the blah-blah in README.md
+	* README.md: even more blah-blah - now information on the alternatives to thrash-protect
+	* Makefile: quite some bugfixes and work
+	* debian/*: debianization.
+	* systemv/thrash-protect: bugfix to get correct return code from "status"
+	* puppet/: puppet setup
+
 2013-12-20  Tobias Brox  <tobias@redpill-linpro.com>
 	* general: bumping version number to 0.6
 	* thrash-protect.py: Major fix - changed from using the "major page fault"-counter to using the "page swap in" and "page swap out" counters.  Bidirectional swap or more than 100 pages in/out during a one second interval will trigger process suspension.

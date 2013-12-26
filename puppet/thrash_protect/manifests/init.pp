@@ -1,18 +1,20 @@
 class thrash_protect (
   $enable=hiera('thrash_protect::enable', true)
   ) {
-  if ($enable) {
+  if ($enable and $enable != 'false') {
     package { 'thrash-protect':
       ensure => installed;
     }
     service { 'thrash-protect':
-      enable => true,
-      ensure => running;
+      enable     => true,
+      hasstatus  => true,
+      ensure     => running;
     }
   } else {
     service { 'thrash-protect':
-      enable => false,
-      ensure => stopped;
+      enable    => false,
+      hasstatus => true,
+      ensure    => stopped;
     }
   }
 

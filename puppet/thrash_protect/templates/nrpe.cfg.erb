@@ -1,0 +1,4 @@
+## If running "thrash-protect", it may be worth monitoring things like this:
+command[check_suspended_procs]=<%= nagios_plugin_dir %>/check_procs  -w1 -c3 -sT
+command[check_thrashprotect_freezefile]=<%= nagios_plugin_dir %>/check_file -s absent -f /tmp/thrash-protect-frozen-pid-list
+command[check_thrashprotect_stuck_freezefile]=<%= nagios_plugin_dir %>/check_file -s absent -f /tmp/thrash-protect-frozen-pid-list -a 5 -n crit
