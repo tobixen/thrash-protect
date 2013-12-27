@@ -1,3 +1,9 @@
+thrash-protect (0.6.2) UNRELEASED; urgency=low
+
+  * version bump
+
+ -- Tobias Brox <tobias@precise.puppet.linpro.no>  Thu, 26 Dec 2013 22:58:52 +0100
+
 thrash-protect (0.6) experimental; urgency=low
 
   * Initial .deb release
