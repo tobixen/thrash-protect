@@ -3,9 +3,9 @@ export PREFIX = ${INSTALL_ROOT}/usr
 export pkgname = "thrash-protect"
 
 ## can't do "thrash-protect.py --version" since it's unsupported in python versions lower than 2.7.
-export version ::= $(shell grep '__version__.*=' thrash-protect.py | cut -f2 -d'"')
+export version = $(shell grep '__version__.*=' thrash-protect.py | cut -f2 -d'"')
 
-.PHONY: build install clean distclean rpm archlinux dist release
+.PHONY: build install clean distclean rpm archlinux dist release ubuntu
 
 all: build
 
@@ -30,11 +30,8 @@ install: thrash-protect.py
 	[ -d "$(PREFIX)/lib/systemd/system" ] || [ -d "$(INSTALL_ROOT)/etc/init" ] || install systemv/thrash-protect "$(INSTALL_ROOT)/etc/init.d/thrash-protect"
 
 .tag.${version}: ChangeLog.recent
-	git status
-	cat ChangeLog.recent
-	git tag -s v${version} -F ChangeLog.recent
-	git push origin v${version}
-	touch .tag.${version}
+	if ! git show --oneline -s "v${version}" > /dev/null 2>&1; then git status ; cat ChangeLog.recent ; git tag -s "v${version}" -F ChangeLog.recent ; git push origin "v${version}" ; fi
+	touch ".tag.${version}"
 
 release: .tag.${version}
 
@@ -43,4 +40,17 @@ archlinux: .tag.${version} archlinux/PKGBUILD_ thrash-protect.py
 
 rpm: .tag.${version} rpm/thrash-protect.spec thrash-protect.py
 	${MAKE} -C $@ rpm
+
+## TODO: debian target (with systemv)
+
+## TODO: not tested
+ubuntu: .tag.${version} debian/changelog
+	rm -f debian/${pkgname}.init
+	dpkg-buildpackage
+
+debian: .tag.${version} debian/changelog
+	dpkg-buildpackage
+
+debian/changelog: .tag.${version}
+	dch --distribution=UNRELEASED -v ${version} "version bump"
 
