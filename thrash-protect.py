@@ -55,10 +55,14 @@ whitelist_score_divider = int(os.getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLI
 ## Unfreezing processes: Ratio of POP compared to GET (integer)
 unfreeze_pop_ratio = int(os.getenv('THRASH_PROTECT_UNFREEZE_POP_RATIO', '5'))
 
+## test_mode - if test_mode and not random.getrandbits(test_mode), then pretend we're thrashed
+test_mode = int(os.getenv('THRASH_PROTECT_TEST_MODE', '0'))
+
 import time
 import glob
 import os
 import signal
+import random ## for the test_mode
 
 
 
@@ -82,6 +86,8 @@ def get_swapcount():
 
 def check_swap_threshold(curr, prev):
     global swap_page_threshold
+    if test_mode and not random.getrandbits(test_mode):
+      return True
     ## will return True if we have bidirectional traffic to swap, or if we have
     ## a big one-directional flow of data
     return (curr[0]-prev[0]+1.0/swap_page_threshold) * (curr[1]-prev[1]+1.0/swap_page_threshold) > 1.0
@@ -111,6 +117,8 @@ def scan_processes():
             prev = pagefault_by_pid.get(pid, 0)
             pagefault_by_pid[pid] = majflt
             diff = majflt - prev
+            if test_mode:
+              diff += random.getrandbits(3)
             if cmd in cmd_blacklist:
                 diff *= blacklist_score_multiplier
             if cmd in cmd_whitelist:
