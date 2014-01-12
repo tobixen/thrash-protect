@@ -25,7 +25,7 @@ It can be frustrating enough when it happens on a laptop or a work
 station; on a production server it's just unacceptable.
 
 If asking around on how to solve problems with thrashing, the typical
-answer would be one out of three:
+answer would be one out of four:
 
 * Install enough memory!  In the real world, that's not always
   trivial; there may be physical, logistical and economical
@@ -34,16 +34,20 @@ answer would be one out of three:
   to have "enough" of it.  
 
 * Disable swap.  Together with the advice "install enough memory" this
-  is really a safe way to prevent thrashing.  However, in many
-  situations swap can be a very good thing - i.e. if having processes
-  with memory leakages, aggressive usage of tmpfs, some applications
-  simply expects swap (keeping large datasets in memory), etc.
-  Enabling swap can be a lifesaver when a much-needed memory upgrade
-  is delayed.
+  is really a safe way (and the only safe way) to prevent thrashing.
+  However, in many situations swap can be a very good thing - i.e. if
+  having processes with memory leakages, aggressive usage of tmpfs,
+  some applications simply expects swap (keeping large datasets in
+  memory), etc.  Enabling swap can be a lifesaver when a much-needed
+  memory upgrade is delayed.
 
 * Tune the swap amount to prevent thrashing.  This doesn't actually
   work - even a modest amount of swap can be sufficient to cause
-  severe thrash situations
+  severe thrash situations.
+
+* Restrict your processes with ulimit.  In general it makes sense, but
+  doesn't really help against the thrashing problem; if one wants to
+  use swap one will risk thrashing.
 
 Simple solution
 ---------------
@@ -51,10 +55,35 @@ Simple solution
 This script will be checking the pswpin and pswpout variables in
 /proc/vmstat on configurable intervals (default: one second).  If both
 swap in and swap out is detected within the interval, the program will
-STOP the process that has had most major page faults since previous
-run.  The same will happen if there has been significant amounts of
-swap in or swap out (default: 100 pages).  When the host has stopped
-swapping the host will resume one of the stopped processes.
+STOP the most nasty process.  The same will happen if there has been
+significant amounts of swap in or swap out (default: 100 pages).  When
+the host has stopped swapping the host will resume one of the stopped
+processes.
+
+Finding the most "nasty" process seems to be a bit non-trivial, as
+there is no per-process counters on swapin/swapout.  Perhaps it's
+possible to check the delta of the total swap pages used and sum it
+together with the number of page faults.  Currently three algorithms
+have been implemented and the script uses them in order:
+
+* Number of page faults.  This is non-ideal because a rogue process
+  gobbling up memory and swap through write-only operations won't
+  cause page faults.  Also, a "page fault" is not the same as swapin -
+  it may also happen when a program wants to access data that the
+  kernel has postponed loading from disk (typically program code -
+  hence one typically gets lots of page fault when starting some
+  relatively big application)
+
+* oom_score; intended to catch processes gobbling up memory without
+  making significant amounts of page faults.  It has some drawbacks -
+  it doesn't target the program behaviour "right now", and it will
+  give priority to parent pids - when suspending a process, it may not
+  help to simply suspend the parent process.
+
+* Last unfrozen pid.  Of course this can't work as a stand-alone
+  solution, but it's a very cheap operation and just the right thing
+  to do if the host started swapping heavily just after unfreezing
+  some pid.
 
 The script creates a file on /tmp when there are frozen processes,
 nrpe can eventually be set up to monitor the existance of such a file
@@ -113,6 +142,9 @@ management interface and the servers from being rebooted.  Best of
 all, I didn't need to do anything except adding a bit more swap and
 monitoring the situation - problem resolved itself thanks to this
 script.
+
+I've also been provocing thrashing situations by running some script
+that gobbles up memory.
 
 Other thoughts
 --------------

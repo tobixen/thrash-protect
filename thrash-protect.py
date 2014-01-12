@@ -20,7 +20,7 @@ try:
 except NameError:
   FileNotFoundError=IOError
 
-__version__ = "0.6.3"
+__version__ = "0.6.4"
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013, Tobias Brox"
 __license__ = "GPL"
@@ -40,7 +40,7 @@ import os
 interval = int(os.getenv('THRASH_PROTECT_INTERVAL', '1'))
 
 ## Number of acceptable page swaps during the above interval
-swap_page_threshold = int(os.getenv('THRASH_PROTECT_SWAP_PAGE_THRESHOLD', '100'))
+swap_page_threshold = int(os.getenv('THRASH_PROTECT_SWAP_PAGE_THRESHOLD', '1024'))
 
 ## After X number of major pagefaults, we should initiate a process scanning
 pgmajfault_scan_threshold = int(os.getenv('THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD', swap_page_threshold))
@@ -55,10 +55,17 @@ whitelist_score_divider = int(os.getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLI
 ## Unfreezing processes: Ratio of POP compared to GET (integer)
 unfreeze_pop_ratio = int(os.getenv('THRASH_PROTECT_UNFREEZE_POP_RATIO', '5'))
 
+## test_mode - if test_mode and not random.getrandbits(test_mode), then pretend we're thrashed
+test_mode = int(os.getenv('THRASH_PROTECT_TEST_MODE', '0'))
+
+#log = print
+log = lambda foo: None
+
 import time
 import glob
 import os
 import signal
+import random ## for the test_mode
 
 
 
@@ -82,15 +89,79 @@ def get_swapcount():
 
 def check_swap_threshold(curr, prev):
     global swap_page_threshold
+    global busy_runs
+    if test_mode and not random.getrandbits(test_mode):
+        busy_runs += 1
+        return True
     ## will return True if we have bidirectional traffic to swap, or if we have
     ## a big one-directional flow of data
-    return (curr[0]-prev[0]+1.0/swap_page_threshold) * (curr[1]-prev[1]+1.0/swap_page_threshold) > 1.0
+    ret = (curr[0]-prev[0]+1.0/swap_page_threshold) * (curr[1]-prev[1]+1.0/swap_page_threshold) > 1.0
+    if ret:
+        busy_runs += 1
+    elif busy_runs:
+        busy_runs -= 1
+    return ret
 
 def scan_processes():
+    log("scan_processes")
+    global scan_method_count
+    scan_method_count += 1
+    scan_methods = [ scan_processes_pagefaults, scan_processes_oom_score, find_last_unfrozen_process ]
+    ## TODO: this is not entirely safe.  All three methods may return None, and then we're in trouble (recursive infinite loop - will eventually yield an exception)
+    return scan_methods[scan_method_count % len(scan_methods)]() or scan_processes()
+
+def scan_processes_oom_score():
+    oom_scores = glob.glob('/proc/*/oom_score')
+    max = 0
+    worstpid = None
+    for fn in oom_scores:
+        try:
+            pid = int(fn.split('/')[2])
+        except ValueError:
+            continue
+        try:
+            with open(fn, 'r') as oom_score_file:
+                oom_score = int(oom_score_file.readline())
+            with open("/proc/%d/stat" % pid, 'r') as stat_file:
+                stats = stat_file.readline().split(' ')
+                state = stats[2]
+                if 'T' in state:
+                    log("oom_score: %s, cmd: %s, pid: %s, state: %s - no touch" % (oom_score, cmd, pid, state))
+                    continue
+                cmd = stats[1][1:].split('/')[0].split(')')[0]
+        except FileNotFoundError:
+            pass
+        if oom_score > 0:
+            log("oom_score: %s, cmd: %s, pid: %s" % (oom_score, cmd, pid))
+            if cmd in cmd_whitelist:
+                oom_score /= whitelist_score_divider
+            if cmd in cmd_blacklist:
+                oom_score *= blacklist_score_multiplier
+            if oom_score > max:
+                ## ignore self
+                if pid == os.getpid():
+                    continue
+                max = oom_score
+                worstpid = pid
+    log("oom scan completed - selected pid: %s" % worstpid)
+    return worstpid
+
+def find_last_unfrozen_process():
+    """
+    If a process was just resumed and the system start thrashing again, it would probably be smart to freeze that process again.  This is also a very cheap operation
+    """
+    global last_unfrozen_pid
+    if last_unfrozen_pid in frozen_pids:
+      return None
+    log("last unfrozen process return - selected pid: %s" % last_unfrozen_pid)
+    return last_unfrozen_pid
+
+def scan_processes_pagefaults():
     ## TODO: consider using oom_score instead of major page faults?
     ## TODO: garbage collection
     global pagefault_by_pid
     global last_scan_pagefaults
+    global busy_runs
     last_scan_pagefaults = get_pagefaults()
     stat_files = glob.glob('/proc/*/stat')
     max = 0
@@ -106,11 +177,15 @@ def scan_processes():
                 majflt = int(stats[11])
                 cmd = stats[1][1:].split('/')[0].split(')')[0]
         except FileNotFoundError:
-            pass
+            continue
         if majflt > 0:
             prev = pagefault_by_pid.get(pid, 0)
             pagefault_by_pid[pid] = majflt
             diff = majflt - prev
+            if test_mode:
+              diff += random.getrandbits(3)
+            if not diff:
+                continue
             if cmd in cmd_blacklist:
                 diff *= blacklist_score_multiplier
             if cmd in cmd_whitelist:
@@ -121,14 +196,18 @@ def scan_processes():
                     continue
                 max = diff
                 worstpid = pid
-    return worstpid
+            log("pagefault score: %s, cmd: %s, pid: %s" % (diff, cmd, pid))
+    log("pagefault scan completed - selected pid: %s" % worstpid)
+    ## give a bit of protection against whitelisted processes being stopped
+    if max > 1.0 / (busy_runs + 1.0):
+      return worstpid
 
 ## hard coded logic as for now.  One state file and one log file.
 ## state file can be monitored, i.e. through nagios.  todo: support
 ## smtp etc.
 def log_frozen(pid):
     with open("/var/log/thrash-protect.log", 'a') as logfile:
-        logfile.write("%s - frozen pid %s\n" % (time.time(), pid))
+        logfile.write("%s - frozen pid %s - frozen list: %s\n" % (time.time(), pid, frozen_pids))
     with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
         logfile.write(" ".join([str(x) for x in frozen_pids]))
 
@@ -155,7 +234,8 @@ def freeze_something():
         os.kill(pid_to_freeze, signal.SIGSTOP)
     except ProcessLookupError:
         return
-    frozen_pids.append(pid_to_freeze)
+    if not pid_to_freeze in frozen_pids:
+        frozen_pids.append(pid_to_freeze)
     ## Logging after freezing - as logging itself may be resource- and timeconsuming.
     ## Perhaps we should even fork it out.
     log_frozen(pid_to_freeze)
@@ -164,6 +244,7 @@ def freeze_something():
 def unfreeze_something():
     global frozen_pids
     global num_unfreezes
+    global last_unfrozen_pid
     if frozen_pids:
         ## queue or stack?  Seems like both approaches are problematic
         if num_unfreezes % unfreeze_pop_ratio:
@@ -178,7 +259,7 @@ def unfreeze_something():
             ## TODO: we're doing some simple assumptions here; 
             ## 1) this
             ## problem only applies to process group id or session id
-            ## (we probably need to walk through all the parents)
+            ## (we probably need to walk through all the parents - or maybe just the ppid?)
             ## 2) it is harmless to CONT the pgid and sid.  This may not always be so.
             ## To correct this, we may need to traverse parents
             ## (peeking into /proc/<pid>/status recursively) prior to freezing the proc.
@@ -188,12 +269,15 @@ def unfreeze_something():
         except ProcessLookupError:
             ## ignore failure
             pass
+        last_unfrozen_pid = pid_to_unfreeze
         log_unfrozen(pid_to_unfreeze)
         num_unfreezes += 1
 
 def thrash_protect(args=None):
     global last_observed_swapcount
     global last_scan_pagefaults
+    global busy_runs
+    global last_time
     while True:
         current_swapcount = get_swapcount()
         current_pagefaults = get_pagefaults()
@@ -202,18 +286,34 @@ def thrash_protect(args=None):
         elif current_swapcount == last_observed_swapcount:
             unfreeze_something()
         if current_pagefaults - last_scan_pagefaults > pgmajfault_scan_threshold:
-            scan_processes()
+            scan_processes_pagefaults()
         last_observed_swapcount = current_swapcount
-        time.sleep(interval)
+
+        ## If the script is "busy", reduce the interval.
+        ## TODO: this algorithm may be tuned a bit
+        delay = time.time() - last_time
+        log("delay in processing: %s" % delay)
+        last_time = time.time()
+        if delay < interval / 10.0:
+            sleep_interval = (interval / (busy_runs+1))
+            log("interval: %s busy_runs: %s sleep for: %s time: %s" % (interval, busy_runs, sleep_interval, time.time()))
+            time.sleep(sleep_interval)
+            delay = time.time() - last_time - sleep_interval
+            last_time = time.time()
+            log("delay in sleeping: %s" % delay)
 
 if __name__ == '__main__':
     ## Globals
     last_observed_swapcount = get_swapcount()
     last_scan_pagefaults = 0
+    last_unfrozen_pid = None
+    scan_method_count = 0
     pagefault_by_pid = {}
     frozen_pids = []
     num_freezes = 0
     num_unfreezes = 0
+    busy_runs = 0
+    last_time = time.time()
 
     try:
         import argparse
