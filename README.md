@@ -144,7 +144,13 @@ monitoring the situation - problem resolved itself thanks to this
 script.
 
 I've also been provocing thrashing situations by running some script
-that gobbles up memory.
+that gobbles up memory.  Unfortunately thrash-protect isn't fail-safe
+- sometimes the thrash_bot.py seems to win, particularly if starting
+several instance of it.  I believe it's due to thrash-protect itself
+being swapped out and the system being too thrashed for it to regain
+control.  I think it's either needed to optimize it a lot, perhaps
+rewrite it in C, or just be optimistic and assume that such a worst
+case scenario won't happen in real life.
 
 Other thoughts
 --------------
@@ -172,6 +178,8 @@ Drawbacks and problems
   environment, but there exists no documentation.  I've always been
   running it without any special configuration.
 
+* In extreme situations this program will get too much swapped out
+
 Roadmap
 -------
 
@@ -179,7 +187,21 @@ Focus up until 1.0 is deployment, testing, production-hardening,
 testing, testing, bugfixing and eventually some tweaking but only if
 it's _really_ needed.  Some things that should be considered:
 
-* Better handling of the parent suspension problemacy
+* More tweaking / troubleshooting situations were thrash-bot wins over thrash-protect
+
+* look into init scripts, startup script and systemd script to ensure program is run with "nice -n -20"
+
+* Look into init scripts, startup script and systemd script to allow for site-specific configuration
+
+* proper logging
+
+* Fix puppet manifest to accept config params
+
+* look into the systemd service config, can the cgroup swappiness configuration be tweaked?  
+
+* Rewrite to C for better control of the memory footprint
+
+* Reproduce parent suspension problems and fix properly
 
 * Graceful handling of SIGTERM (any suspended processes should be reanimated)
 
@@ -187,7 +209,7 @@ it's _really_ needed.  Some things that should be considered:
 
 * Improved logging and error handling
 
-* More work is needed on getting "make rpm" and "make debian" to work.
+* More work is needed on getting "make rpm" and "make debian" to work
 
 * Package should include munin plugins
 

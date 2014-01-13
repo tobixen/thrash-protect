@@ -1,3 +1,16 @@
+2014-01-13  Tobias Brox  <tobias@redpill-linpro.com>
+	* general: bump of version number to 0.6.4
+	* tests/: new directory, unfortunately rather empty
+	* tests/thrash-bot.py: improved the thrash-bot, it consumes far less CPU and gobbles far more memory now
+	* thrash-protect.py (general): tweaks and bugfixes to handle the new thrash_bot.py.  unfortunately I added lot more complexity. :-(
+	* thrash-protect.py (general): debug hooks for randomly stopping processes even if there is no thrashing going on
+	* thrash-protect.py (scan_processes): modified from logic to find the process with most pagefaults to "meta-logic" selecting an algorithm for finding which process to stop.
+	* thrash-protect.py (scan_processes_pagefaults): old logics from scan_processes
+	* thrash-protect.py (scan_processes_pagefaults): various bugfixes
+	* thrash-protect.py (scan_processes_pagefaults): added a threshold to make it less likely whitelisted processes will be stopped
+	* thrash-protect.py (scan_processes_oom_score): new function to select the process with highest oom_score
+	* thrash-protect.py (find_last_unfrozen_process): returns the pid of the last unfrozen process, if it's still running
+
 2013-12-26  Tobias Brox  <tobias@redpill-linpro.com>
 	* general: bump of version number to 0.6.3; only "meta"-changes (Makefile, etc)
 	* general: successfully created a .deb-package that has been deployed on ubuntu precise
