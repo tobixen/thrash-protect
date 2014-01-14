@@ -3,12 +3,12 @@ thrash-protect
 
 Simple-Stupid user-space program protecting a linux host from thrashing.
 
-The program will on fixed intervals check if there has been a lot of
-swapping since previous run, and if there are a lot of swapping, the
-program with the most page faults will be temporary suspended.  This
-way the host will never become so thrashed up that it won't be
-possible for a system administrator to ssh into the box and fix the
-problems, and in many cases the problems will resolve by themselves.
+The script attempts to detect thrashing situations and temporary stop
+rogue processes, hopefully before things get too much out of control,
+hopefully giving a sysadm enough time to investigate and handle the
+situation if there is a sysadm around, and if not - hopefully allowing
+boxes to become just slightly degraded instead of completely thrashed,
+all until the offending processes ends or the oom ticket kicks in.
 
 Problem
 -------
@@ -107,41 +107,52 @@ reimplement in C for smallest possible footstep, memory consumption
 and fastest possible action - though I'm not sure if it's worth the
 effort.
 
-Tweaking
---------
+Tweaks implemented
+------------------
 
-I realized that both a queue approach and a stack approach has its
-problems (the stack may permanently freeze relatively innocent
-processes, the queue is inefficient and causes quite much paging) so I
-made some logic "get from the head of the list sometimes, pop from the
-tail most of the times".  I guess there are a lot of other ways to
-tweak and tune this script, though I'm worried that the simplicity
-will go down the drain if doing too much tweaking.
+I guess there are a lot of ways to tweak and tune this script, though
+I'm worried that the simplicity will go down the drain if doing too
+much tweaking.  After experimenting with the "thrash-bot.py"-script, I
+realized some tweaking was necessary though.
 
-Selecting the process only by maj_page_faults may not be very
-accurate.  Should probably use other measurements instead or in
-addition, such as /proc/*/oom_score
+I very soon realized that both a queue approach and a stack approach
+on the frozen pid list has its problems (the stack may permanently
+freeze relatively innocent processes, the queue is inefficient and
+causes quite much paging) so I made some logic "get from the head of
+the list sometimes, pop from the tail most of the times".
+
+Up until and including 0.6 only delta maj_page_faults when deciding
+which process to STOP.  More algorithms was implemented in 0.7.
+
+If the script resumes some process and the host immediately starts
+thrashing again, it's probably smart to refreeze the same process,
+hence a third method for discovering which pid to freeze was created.
+This is also a very cheap operation, so it's always the first method
+run after unfreezing a process.
 
 It's important to do some research to learn if the program would
-benefit significantly from being rewritten into C.  If not, the python
-script should be tweaked, refactored and optimized a bit (i.e. using
-re instead of split, garbage collection of old processes from the
+benefit significantly from being rewritten into C before doing too
+much tweaking on the python script.  If not, the python script should
+be tweaked, refactored and optimized a bit (i.e. using re instead of
+split, skip floats and use ints instead, look through and simplify the
+algorithm where possible, garbage collection of old processes from the
 pid/pagefault dict, read more options, improved log handling, etc).
 
 Experiences
 -----------
 
-This script is not really production-ready, but still I would
-recommend to give it a shot as a temporary stop-gap if you have a
-server that have had thrashing problem earlier, and where the problem
-cannot be solved (in a timely manner) by adding more memory.
+As of 2014-01 the script is not really production-ready, but still I
+would recommend to give it a shot as a temporary stop-gap-solution if
+you have a server that have had thrashing problem earlier, and where
+the problem cannot be solved (in a timely manner) by adding more
+memory or shrinking the swap partition.
 
 This script has been run both on my workstation and on production
 servers and has saved me from several logins into the remote
 management interface and the servers from being rebooted.  Best of
-all, I didn't need to do anything except adding a bit more swap and
-monitoring the situation - problem resolved itself thanks to this
-script.
+all, in some cases I didn't need to do anything except adding a bit
+more swap and monitoring the situation - problem resolved itself
+thanks to this script.
 
 I've also been provocing thrashing situations by running some script
 that gobbles up memory.  Unfortunately thrash-protect isn't fail-safe
@@ -150,14 +161,18 @@ several instance of it.  I believe it's due to thrash-protect itself
 being swapped out and the system being too thrashed for it to regain
 control.  I think it's either needed to optimize it a lot, perhaps
 rewrite it in C, or just be optimistic and assume that such a worst
-case scenario won't happen in real life.
+case scenario won't happen in real life (... and I haven't managed to
+reproduce it in 0.7 fwiw).
 
 Other thoughts
 --------------
 
-This should eventually be a kernel-feature - ultra slow context 
-switching between swapping processes would probably "solve" a majority 
-of thrashing-issues.
+This should eventually be a kernel-feature - ultra slow context
+switching between swapping processes would probably "solve" a majority
+of thrashing-issues.  In a majority of thrashing scenarioes the
+problem is too fast context switching between processes; this causes a
+very insignificant amount of CPU cycles to be actually be spent on the
+process, while the very most time is spent swapping between processes.
 
 Drawbacks and problems
 ----------------------
@@ -178,16 +193,17 @@ Drawbacks and problems
   environment, but there exists no documentation.  I've always been
   running it without any special configuration.
 
-* In extreme situations this program will get too much swapped out
+* In extreme situations this program will get too much swapped out,
+  and the box may become "totally thrashed".
 
 Roadmap
 -------
 
 Focus up until 1.0 is deployment, testing, production-hardening,
 testing, testing, bugfixing and eventually some tweaking but only if
-it's _really_ needed.  Some things that should be considered:
+it's _really_ needed.  Some things that may be considered before 1.0:
 
-* More tweaking / troubleshooting situations were thrash-bot wins over thrash-protect
+* More "lab testing", and research on possible situations were thrash-bot wins over thrash-protect
 
 * look into init scripts, startup script and systemd script to ensure program is run with "nice -n -20"
 
@@ -198,8 +214,6 @@ it's _really_ needed.  Some things that should be considered:
 * Fix puppet manifest to accept config params
 
 * look into the systemd service config, can the cgroup swappiness configuration be tweaked?  
-
-* Rewrite to C for better control of the memory footprint
 
 * Reproduce parent suspension problems and fix properly
 
@@ -212,4 +226,10 @@ it's _really_ needed.  Some things that should be considered:
 * More work is needed on getting "make rpm" and "make debian" to work
 
 * Package should include munin plugins
+
+Things that eventually may go into 2.0:
+
+* Replace floats with ints
+
+* Rewrite to C for better control of the memory footprint
 

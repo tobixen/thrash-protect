@@ -1,5 +1,10 @@
+2014-01-14  Tobias Brox  <tobias@redpill-linpro.com>
+	* general: version number bump - there shouldn't have been any 0.6.4, it should have been released as 0.7.
+	* README.md: some minor docfixes
+	* tests/thrash-bot.py: a bit of confusion on what version of this script I actually used when I managed to thrash the system.  At least now it seems to be eating up memory very fast instead of just spinning CPU.
+
 2014-01-13  Tobias Brox  <tobias@redpill-linpro.com>
-	* general: bump of version number to 0.6.4
+	* general: bump of version number to 0.6.4 (post-script: this was a mistake - correct version number should have been 0.7).
 	* tests/: new directory, unfortunately rather empty
 	* tests/thrash-bot.py: improved the thrash-bot, it consumes far less CPU and gobbles far more memory now
 	* thrash-protect.py (general): tweaks and bugfixes to handle the new thrash_bot.py.  unfortunately I added lot more complexity. :-(
