@@ -20,7 +20,7 @@ try:
 except NameError:
   FileNotFoundError=IOError
 
-__version__ = "0.7"
+__version__ = "0.7.1"
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013, Tobias Brox"
 __license__ = "GPL"
@@ -97,6 +97,7 @@ def check_swap_threshold(curr, prev):
     ## will return True if we have bidirectional traffic to swap, or if we have
     ## a big one-directional flow of data
     ret = (curr[0]-prev[0]+1.0/swap_page_threshold) * (curr[1]-prev[1]+1.0/swap_page_threshold) > 1.0
+    ## Increase or decrese the busy-counter
     if ret:
         busy_runs += 1
     elif busy_runs:
@@ -301,25 +302,35 @@ def thrash_protect(args=None):
         current_swapcount = get_swapcount()
         current_pagefaults = get_pagefaults()
         busy = check_swap_threshold(current_swapcount, last_observed_swapcount)
+
+        ## If we're thrashing, then freeze something.
         if busy:
             freeze_something()
         elif not busy_runs and current_swapcount == last_observed_swapcount:
+            ## If no swapping has been observed for a while then unfreeze something.
             scan_method_count = 0
             unfreeze_something()
-        if current_pagefaults - last_scan_pagefaults > pgmajfault_scan_threshold:
-            scan_processes_pagefaults()
+            if current_pagefaults - last_scan_pagefaults > pgmajfault_scan_threshold:
+                ## If we've had a lot of major page faults, refresh our state
+                ## on major page faults.
+                scan_processes_pagefaults()
         last_observed_swapcount = current_swapcount
 
-        ## If the script is "busy", reduce the interval.
-        ## TODO: this algorithm may be tuned a bit
+        ## If the script is significantly delayed it's most likely due to
+        ## thrashing, and we should increase the busy counter and sleep less.
         delay = time.time() - last_time
         debug("delay in processing: %s" % delay)
-        ## if delay is significant, bump busy_runs.  TODO: hard-coded constants
+        ## if delay is significant, bump busy_runs.  TODO: hard-coded
+        ## constants ... should be moved to configuration
         if delay > interval/16.0:
             busy_runs += 1
         last_time = time.time()
         debug("interval: %s busy_runs: %s time: %s frozen pids: %s" % (interval, busy_runs, time.time(), frozen_pids))
+
+        ## If we haven't been busy for a while, or if this run apparently was
+        ## non-busy, then sleep a bit.
         if not busy_runs or not busy:
+            ## TODO: bitshifting would probably be better;  sleep_interval_microseconds = interval_microseconds >> busy_runs
             sleep_interval = interval/(busy_runs + 1.0)
             debug("going to sleep %s" % sleep_interval)
             time.sleep(sleep_interval)

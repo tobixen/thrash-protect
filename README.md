@@ -53,26 +53,24 @@ Simple solution
 ---------------
 
 This script will be checking the pswpin and pswpout variables in
-/proc/vmstat on configurable intervals (default: one second).  If both
-swap in and swap out is detected within the interval, the program will
-STOP the most nasty process.  The same will happen if there has been
-significant amounts of swap in or swap out (default: 100 pages).  When
-the host has stopped swapping the host will resume one of the stopped
-processes.
+/proc/vmstat on configurable intervals.  If both swap in and swap out
+is detected within the interval, the program will STOP the most nasty
+process.  The same will happen if there has been significant amounts
+of swap in or swap out.  When the host has stopped swapping the host
+will resume one of the stopped processes.  If the host starts swapping
+again, the last resumed PID will be refrozen.
 
 Finding the most "nasty" process seems to be a bit non-trivial, as
 there is no per-process counters on swapin/swapout.  Perhaps it's
 possible to check the delta of the total swap pages used and sum it
 together with the number of page faults.  Currently three algorithms
-have been implemented and the script uses them in order:
+have been implemented and the script uses them in this order:
 
-* Number of page faults.  This is non-ideal because a rogue process
-  gobbling up memory and swap through write-only operations won't
-  cause page faults.  Also, a "page fault" is not the same as swapin -
-  it may also happen when a program wants to access data that the
-  kernel has postponed loading from disk (typically program code -
-  hence one typically gets lots of page fault when starting some
-  relatively big application)
+* Last unfrozen pid, if it's still running.  Of course this can't work
+  as a stand-alone solution, but it's a very cheap operation and just
+  the right thing to do if the host started swapping heavily just
+  after unfreezing some pid - hence it's always the first algorithm to
+  run after unfreezing some pid.
 
 * oom_score; intended to catch processes gobbling up memory without
   making significant amounts of page faults.  It has some drawbacks -
@@ -80,10 +78,16 @@ have been implemented and the script uses them in order:
   give priority to parent pids - when suspending a process, it may not
   help to simply suspend the parent process.
 
-* Last unfrozen pid.  Of course this can't work as a stand-alone
-  solution, but it's a very cheap operation and just the right thing
-  to do if the host started swapping heavily just after unfreezing
-  some pid.
+* Number of page faults.  This is non-ideal because a rogue process
+  gobbling up memory and swap through write-only operations won't
+  cause page faults.  Also, a "page fault" is not the same as swapin -
+  it may also happen when a program wants to access data that the
+  kernel has postponed loading from disk (typically program code -
+  hence one typically gets lots of page fault when starting some
+  relatively big application).  The worst problem with this approach
+  is that it requires state about every process to be stored in
+  memory, this memory may be swapped out, and if the box is really
+  thrashed it may take forever to get through this algorithm.
 
 The script creates a file on /tmp when there are frozen processes,
 nrpe can eventually be set up to monitor the existance of such a file
