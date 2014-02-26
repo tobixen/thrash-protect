@@ -1,3 +1,7 @@
+2014-02-26  Tobias Brox  <tobias@redpill-linpro.com>
+	* README.md - elaborated a bit on the drawbacks/problems observed
+	* thrash-protect.py (thrash_protect): doing a best-effort on running mlockall()
+
 2014-01-14  Tobias Brox  <tobias@redpill-linpro.com>
 	* general: version number bump - there shouldn't have been any 0.6.4, it should have been released as 0.7.
 	* README.md: some minor docfixes
