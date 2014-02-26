@@ -66,6 +66,7 @@ import time
 import glob
 import os
 import signal
+import logging
 import random ## for the test_mode
 
 
@@ -297,6 +298,14 @@ def thrash_protect(args=None):
     global last_time
     global frozen_pids
     global scan_method_count
+
+    ## A best-effort attempt on running mlockall()
+    try:
+        import ctypes
+        assert(not ctypes.cdll.LoadLibrary('libc.so.6').mlockall(ctypes.c_int(3)))
+    except:
+        logging.warning("failed to do mlockall() - this makes the program vulnerable of being swapped out in an extreme thrashing event", exc_info=True)
+
     while True:
         busy = False
         current_swapcount = get_swapcount()

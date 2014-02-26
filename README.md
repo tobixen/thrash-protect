@@ -183,22 +183,26 @@ Drawbacks and problems
 
 * Some parent processes may behave unexpectedly when the children gets
   suspended - particularly, the suspension of interactive programs
-  under the login shell (say, "less") may be annoying.
+  under the login shell (say, "less") may be annoying.  Observed
+  situation: starting a minecraft server from an interactive bash
+  session, if it gets suspended it cannot be resumed with "kill -CONT"
+  as it depends on being run in the foreground.
 
-* I've observed situations where parent processes also have gone into
-  suspend-mode and been stuck there even as the child process got
-  resumed.  I've done a quick work-around on this by always running
-  SIGCONT on the session process id and group process id.  This may be
-  harmful if you're actively using SIGSTOP on processes having
-  children.
+* I've observed situations where parent processes automatically have
+  gone into suspend-mode as the children got suspended and been stuck
+  there even as the child process got resumed.  I've done a quick
+  work-around on this by always running SIGCONT on the session process
+  id and group process id.  This may be harmful if you're actively
+  using SIGSTOP on processes having children.
 
 * This was supposed to be a rapid prototype, so it doesn't recognize
   any options.  Configuration settings can be given through OS
   environment, but there exists no documentation.  I've always been
   running it without any special configuration.
 
-* In extreme situations this program will get too much swapped out,
-  and the box may become "totally thrashed".
+* Usage of mlockall should be made optional.  On a system with small
+  amounts of RAM (i.e. half a gig) thrash_protect itself can consume
+  significant amounts of memory.
 
 Roadmap
 -------
@@ -207,7 +211,9 @@ Focus up until 1.0 is deployment, testing, production-hardening,
 testing, testing, bugfixing and eventually some tweaking but only if
 it's _really_ needed.  Some things that may be considered before 1.0:
 
-* More "lab testing", and research on possible situations were thrash-bot wins over thrash-protect
+* More "lab testing", and research on possible situations were thrash-bot wins over thrash-protect.  Verify that the mlockall() actually works.
+
+* Tune for lower memory consumption
 
 * look into init scripts, startup script and systemd script to ensure program is run with "nice -n -20"
 
