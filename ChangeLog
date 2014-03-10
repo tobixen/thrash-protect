@@ -1,3 +1,7 @@
+2014-03-10  Tobias Brox  <tobias@redpill-linpro.com>
+        * thrash-protect.py: found a silly print statement left behind from earlier debug rounds.
+	* thrash-protect.py: bumped the version (patchlevel)
+
 2014-02-26  Tobias Brox  <tobias@redpill-linpro.com>
 	* README.md - elaborated a bit on the drawbacks/problems observed
 	* thrash-protect.py (thrash_protect): doing a best-effort on running mlockall()
