@@ -113,7 +113,7 @@ def scan_processes():
 
     ## a for loop here to make sure we fall back on the next method if the first method fails to find anything.
     for i in range(0,len(scan_methods)):
-        print("scan method: %s" % (scan_method_count % len(scan_methods)))
+        debug("scan method: %s" % (scan_method_count % len(scan_methods)))
         ret = scan_methods[scan_method_count % len(scan_methods)]()
         scan_method_count += 1
         if ret:
