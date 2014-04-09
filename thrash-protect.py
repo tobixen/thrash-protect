@@ -46,8 +46,7 @@ swap_page_threshold = int(os.getenv('THRASH_PROTECT_SWAP_PAGE_THRESHOLD', '512')
 pgmajfault_scan_threshold = int(os.getenv('THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD', swap_page_threshold))
 
 ## process name whitelist 
-cmd_whitelist = os.getenv('THRASH_PROTECT_CMD_WHITELIST', '')
-cmd_whitelist = cmd_whitelist.split(' ') if cmd_whitelist else ['sshd', 'bash', 'xinit', 'X', 'spectrwm', 'screen', 'SCREEN', 'mutt', 'ssh', 'xterm', 'rxvt', 'urxvt']
+cmd_whitelist = ['sshd', 'bash', 'screen', 'SCREEN', 'mutt', 'ssh', 'xterm', 'rxvt', 'urxvt']
 cmd_blacklist = os.getenv('THRASH_PROTECT_CMD_BLACKLIST', '').split(' ')
 blacklist_score_multiplier = int(os.getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', '16'))
 whitelist_score_divider = int(os.getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', str(blacklist_score_multiplier*4)))
