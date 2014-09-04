@@ -10,6 +10,9 @@ situation if there is a sysadm around, and if not - hopefully allowing
 boxes to become just slightly degraded instead of completely thrashed,
 all until the offending processes ends or the oom killer kicks in.
 
+As of 2014-09, the development seems to have stagnated - for the very
+simple reason that it seems to work well enough for me.
+
 Problem
 -------
 
@@ -145,38 +148,23 @@ pid/pagefault dict, read more options, improved log handling, etc).
 Experiences
 -----------
 
-As of 2014-01 the script is not really production-ready, but still I
-would recommend to give it a shot as a temporary stop-gap-solution if
-you have a server that have had thrashing problem earlier, and where
-the problem cannot be solved (in a timely manner) by adding more
-memory or shrinking the swap partition.
+As of 2014-09, this script has been run on several production systems
+and some workstations/laptops for almost a year without problems, it
+has definitively saved us from several power-cyclings.  Best of all,
+in most of the cases I haven't had to do anything - except, under some
+circumstances, I had to add more swap space.  Instead of a whole
+server or VM being thrashed beyond rescue some "badass" processes have
+been peacefully and temporary suspended without anyone noticing, and
+eventually the situation has resolved itself.  Hence I like to have it
+running on any system having any kind of swap capacity mounted up.
+Anyway, the script hasn't been through any thorough peer-review, and
+it hasn't been deployed to many systems yet - don't blame me if you
+start up this script and anything goes kaboom.
 
-This script has been run both on my workstation and on production
-servers and has saved me from several logins into the remote
-management interface and the servers from being rebooted.  Best of
-all, in some cases I didn't need to do anything except adding a bit
-more swap and monitoring the situation - problem resolved itself
-thanks to this script.
-
-I've also been provocing thrashing situations by running some script
-that gobbles up memory.  Unfortunately thrash-protect isn't fail-safe
-- sometimes the thrash_bot.py seems to win, particularly if starting
-several instance of it.  I believe it's due to thrash-protect itself
-being swapped out and the system being too thrashed for it to regain
-control.  I think it's either needed to optimize it a lot, perhaps
-rewrite it in C, or just be optimistic and assume that such a worst
-case scenario won't happen in real life (... and I haven't managed to
-reproduce it in 0.7 fwiw).
-
-Other thoughts
---------------
-
-This should eventually be a kernel-feature - ultra slow context
-switching between swapping processes would probably "solve" a majority
-of thrashing-issues.  In a majority of thrashing scenarioes the
-problem is too fast context switching between processes; this causes a
-very insignificant amount of CPU cycles to be actually be spent on the
-process, while the very most time is spent swapping between processes.
+I would strongly recommend to give this script a shot as a temporary
+stop-gap-solution if you have a server that have had thrashing problem
+earlier, and where the problem cannot be solved (in a timely manner)
+by adding more memory or shrinking the swap partition.
 
 Drawbacks and problems
 ----------------------
@@ -186,7 +174,10 @@ Drawbacks and problems
   under the login shell (say, "less") may be annoying.  Observed
   situation: starting a minecraft server from an interactive bash
   session, if it gets suspended it cannot be resumed with "kill -CONT"
-  as it depends on being run in the foreground.
+  as it depends on being run in the foreground (workaround: spawn
+  minecraft i.e. from screen rather than bash).  I've also received
+  one report that this script may have interphered with the condor job
+  control system.
 
 * I've observed situations where parent processes automatically have
   gone into suspend-mode as the children got suspended and been stuck
@@ -204,6 +195,16 @@ Drawbacks and problems
   amounts of RAM (i.e. half a gig) thrash_protect itself can consume
   significant amounts of memory.
 
+Other thoughts
+--------------
+
+This should eventually be a kernel-feature - ultra slow context
+switching between swapping processes would probably "solve" a majority
+of thrashing-issues.  In a majority of thrashing scenarioes the
+problem is too fast context switching between processes; this causes a
+very insignificant amount of CPU cycles to be actually be spent on the
+process, while the very most time is spent swapping between processes.
+
 Roadmap
 -------
 
@@ -216,6 +217,8 @@ it's _really_ needed.  Some things that may be considered before 1.0:
 * Tune for lower memory consumption
 
 * look into init scripts, startup script and systemd script to ensure program is run with "nice -n -20"
+
+* awareness of troublesome parents, i.e. bash.  When stopping a process running under a bash shell, the shell should be stopped first, and resumed after the process has been resumed.
 
 * Look into init scripts, startup script and systemd script to allow for site-specific configuration
 
