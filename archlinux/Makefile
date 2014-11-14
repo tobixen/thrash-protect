@@ -3,7 +3,7 @@ PKGBUILD: PKGBUILD_ ../.tag.${version}
 	makepkg -g >> PKGBUILD
 
 "${pkgname}-${version}-1.src.tar.gz": PKGBUILD
-	makepkg --source
+	mkaurball
 
 archlinux: "${pkgname}-${version}-1.src.tar.gz"
-	burp -C${HOME}/.config/burp.cookies -k "${pkgname}-${version}-1.src.tar.gz"
+	burp -C${HOME}/.config/burp.cookies "${pkgname}-${version}-1.src.tar.gz"
