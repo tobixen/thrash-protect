@@ -64,7 +64,7 @@ class config:
 
     ## process name whitelist 
     cmd_whitelist = os.getenv('THRASH_PROTECT_CMD_WHITELIST', '')
-    cmd_whitelist = cmd_whitelist.split(' ') if cmd_whitelist else ['sshd', 'bash', 'xinit', 'X', 'spectrwm', 'screen', 'SCREEN', 'mutt', 'ssh', 'xterm', 'rxvt', 'urxvt']
+    cmd_whitelist = cmd_whitelist.split(' ') if cmd_whitelist else ['sshd', 'bash', 'xinit', 'X', 'spectrwm', 'screen', 'SCREEN', 'mutt', 'ssh', 'xterm', 'rxvt', 'urxvt', 'Xorg.bin', 'systemd-journal']
     cmd_blacklist = os.getenv('THRASH_PROTECT_CMD_BLACKLIST', '').split(' ')
     blacklist_score_multiplier = int(os.getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', '16'))
     whitelist_score_divider = int(os.getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', str(blacklist_score_multiplier*4)))
@@ -76,8 +76,8 @@ class config:
     test_mode = int(os.getenv('THRASH_PROTECT_TEST_MODE', '0'))
 
 ## Poor mans logging.  Should eventually set up the logging module
-debug = print
-#debug = lambda foo: None
+#debug = print
+debug = lambda foo: None
 
 class SystemState:
     """A "system state" is a collection of observed and calculated
@@ -113,6 +113,7 @@ class SystemState:
         return tuple(ret)
 
     def check_swap_threshold(self, prev):
+        self.cooldown_counter = prev.cooldown_counter
         if config.test_mode and not random.getrandbits(config.test_mode):
             self.cooldown_counter = prev.cooldown_counter+1
             return True
@@ -122,15 +123,15 @@ class SystemState:
         ret = (self.swapcount[0]-prev.swapcount[0]+1.0/config.swap_page_threshold) * (self.swapcount[1]-prev.swapcount[1]+1.0/config.swap_page_threshold) > 1.0
         ## Increase or decrease the busy-counter ... or keep it where it is
         if ret:
-            ## thrashing alery, increase the counter
+            ## thrashing alert, increase the counter
             self.cooldown_counter = prev.cooldown_counter+1
         elif prev.cooldown_counter and prev.swapcount==self.swapcount and self.timestamp-prev.timestamp>=self.get_sleep_interval():
             ## not busy at all, and we have slept since the previous check.  Decrease counter.
             self.cooldown_counter = prev.cooldown_counter-1
         else:
+            debug("prev.swapcount==self.swapcount: %s,  self.timestamp-prev.timestamp>=self.get_sleep_interval(): %s, self.timestamp-prev.timestamp: %s, self.get_sleep_interval(): %s" % (prev.swapcount==self.swapcount, self.timestamp-prev.timestamp>=self.get_sleep_interval(),  self.timestamp-prev.timestamp,  self.get_sleep_interval()))
             ## some swapin or swapout has been observed, or we haven't slept since previous run.  Keep the cooldown counter steady.
             ## (Hm - we risk that process A gets frozen but never unfrozen due to process B generating swap activity?)
-            self.cooldown_counter = prev.cooldown_counter
         return ret
 
     def get_sleep_interval(self):
@@ -192,6 +193,7 @@ class OOMScoreProcessSelector(ProcessSelector):
             if oom_score > 0:
                 debug("oom_score: %s, cmd: %s, pid: %s" % (oom_score, cmd, pid))
                 if cmd in config.cmd_whitelist:
+                    debug("whitelisted process %s %s %s" % (pid, cmd, oom_score))
                     oom_score /= config.whitelist_score_divider
                 if cmd in config.cmd_blacklist:
                     oom_score *= config.blacklist_score_multiplier
@@ -288,6 +290,7 @@ class PageFaultingProcessSelector(ProcessSelector):
                 if cmd in config.cmd_blacklist:
                     diff *= config.blacklist_score_multiplier
                 if cmd in config.cmd_whitelist:
+                    debug("whitelisted process %s %s %s" % (pid, cmd, diff))
                     diff /= config.whitelist_score_divider
                 if diff > max:
                     ## ignore self

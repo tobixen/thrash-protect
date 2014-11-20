@@ -11,7 +11,7 @@ def alloc(megs):
         res.fromfile(open('/tmp/bigfile', 'rb'), 1048576)
     return res
 
-i=5900
+i=6900
 while True:
     i+=1
     print("alloc %d" % i)
