@@ -20,9 +20,9 @@ try:
 except NameError:
     FileNotFoundError=IOError
 
-__version__ = "0.9.0-devel"
+__version__ = "0.9.0"
 __author__ = "Tobias Brox"
-__copyright__ = "Copyright 2013, Tobias Brox"
+__copyright__ = "Copyright 2013-2014, Tobias Brox"
 __license__ = "GPL"
 __maintainer__ = "Tobias Brox"
 __email__ = "tobias@redpill-linpro.com"
