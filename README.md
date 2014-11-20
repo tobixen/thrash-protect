@@ -137,6 +137,12 @@ hence a third method for discovering which pid to freeze was created.
 This is also a very cheap operation, so it's always the first method
 run after unfreezing a process.
 
+Finally, I found that I couldn't allow to do a full
+sleep(sleep_interval) between each frozen process if the box was
+thrashing.  I've also attempted to detect if there are delays in the
+processing, and let the script be more aggressive.  Unfortunately this
+change introduced quite some added complexity.
+
 It's important to do some research to learn if the program would
 benefit significantly from being rewritten into C before doing too
 much tweaking on the python script.  If not, the python script should
