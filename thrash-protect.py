@@ -380,7 +380,9 @@ def unfreeze_something():
         if num_unfreezes % config.unfreeze_pop_ratio:
             pid_to_unfreeze = frozen_pids.pop()
         else:
-            ## no list.get() in python?
+            ## Hmm ... would be better to do
+            #pid_to_unfreeze = frozen_pids.pop(0)
+            ## but I'll write up some unit tests before modifying this logic:
             pid_to_unfreeze = frozen_pids[0]
             frozen_pids = frozen_pids[1:]
         try:
