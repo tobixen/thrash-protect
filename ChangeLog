@@ -1,6 +1,10 @@
+2014-12-09  Tobias Brox  <tobias@redpill-linpro.com>
+        * thrash-protect.py: started work on solving the annoying bash job control interpherence ... if suspending a bash child, make sure the parent process is already suspended.
+	* test/test_thrash_protect: first unit tests are coming up
+
 2014-11-20  Tobias Brox  <tobias@redpill-linpro.com>
-       * thrash-protect.py: major refactoring, cleaning up quite some mess and getting rid of quite some globals
-       * thrash-protect.py: fixed a bug - when thrash_protect kicks in, it will at first almost always freeze a pid and then unfreeze it immediately afterwards without any sleep
+        * thrash-protect.py: major refactoring, cleaning up quite some mess and getting rid of quite some globals
+        * thrash-protect.py: fixed a bug - when thrash_protect kicks in, it will at first almost always freeze a pid and then unfreeze it immediately afterwards without any sleep
 
 2014-03-10  Tobias Brox  <tobias@redpill-linpro.com>
         * thrash-protect.py: found a silly print statement left behind from earlier debug rounds.

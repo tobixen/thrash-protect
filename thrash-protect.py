@@ -20,7 +20,7 @@ try:
 except NameError:
     FileNotFoundError=IOError
 
-__version__ = "0.9.0"
+__version__ = "0.10.0-devel"
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013-2014, Tobias Brox"
 __license__ = "GPL"
@@ -30,10 +30,9 @@ __status__ = "Development"
 __product__ = "thrash-protect"
 
 
-import os
+from os import getenv, kill, getpid, unlink, getpgid, getsid
 import time
 import glob
-import os
 import signal
 import logging
 import random ## for the test_mode
@@ -51,29 +50,30 @@ class config:
     some future version)
     """
     ## Normal sleep interval, in seconds.
-    interval = float(os.getenv('THRASH_PROTECT_INTERVAL', '0.5'))
+    interval = float(getenv('THRASH_PROTECT_INTERVAL', '0.5'))
 
     ## max acceptable time delta in one iteration
     max_acceptable_time_delta = interval/16.0
 
     ## Number of acceptable page swaps during the above interval
-    swap_page_threshold = int(os.getenv('THRASH_PROTECT_SWAP_PAGE_THRESHOLD', '512'))
+    swap_page_threshold = int(getenv('THRASH_PROTECT_SWAP_PAGE_THRESHOLD', '512'))
 
     ## After X number of major pagefaults, we should initiate a process scanning
-    pgmajfault_scan_threshold = int(os.getenv('THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD', swap_page_threshold*4))
+    pgmajfault_scan_threshold = int(getenv('THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD', swap_page_threshold*4))
 
     ## process name whitelist 
-    cmd_whitelist = os.getenv('THRASH_PROTECT_CMD_WHITELIST', '')
+    cmd_whitelist = getenv('THRASH_PROTECT_CMD_WHITELIST', '')
     cmd_whitelist = cmd_whitelist.split(' ') if cmd_whitelist else ['sshd', 'bash', 'xinit', 'X', 'spectrwm', 'screen', 'SCREEN', 'mutt', 'ssh', 'xterm', 'rxvt', 'urxvt', 'Xorg.bin', 'systemd-journal']
-    cmd_blacklist = os.getenv('THRASH_PROTECT_CMD_BLACKLIST', '').split(' ')
-    blacklist_score_multiplier = int(os.getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', '16'))
-    whitelist_score_divider = int(os.getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', str(blacklist_score_multiplier*4)))
+    cmd_blacklist = getenv('THRASH_PROTECT_CMD_BLACKLIST', '').split(' ')
+    cmd_jobctrllist = getenv('THRASH_PROTECT_CMD_JOBCTRLLIST', 'bash').split(' ')
+    blacklist_score_multiplier = int(getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', '16'))
+    whitelist_score_divider = int(getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', str(blacklist_score_multiplier*4)))
 
     ## Unfreezing processes: Ratio of POP compared to GET (integer)
-    unfreeze_pop_ratio = int(os.getenv('THRASH_PROTECT_UNFREEZE_POP_RATIO', '5'))
+    unfreeze_pop_ratio = int(getenv('THRASH_PROTECT_UNFREEZE_POP_RATIO', '5'))
 
     ## test_mode - if test_mode and not random.getrandbits(test_mode), then pretend we're thrashed
-    test_mode = int(os.getenv('THRASH_PROTECT_TEST_MODE', '0'))
+    test_mode = int(getenv('THRASH_PROTECT_TEST_MODE', '0'))
 
 ## Poor mans logging.  Should eventually set up the logging module
 #debug = print
@@ -199,7 +199,7 @@ class OOMScoreProcessSelector(ProcessSelector):
                     oom_score *= config.blacklist_score_multiplier
                 if oom_score > max:
                     ## ignore self
-                    if pid == os.getpid():
+                    if pid == getpid():
                         continue
                     max = oom_score
                     worstpid = pid
@@ -294,7 +294,7 @@ class PageFaultingProcessSelector(ProcessSelector):
                     diff /= config.whitelist_score_divider
                 if diff > max:
                     ## ignore self
-                    if pid == os.getpid():
+                    if pid == getpid():
                         continue
                     max = diff
                     worstpid = pid
@@ -348,20 +348,19 @@ def log_unfrozen(pid):
             logfile.write(" ".join([str(pid) for pid in frozen_pids]) + "\n")
     else:
         try:
-            os.unlink("/tmp/thrash-protect-frozen-pid-list")
+            unlink("/tmp/thrash-protect-frozen-pid-list")
         except FileNotFoundError:
             pass
 
-def freeze_something():
+def freeze_something(pid_to_freeze=None):
     global frozen_pids
-    global num_freezes
     global global_process_selector
-    pid_to_freeze = global_process_selector.scan()
+    pid_to_freeze = pid_to_freeze or global_process_selector.scan()
     if not pid_to_freeze:
         ## process disappeared. ignore failure
         return
     try:
-        os.kill(pid_to_freeze, signal.SIGSTOP)
+        kill(pid_to_freeze, signal.SIGSTOP)
     except ProcessLookupError:
         return
     if not pid_to_freeze in frozen_pids:
@@ -370,7 +369,6 @@ def freeze_something():
     ## Perhaps we should even fork it out.
     debug("going to freeze %s" % pid_to_freeze)
     log_frozen(pid_to_freeze)
-    num_freezes += 1
 
 def unfreeze_something():
     global frozen_pids
@@ -385,7 +383,7 @@ def unfreeze_something():
             frozen_pids = frozen_pids[1:]
         try:
             debug("going to unfreeze %s" % pid_to_unfreeze)
-            os.kill(pid_to_unfreeze, signal.SIGCONT)
+            kill(pid_to_unfreeze, signal.SIGCONT)
             ## Sometimes the parent process also gets suspended.
             ## TODO: we're doing some simple assumptions here; 
             ## 1) this
@@ -395,8 +393,8 @@ def unfreeze_something():
             ## To correct this, we may need to traverse parents
             ## (peeking into /proc/<pid>/status recursively) prior to freezing the proc.
             ## all parents that aren't already frozen should be added to the unfreeze stack
-            os.kill(os.getpgid(pid_to_unfreeze), signal.SIGCONT)
-            os.kill(os.getsid(pid_to_unfreeze), signal.SIGCONT)
+            kill(getpgid(pid_to_unfreeze), signal.SIGCONT)
+            kill(getsid(pid_to_unfreeze), signal.SIGCONT)
         except ProcessLookupError:
             ## ignore failure
             pass
@@ -436,14 +434,13 @@ def thrash_protect(args=None):
             time.sleep(sleep_interval)
             current.check_delay(sleep_interval)
 
+## Globals ... we've refactored most of them away, but some still remains ...
+frozen_pids = []
+num_unfreezes = 0
+## A singleton ...
+global_process_selector = GlobalProcessSelector()
+                                
 if __name__ == '__main__':
-    ## Globals ... we've refactored most of them away, but some still remains ...
-    frozen_pids = []
-    num_freezes = 0
-    num_unfreezes = 0
-    ## A singleton ...
-    global_process_selector = GlobalProcessSelector()
-
     try:
         import argparse
         p = argparse.ArgumentParser(description="protect a linux host from thrashing")
