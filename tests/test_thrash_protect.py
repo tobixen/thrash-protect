@@ -22,25 +22,22 @@ class TestFreezeUnfreeze:
         Pure unit test, no side effects or system calls should be done
         here.
         """
-        thrash_protect.freeze_something(10)
-        thrash_protect.freeze_something(20)
-        thrash_protect.freeze_something(30)
+        ## Freezing something 6 times (to make sure we pass the default
+        ## unfreeze_pop_ratio)
+        for i in range(1,7):
+            thrash_protect.freeze_something(i*10)
 
-        assert_equal(kill.call_args_list, [((10, signal.SIGSTOP),), ((20, signal.SIGSTOP),), ((30, signal.SIGSTOP),)])
-        
-        thrash_protect.unfreeze_something()
-        thrash_protect.unfreeze_something()
-        thrash_protect.unfreeze_something()
-        
-        ## this is a bit wrong - currently unfreeze_something will also
-        ## unfreeze parent processes.  This is going to change, but as
-        ## for now we do no asserts on the num_calls.
+        assert_equal(kill.call_args_list, [((i*10, signal.SIGSTOP),) for i in range(1,7)])
 
-        ## we also do no asserts of in which order the pids were reanimated.
+        ## Unfreeze
+        for i in range(0,6):
+            thrash_protect.unfreeze_something()
+
+        ## we do no asserts of in which order the pids were reanimated.
         call_list = kill.call_args_list
-        assert ((10, signal.SIGSTOP),) in call_list
-        assert ((20, signal.SIGSTOP),) in call_list
-        assert ((30, signal.SIGSTOP),) in call_list
+        assert_equal(len(call_list), 12)
+        for i in range(1,7):
+            assert ((i*10, signal.SIGSTOP),) in call_list
 
     @patch('thrash_protect.getpgid')
     @patch('thrash_protect.getsid')

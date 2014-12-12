@@ -352,22 +352,25 @@ def log_unfrozen(pid):
         except FileNotFoundError:
             pass
 
-def freeze_something(pid_to_freeze=None):
+def freeze_something(pids_to_freeze=None):
     global frozen_pids
     global global_process_selector
-    pid_to_freeze = pid_to_freeze or global_process_selector.scan()
-    if not pid_to_freeze:
+    pid_to_freeze = pids_to_freeze or global_process_selector.scan()
+    if not pids_to_freeze:
         ## process disappeared. ignore failure
         return
-    try:
-        kill(pid_to_freeze, signal.SIGSTOP)
-    except ProcessLookupError:
-        return
-    if not pid_to_freeze in frozen_pids:
-        frozen_pids.append(pid_to_freeze)
+    if not hasattr(pids_to_freeze, '__iter__'):
+        pids_to_freeze = (pids_to_freeze,)
+    for pid_to_freeze in pids_to_freeze:
+        try:
+            kill(pid_to_freeze, signal.SIGSTOP)
+        except ProcessLookupError:
+            continue
+    if not pids_to_freeze in frozen_pids:
+            frozen_pids.append(pids_to_freeze)
     ## Logging after freezing - as logging itself may be resource- and timeconsuming.
     ## Perhaps we should even fork it out.
-    debug("going to freeze %s" % pid_to_freeze)
+    debug("going to freeze %s" % str(pid_to_freeze))
     log_frozen(pid_to_freeze)
 
 def unfreeze_something():
@@ -376,31 +379,34 @@ def unfreeze_something():
     if frozen_pids:
         ## queue or stack?  Seems like both approaches are problematic
         if num_unfreezes % config.unfreeze_pop_ratio:
-            pid_to_unfreeze = frozen_pids.pop()
+            pids_to_unfreeze = frozen_pids.pop()
         else:
-            ## Hmm ... would be better to do
-            #pid_to_unfreeze = frozen_pids.pop(0)
-            ## but I'll write up some unit tests before modifying this logic:
-            pid_to_unfreeze = frozen_pids[0]
-            frozen_pids = frozen_pids[1:]
-        try:
-            debug("going to unfreeze %s" % pid_to_unfreeze)
-            kill(pid_to_unfreeze, signal.SIGCONT)
-            ## Sometimes the parent process also gets suspended.
-            ## TODO: we're doing some simple assumptions here; 
-            ## 1) this
-            ## problem only applies to process group id or session id
-            ## (we probably need to walk through all the parents - or maybe just the ppid?)
-            ## 2) it is harmless to CONT the pgid and sid.  This may not always be so.
-            ## To correct this, we may need to traverse parents
-            ## (peeking into /proc/<pid>/status recursively) prior to freezing the proc.
-            ## all parents that aren't already frozen should be added to the unfreeze stack
-            kill(getpgid(pid_to_unfreeze), signal.SIGCONT)
-            kill(getsid(pid_to_unfreeze), signal.SIGCONT)
-        except ProcessLookupError:
-            ## ignore failure
-            pass
-        log_unfrozen(pid_to_unfreeze)
+            pids_to_unfreeze = frozen_pids.pop(0)
+        ## pids_to_unfreeze can be both numeric and tuple
+        if not hasattr(pids_to_unfreeze, '__iter__'):
+            pids_to_unfreeze = [pids_to_unfreeze]
+        else:
+            pids_to_unfreeze = list(pids_to_unfreeze)
+        pids_to_unfreeze.reverse()
+        for pid_to_unfreeze in pids_to_unfreeze:
+            try:
+                debug("going to unfreeze %s" % str(pid_to_unfreeze))
+                kill(pid_to_unfreeze, signal.SIGCONT)
+                ## Sometimes the parent process also gets suspended.
+                ## TODO: we're doing some simple assumptions here; 
+                ## 1) this
+                ## problem only applies to process group id or session id
+                ## (we probably need to walk through all the parents - or maybe just the ppid?)
+                ## 2) it is harmless to CONT the pgid and sid.  This may not always be so.
+                ## To correct this, we may need to traverse parents
+                ## (peeking into /proc/<pid>/status recursively) prior to freezing the proc.
+                ## all parents that aren't already frozen should be added to the unfreeze stack
+                #kill(getpgid(pid_to_unfreeze), signal.SIGCONT)
+                #kill(getsid(pid_to_unfreeze), signal.SIGCONT)
+            except ProcessLookupError:
+                ## ignore failure
+                pass
+            log_unfrozen(pid_to_unfreeze)
         num_unfreezes += 1
         return pid_to_unfreeze
 
