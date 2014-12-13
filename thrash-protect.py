@@ -408,7 +408,7 @@ def unfreeze_something():
                 pass
             log_unfrozen(pid_to_unfreeze)
         num_unfreezes += 1
-        return pid_to_unfreeze
+        return pids_to_unfreeze
 
 def thrash_protect(args=None):
     current = SystemState()
