@@ -31,6 +31,7 @@ __product__ = "thrash-protect"
 
 
 from os import getenv, kill, getpid, unlink, getpgid, getsid
+from collections import namedtuple
 import time
 import glob
 import signal
@@ -164,6 +165,40 @@ class ProcessSelector:
     def update(self, prev, curr):
         pass
 
+    procstat = namedtuple('procstat', ('cmd', 'state', 'majflt', 'ppid'))
+
+    def readStat(self, sfn):
+        """
+        helper method - reads the stats file and returns a tuple (cmd, state, 
+        majflt, pids)
+        """
+        if isinstance(sfn, int):
+            sfn = "/proc/%s/stat" % sfn
+        with open(sfn, 'r') as stat_file:
+            stats = stat_file.readline().split(' ')
+        return self.procstat(stats[1][1:].split('/')[0].split(')')[0], stats[2], int(stats[11]), int(stats[3]))
+
+    def checkParents(self, pid, ppid=None):
+        """
+        helper method - find a list of pids that should be suspended, given
+        a pid (and for optimalization reasons, ppid if it's already
+        known).
+
+        If a process running under an interactive bash session gets
+        suspended, the bash job control kicks in and causes havoc.
+        Hence, we should check if the cmd of the parent process is
+        'bash'.
+        """
+        if ppid is None:
+            ppid = self.readStat(pid).ppid
+        if ppid <= 1:
+            return (pid,)
+        pstats = self.readStat(ppid)
+        if pstats.cmd in config.cmd_jobctrllist:
+            return self.checkParents(ppid, pstats.ppid) + (pid,)
+        else:
+            return (pid,)
+
 class OOMScoreProcessSelector(ProcessSelector):
     """
     Class containing one method for selecting a process to freeze,
@@ -181,30 +216,27 @@ class OOMScoreProcessSelector(ProcessSelector):
             try:
                 with open(fn, 'r') as oom_score_file:
                     oom_score = int(oom_score_file.readline())
-                with open("/proc/%d/stat" % pid, 'r') as stat_file:
-                    stats = stat_file.readline().split(' ')
-                    state = stats[2]
-                    cmd = stats[1][1:].split('/')[0].split(')')[0]
-                    if 'T' in state:
-                        debug("oom_score: %s, cmd: %s, pid: %s, state: %s - no touch" % (oom_score, cmd, pid, state))
-                        continue
+                stats = self.readStat(pid)
+                if 'T' in stats.state:
+                    debug("oom_score: %s, cmd: %s, pid: %s, state: %s - no touch" % (oom_score, stats.cmd, pid, stats.state))
+                    continue
             except FileNotFoundError:
                 continue
             if oom_score > 0:
-                debug("oom_score: %s, cmd: %s, pid: %s" % (oom_score, cmd, pid))
-                if cmd in config.cmd_whitelist:
-                    debug("whitelisted process %s %s %s" % (pid, cmd, oom_score))
+                debug("oom_score: %s, cmd: %s, pid: %s" % (oom_score, stats.cmd, pid))
+                if stats.cmd in config.cmd_whitelist:
+                    debug("whitelisted process %s %s %s" % (pid, stats.cmd, oom_score))
                     oom_score /= config.whitelist_score_divider
-                if cmd in config.cmd_blacklist:
+                if stats.cmd in config.cmd_blacklist:
                     oom_score *= config.blacklist_score_multiplier
                 if oom_score > max:
                     ## ignore self
                     if pid == getpid():
                         continue
                     max = oom_score
-                    worstpid = pid
+                    worstpid = (pid, stat.ppid)
         debug("oom scan completed - selected pid: %s" % worstpid)
-        return worstpid
+        return self.checkParents(*worstpid)
 
 class LastFrozenProcessSelector(ProcessSelector):
     """Class containing one method for selecting a process to freeze,
@@ -216,10 +248,6 @@ class LastFrozenProcessSelector(ProcessSelector):
     If refreezing the last unfrozen process helps, then we're good -
     though it may potentially a problem that the same process is
     selected all the time.
-
-    We need to know what pid was unfrozen last time - this is
-    currently passed through a global variable, but we should consider
-    something smarter.
     """
     def __init__(self):
         self.last_unfrozen_pid = None
@@ -271,39 +299,36 @@ class PageFaultingProcessSelector(ProcessSelector):
                 continue
             try:
               try: ## double try to keep it compatible with both python 2.5 and python 3.0
-                with open(fn, 'r') as stat_file:
-                    stats = stat_file.readline().split(' ')
-                    majflt = int(stats[11])
-                    cmd = stats[1][1:].split('/')[0].split(')')[0]
+                stats = self.readStat(fn)
               except FileNotFoundError:
                   continue
             except ProcessLookupError:
                 continue
-            if majflt > 0:
+            if stats.majflt > 0:
                 prev = self.pagefault_by_pid.get(pid, 0)
-                self.pagefault_by_pid[pid] = majflt
-                diff = majflt - prev
+                self.pagefault_by_pid[pid] = stats.majflt
+                diff = stats.majflt - prev
                 if config.test_mode:
                   diff += random.getrandbits(3)
                 if not diff:
                     continue
-                if cmd in config.cmd_blacklist:
+                if stats.cmd in config.cmd_blacklist:
                     diff *= config.blacklist_score_multiplier
-                if cmd in config.cmd_whitelist:
-                    debug("whitelisted process %s %s %s" % (pid, cmd, diff))
+                if stats.cmd in config.cmd_whitelist:
+                    debug("whitelisted process %s %s %s" % (pid, stats.cmd, diff))
                     diff /= config.whitelist_score_divider
                 if diff > max:
                     ## ignore self
                     if pid == getpid():
                         continue
                     max = diff
-                    worstpid = pid
-                debug("pagefault score: %s, cmd: %s, pid: %s" % (diff, cmd, pid))
+                    worstpid = (pid, ppid)
+                debug("pagefault score: %s, cmd: %s, pid: %s" % (diff, stats.cmd, pid))
         debug("pagefault scan completed - selected pid: %s" % worstpid)
         ## give a bit of protection against whitelisted and innocent processes being stopped
         ## (TODO: hardcoded constants)
         if max > 4.0 / (self.cooldown_counter + 1.0):
-            return worstpid
+            return self.checkParents(*worstpid)
 
 class GlobalProcessSelector(ProcessSelector):
     """
