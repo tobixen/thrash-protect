@@ -234,8 +234,8 @@ class OOMScoreProcessSelector(ProcessSelector):
                     if pid == getpid():
                         continue
                     max = oom_score
-                    worstpid = (pid, stat.ppid)
-        debug("oom scan completed - selected pid: %s" % worstpid)
+                    worstpid = (pid, stats.ppid)
+        debug("oom scan completed - selected pid: %s" % (worstpid and worstpid[0]))
         return self.checkParents(*worstpid)
 
 class LastFrozenProcessSelector(ProcessSelector):
@@ -322,9 +322,9 @@ class PageFaultingProcessSelector(ProcessSelector):
                     if pid == getpid():
                         continue
                     max = diff
-                    worstpid = (pid, ppid)
+                    worstpid = (pid, stats.ppid)
                 debug("pagefault score: %s, cmd: %s, pid: %s" % (diff, stats.cmd, pid))
-        debug("pagefault scan completed - selected pid: %s" % worstpid)
+        debug("pagefault scan completed - selected pid: %s" % (worstpid and worstpid[0]))
         ## give a bit of protection against whitelisted and innocent processes being stopped
         ## (TODO: hardcoded constants)
         if max > 4.0 / (self.cooldown_counter + 1.0):
