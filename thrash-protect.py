@@ -279,6 +279,7 @@ class PageFaultingProcessSelector(ProcessSelector):
     """
     def __init__(self):
         self.pagefault_by_pid = {}
+        self.cooldown_counter = 0
 
     def update(self, prev, cur):
         self.cooldown_counter = cur.cooldown_counter
@@ -397,6 +398,7 @@ def freeze_something(pids_to_freeze=None):
     ## Perhaps we should even fork it out.
     debug("going to freeze %s" % str(pid_to_freeze))
     log_frozen(pid_to_freeze)
+    return pids_to_freeze
 
 def unfreeze_something():
     global frozen_pids
