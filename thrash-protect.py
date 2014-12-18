@@ -380,7 +380,7 @@ def log_unfrozen(pid):
 def freeze_something(pids_to_freeze=None):
     global frozen_pids
     global global_process_selector
-    pid_to_freeze = pids_to_freeze or global_process_selector.scan()
+    pids_to_freeze = pids_to_freeze or global_process_selector.scan()
     if not pids_to_freeze:
         ## process disappeared. ignore failure
         return
