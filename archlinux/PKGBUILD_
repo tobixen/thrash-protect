@@ -14,6 +14,7 @@ package() {
   mkdir -p "$pkgdir/usr/lib/systemd/system"
   cd "$srcdir/$pkgname-$pkgver/"
   make PREFIX=$pkgdir/usr install
+  mv "$pkgdir/usr/sbin $pkgdir/usr/bin"
 }
 
 ## This is a template missing md5sum and version
