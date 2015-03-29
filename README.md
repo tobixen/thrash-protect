@@ -252,3 +252,7 @@ Things that eventually may go into 2.0:
 
 * Rewrite to C for better control of the memory footprint
 
+Donations
+---------
+
+Donations are not expected - but as long as this is a one-man hobby project it's non-problematic to receive donations.  Use bitcoin address 12jZRp4MVNySnQ9ypEP746G84jYmJATTVs eventually.
