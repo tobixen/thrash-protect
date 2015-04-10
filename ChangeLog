@@ -1,3 +1,8 @@
+2014-12-18  Tobias Brox  <tobias@redpill-linpro.com>
+        * thrash-protect.py: some refactoring, plus now it will STOP a parent bash process before stopping the child, not to disrupt the job control
+        * tests/test_thrash_protect.py: more unit tests and a small functional test
+        * tests/thrash_bot2.py: now with argparse (though, that requires 2.7) and made compatible with python3.
+
 2014-12-09  Tobias Brox  <tobias@redpill-linpro.com>
         * thrash-protect.py: started work on solving the annoying bash job control interpherence ... if suspending a bash child, make sure the parent process is already suspended.
 	* test/test_thrash_protect: first unit tests are coming up
