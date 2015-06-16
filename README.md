@@ -201,6 +201,9 @@ Drawbacks and problems
   amounts of RAM (i.e. half a gig) thrash_protect itself can consume
   significant amounts of memory.
 
+* It has been reported that "swapoff" failed to complete while 
+  thrash-protect was running.
+
 Other thoughts
 --------------
 
