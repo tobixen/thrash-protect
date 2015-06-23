@@ -34,15 +34,21 @@ answer would be one out of four:
   trivial; there may be physical, logistical and economical
   constraints delaying or stopping a memory upgrade.  It may also be
   non-trivial to determinate how much memory one would need to install
-  to have "enough" of it.  
+  to have "enough" of it.  Also, no matter how much memory is
+  installed, one won't be safe against all the memory getting hogged
+  by some software bug.
 
-* Disable swap.  Together with the advice "install enough memory" this
-  is really a safe way (and the only safe way) to prevent thrashing.
-  However, in many situations swap can be a very good thing - i.e. if
-  having processes with memory leakages, aggressive usage of tmpfs,
-  some applications simply expects swap (keeping large datasets in
-  memory), etc.  Enabling swap can be a lifesaver when a much-needed
-  memory upgrade is delayed.
+* Disable swap.  Even together with the advice "install enough memory"
+  this is not a fail-safe way to prevent thrashing; without sufficient
+  buffers/cache space Linux will get into thrash-like situations (ref
+  https://github.com/tobixen/thrash-protect/issues/2).  It doesn't
+  give good protection against all memory getting hogged by some
+  software bug, the OOM-killer may kill the wrong process.  Also, in
+  many situations swap can be a very good thing - i.e. if having
+  processes with memory leakages, aggressive usage of tmpfs, some
+  applications simply expects swap (keeping large datasets in memory),
+  etc.  Enabling swap can be a lifesaver when a much-needed memory
+  upgrade is delayed.
 
 * Tune the swap amount to prevent thrashing.  This doesn't actually
   work - even a modest amount of swap can be sufficient to cause
@@ -51,6 +57,11 @@ answer would be one out of four:
 * Restrict your processes with ulimit.  In general it makes sense, but
   doesn't really help against the thrashing problem; if one wants to
   use swap one will risk thrashing.
+
+There is also a fifth avenue that I haven't done any research on:
+maybe it's possible to tune the kernel parameters to ensure that
+malloc(3) will fail if allocating too much memory.  Anyway, that will
+cause inefficient resource utilization.
 
 Simple solution
 ---------------
