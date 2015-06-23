@@ -21,7 +21,7 @@ thrash-protect has successfully been running on single-CPU instances
 with 512M RAM, it's probably best suited on systems with at least 1GB
 RAM and multiple CPUs (or CPU cores) due to the overhead costs.
 
-compile and install
+Compile and Install
 -------------------
 
 As it's in python, no compilation is needed.
@@ -32,14 +32,15 @@ script as a service.
 Archlinux users may also install through AUR.  rpm and deb packages
 will be made available on request.
 
-configuration
+Configuration
 -------------
 
 It should theoretically be possible to configure the script through
-environment variables.  This is not tested as for now, and so far
-neither supported in the init-scripts.
+environment variables.  This is neither tested nor supported in the
+init-scripts by now.  Probably the default configuration will work out
+for you.
 
-usage
+Usage
 -----
 
 The service will need to be started and/or set up to start at boot.
@@ -53,6 +54,37 @@ configuration.
 
 The System V init file is so far quite redhat-specific and may need
 tuning for debian or other distributions.
+
+Monitoring
+----------
+
+thrash-protect may relatively safely live it's own life, users will
+only notice some delays and slowness, and bad situations will
+autorecover (i.e. the resource-consuming process will stop by itself,
+or the kernel will finally run out of swap and the OOM-killer will
+kill the rogue process).
+
+For production servers, thrash-protect should ideally only be latent,
+only occationally stop something very briefly, if it becomes active a
+system administrator should manually inspect the box and deal with the
+situation, and eventually order more memory.
+
+There are three useful ways to monitor:
+
+* Monitoring the number of suspended processes.  This will possibly
+  catch situations where thrash-protect itself has gone haywire,
+  suspending processes but unable to reanimate them.  Unfortunately it
+  may also cause false alarms on systems where processes are being
+  suspended legitimately outside thrash-protect (i.e. due to some
+  sysadmin pressing ^Z).
+
+* Monitoring the /tmp/thrash-protect-frozen-pid-list file.  It should
+  only exist briefly.
+
+* Age of the /tmp/thrash-protect-frozen-pid-list file; if it exists
+  and is old, most likely thrash-protect is not running anymore.
+
+nrpe-scripts and icinga-configuration may be done available on request.
 
 Subdirectories
 --------------
