@@ -212,6 +212,9 @@ Drawbacks and problems
   amounts of RAM (i.e. half a gig) thrash_protect itself can consume
   significant amounts of memory.
 
+* It has been reported that "swapoff" failed to complete while 
+  thrash-protect was running.
+
 Other thoughts
 --------------
 
@@ -263,3 +266,7 @@ Things that eventually may go into 2.0:
 
 * Rewrite to C for better control of the memory footprint
 
+Donations
+---------
+
+Donations are not expected - but as long as this is a one-man hobby project it's non-problematic to receive donations.  Use bitcoin address 12jZRp4MVNySnQ9ypEP746G84jYmJATTVs eventually.
