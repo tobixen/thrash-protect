@@ -40,7 +40,7 @@ answer would be one out of four:
 
 * Disable swap.  Even together with the advice "install enough memory"
   this is not a fail-safe way to prevent thrashing; without sufficient
-  buffers/cache space Linux will get into thrash-like situations (ref
+  buffers/cache space Linux will start thrashing (ref
   https://github.com/tobixen/thrash-protect/issues/2).  It doesn't
   give good protection against all memory getting hogged by some
   software bug, the OOM-killer may kill the wrong process.  Also, in
