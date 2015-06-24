@@ -31,8 +31,10 @@ __product__ = "thrash-protect"
 
 
 from os import getenv, kill, getpid, unlink, getpgid, getsid
+from subprocess import check_output
 from collections import namedtuple
 import time
+from datetime import datetime
 import glob
 import signal
 import logging
@@ -75,6 +77,12 @@ class config:
 
     ## test_mode - if test_mode and not random.getrandbits(test_mode), then pretend we're thrashed
     test_mode = int(getenv('THRASH_PROTECT_TEST_MODE', '0'))
+
+    ## ADVANCED LOGGING OPTIONS
+    ## When freezing a process, enables logging of username, CPU usage, memory usage and command string
+    log_user_data = int(getenv('THRASH_PROTECT_LOG_USER_DATA', '0'))
+    ## Enable human-readable date format instead of UNIX timestamp
+    date_human_readable = int(getenv('THRASH_PROTECT_DATE_HUMAN_READABLE', '0'))
 
 ## Poor mans logging.  Should eventually set up the logging module
 #debug = print
@@ -361,17 +369,42 @@ class GlobalProcessSelector(ProcessSelector):
           return ret
     debug("found nothing to stop!? :-(")
 
+def get_date_string():
+    if config.date_human_readable:
+        return datetime.strftime(datetime.datetime.now(), "%Y-%m-%d %H:%M:%S")
+    else:
+        return str(time.time())
+
+## returns string with detailed process information
+def get_process_info(pid):
+    info = check_output("ps -p %d uf | tail -n +2 | tr -s ' ' | cut -d ' ' -f 1,3,4,11-" % pid, shell = True)
+    info = info.split() # 0: USER  1: CPU   2: MEM   3+:CMD
+    if len(info) >= 4:
+        return "u:%10s  CPU:%5s%%  MEM:%5s%%  CMD: %s" % (info[0], info[1], info[2], ' '.join(info[3:]))
+    else:
+        return "No information available, the process was probably killed."
+
 ## hard coded logic as for now.  One state file and one log file.
 ## state file can be monitored, i.e. through nagios.  todo: advanced logging
 def log_frozen(pid):
-    with open("/var/log/thrash-protect.log", 'a') as logfile:
-        logfile.write("%s - frozen pid %s - frozen list: %s\n" % (time.time(), pid, frozen_pids))
+    if config.log_user_data:
+        with open("/var/log/thrash-protect.log", 'a') as logfile:
+            logfile.write("%s - frozen pid %5s - %s\n" % (get_date_string(), str(pid), get_process_info(pid)))
+    else:
+        with open("/var/log/thrash-protect.log", 'a') as logfile:
+            logfile.write("%s - frozen pid %s - frozen list: %s\n" % (get_date_string(), pid, frozen_pids))
+
     with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
         logfile.write(" ".join([str(x) for x in frozen_pids]))
 
 def log_unfrozen(pid):
-    with open("/var/log/thrash-protect.log", 'a') as logfile:
-        logfile.write("%s - unfrozen pid %s\n" % (time.time(), pid))
+    if config.log_user_data:
+        with open("/var/log/thrash-protect.log", 'a') as logfile:
+            logfile.write("%s - unfrozen pid %5s - %s\n" % (get_date_string(), str(pid), get_process_info(pid)))
+    else:
+        with open("/var/log/thrash-protect.log", 'a') as logfile:
+            logfile.write("%s - unfrozen pid %s\n" % (get_date_string(), pid))
+
     if frozen_pids:
         with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
             logfile.write(" ".join([str(pid) for pid in frozen_pids]) + "\n")
