@@ -236,7 +236,10 @@ class OOMScoreProcessSelector(ProcessSelector):
                     max = oom_score
                     worstpid = (pid, stats.ppid)
         debug("oom scan completed - selected pid: %s" % (worstpid and worstpid[0]))
-        return self.checkParents(*worstpid)
+        if worstpid != None:
+            return self.checkParents(*worstpid)
+        else:
+            return None
 
 class LastFrozenProcessSelector(ProcessSelector):
     """Class containing one method for selecting a process to freeze,
@@ -375,7 +378,7 @@ def log_unfrozen(pid):
     else:
         try:
             unlink("/tmp/thrash-protect-frozen-pid-list")
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError):
             pass
 
 def freeze_something(pids_to_freeze=None):
