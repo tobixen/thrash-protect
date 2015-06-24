@@ -371,7 +371,7 @@ class GlobalProcessSelector(ProcessSelector):
 
 def get_date_string():
     if config.date_human_readable:
-        return datetime.strftime(datetime.datetime.now(), "%Y-%m-%d %H:%M:%S")
+        return datetime.strftime(datetime.now(), "%Y-%m-%d %H:%M:%S")
     else:
         return str(time.time())
 
@@ -389,7 +389,7 @@ def get_process_info(pid):
 def log_frozen(pid):
     if config.log_user_data:
         with open("/var/log/thrash-protect.log", 'a') as logfile:
-            logfile.write("%s - frozen pid %5s - %s\n" % (get_date_string(), str(pid), get_process_info(pid)))
+            logfile.write("%s - frozen   pid %5s - %s\n" % (get_date_string(), str(pid), get_process_info(pid)))
     else:
         with open("/var/log/thrash-protect.log", 'a') as logfile:
             logfile.write("%s - frozen pid %s - frozen list: %s\n" % (get_date_string(), pid, frozen_pids))
@@ -398,11 +398,7 @@ def log_frozen(pid):
         logfile.write(" ".join([str(x) for x in frozen_pids]))
 
 def log_unfrozen(pid):
-    if config.log_user_data:
-        with open("/var/log/thrash-protect.log", 'a') as logfile:
-            logfile.write("%s - unfrozen pid %5s - %s\n" % (get_date_string(), str(pid), get_process_info(pid)))
-    else:
-        with open("/var/log/thrash-protect.log", 'a') as logfile:
+    with open("/var/log/thrash-protect.log", 'a') as logfile:
             logfile.write("%s - unfrozen pid %s\n" % (get_date_string(), pid))
 
     if frozen_pids:
