@@ -80,7 +80,7 @@ class config:
 
     ## ADVANCED LOGGING OPTIONS
     ## When freezing a process, enables logging of username, CPU usage, memory usage and command string
-    log_user_data = int(getenv('THRASH_PROTECT_LOG_USER_DATA', '1'))
+    log_user_data = int(getenv('THRASH_PROTECT_LOG_USER_DATA', '0'))
     ## Enable human-readable date format instead of UNIX timestamp
     date_human_readable = int(getenv('THRASH_PROTECT_DATE_HUMAN_READABLE', '1'))
 
