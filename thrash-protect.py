@@ -80,9 +80,9 @@ class config:
 
     ## ADVANCED LOGGING OPTIONS
     ## When freezing a process, enables logging of username, CPU usage, memory usage and command string
-    log_user_data = int(getenv('THRASH_PROTECT_LOG_USER_DATA', '0'))
+    log_user_data = int(getenv('THRASH_PROTECT_LOG_USER_DATA', '1'))
     ## Enable human-readable date format instead of UNIX timestamp
-    date_human_readable = int(getenv('THRASH_PROTECT_DATE_HUMAN_READABLE', '0'))
+    date_human_readable = int(getenv('THRASH_PROTECT_DATE_HUMAN_READABLE', '1'))
 
 ## Poor mans logging.  Should eventually set up the logging module
 #debug = print
@@ -377,7 +377,7 @@ def get_date_string():
 
 ## returns string with detailed process information
 def get_process_info(pid):
-    info = check_output("ps -p %d uf | tail -n +2 | tr -s ' ' | cut -d ' ' -f 1,3,4,11-" % pid, shell = True)
+    info = check_output("ps -p %d uf | tail -n +2 | tr -s ' ' | cut -d ' ' -f 1,3,4,11-" % pid, shell = True).decode('utf-8')
     info = info.split() # 0: USER  1: CPU   2: MEM   3+:CMD
     if len(info) >= 4:
         return "u:%10s  CPU:%5s%%  MEM:%5s%%  CMD: %s" % (info[0], info[1], info[2], ' '.join(info[3:]))
