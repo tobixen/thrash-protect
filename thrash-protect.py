@@ -388,9 +388,13 @@ def get_process_info(pid):
 ## state file can be monitored, i.e. through nagios.  todo: advanced logging
 def log_frozen(pid):
     if config.log_user_data:
-        with open("/var/log/thrash-protect.log", 'a') as logfile:
-            logfile.write("%s - frozen   pid %5s - %s\n" % (get_date_string(), str(pid), get_process_info(pid)))
-    else:
+        try:
+            with open("/var/log/thrash-protect.log", 'a') as logfile:
+                logfile.write("%s - frozen   pid %5s - %s - list: %s\n" % (get_date_string(), str(pid), get_process_info(pid), frozen_pids))
+        except:
+            logging.critical("process information gathering failed for some reason", exc_info=True) 
+            config.log_user_data = False
+    if not config.log_user_data:
         with open("/var/log/thrash-protect.log", 'a') as logfile:
             logfile.write("%s - frozen pid %s - frozen list: %s\n" % (get_date_string(), pid, frozen_pids))
 
