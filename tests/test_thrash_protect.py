@@ -12,6 +12,8 @@ import time
 import thrash_protect
 from nose.tools import assert_equal
 
+assert False
+
 class FileMockup():
     def __init__(self, files_override={}):
         self.files = {
