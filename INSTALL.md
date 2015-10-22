@@ -8,7 +8,7 @@ This will only work on linux, it depends on reading stats from the
 /proc directory.
 
 python 2.5 or newer is required.  There exists a branch for python
-2.4, but it's not maintained.
+2.4, but it's not maintained.  No other dependencies.
 
 The box or VM running thrash-protect needs to be set up with swap, or
 trash-protect won't do anything useful.  A reasonably large swap
