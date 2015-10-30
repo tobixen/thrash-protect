@@ -4,16 +4,14 @@ import sys
 
 from unittest.mock import patch
 from io import StringIO
-import importlib
+#import importlib
 import signal
 import time
 
 #thrash_protect = importlib.import_module('thrash-protect')
 import thrash_protect
 from nose.tools import assert_equal
-thrash_protect.open=open
 
-## Eventually we should 
 class FileMockup():
     def __init__(self, files_override={}):
         self.files = {
