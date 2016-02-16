@@ -240,23 +240,19 @@ it's _really_ needed.  Some things that may be considered before 1.0:
 
 * look into init scripts, startup script and systemd script to ensure program is run with "nice -n -20"
 
-* awareness of troublesome parents, i.e. bash.  When stopping a process running under a bash shell, the shell should be stopped first, and resumed after the process has been resumed.
-
 * Look into init scripts, startup script and systemd script to allow for site-specific configuration
-
-* proper logging
 
 * Fix puppet manifest to accept config params
 
 * look into the systemd service config, can the cgroup swappiness configuration be tweaked?  
 
-* Reproduce parent suspension problems and fix properly
+* Do more testing on parent suspension problems (particularly stress-testing with the condor system, testing with other interactive shells besides bash, etc)
 
 * Graceful handling of SIGTERM (any suspended processes should be reanimated)
 
 * Recovery on restart (read status file and resume any suspended processes)
 
-* Improved logging and error handling
+* Improved logging and error handling (partially fixed through the github pull request #3, but it has outstanding issues, and we should use the logging module properly).
 
 * More work is needed on getting "make rpm" and "make debian" to work
 
@@ -271,4 +267,4 @@ Things that eventually may go into 2.0:
 Donations
 ---------
 
-Donations are not expected - but as long as this is a one-man hobby project it's non-problematic to receive donations.  Use bitcoin address 12jZRp4MVNySnQ9ypEP746G84jYmJATTVs eventually.
+Donations are not expected - but as long as this is a one-man hobby project it's non-problematic to receive donations.  Use bitcoin address 12jZRp4MVNySnQ9ypEP746G84jYmJATTVs or http://tobixen.tip.me eventually.  Specific feature requests will probably be released faster if the maintainer is bribed ;-)
