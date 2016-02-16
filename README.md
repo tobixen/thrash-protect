@@ -187,14 +187,15 @@ Drawbacks and problems
 ----------------------
 
 * Some parent processes may behave unexpectedly when the children gets
-  suspended - particularly, the suspension of interactive programs
-  under the login shell (say, "less") may be annoying.  Observed
-  situation: starting a minecraft server from an interactive bash
-  session, if it gets suspended it cannot be resumed with "kill -CONT"
-  as it depends on being run in the foreground (workaround: spawn
-  minecraft i.e. from screen rather than bash).  I've also received
-  one report that this script may have interphered with the condor job
-  control system.
+  suspended, particularly interactive processes under bash - mutt,
+  less, even running a minecraft server interactively under bash
+  (work-around: start them directly from screen).  We've observed one
+  problem with the condor job control system, but we haven't checked
+  if the problem was related to thrash-protect.  Implementation fix:
+  if the parent process name is within a configurable list (default:
+  bash), then the parent process will be suspended before the child
+  process and resumed after the child process has been resumed.
+  Please tell if more process names ought to be added to that list.
 
 * I've observed situations where parent processes automatically have
   gone into suspend-mode as the children got suspended and been stuck
@@ -212,8 +213,9 @@ Drawbacks and problems
   amounts of RAM (i.e. half a gig) thrash_protect itself can consume
   significant amounts of memory.
 
-* It has been reported that "swapoff" failed to complete while 
-  thrash-protect was running.
+* It has been reported that "swapoff" failed to complete while
+  thrash-protect was running - though I somehow doubt trash-protect
+  was to blame.
 
 Other thoughts
 --------------
