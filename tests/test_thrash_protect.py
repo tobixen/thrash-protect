@@ -7,6 +7,8 @@ from io import StringIO
 #import importlib
 import signal
 import time
+import os
+import nose.plugins
 
 #thrash_protect = importlib.import_module('thrash-protect')
 import thrash_protect
@@ -105,13 +107,14 @@ class TestFuncTest:
     not really trivial.  We'll allow the methods in this class to have
     side effects.
     """
+    def __init__(self):
+        if os.geteuid():
+            raise nose.plugins.skip.SkipTest()
+
     @patch('thrash_protect.log_frozen')
     @patch('thrash_protect.log_unfrozen')
     def testSimpleFreezeUnfreeze(self, log_unfrozen, log_frozen):
-        """This test should assert that os.kill is called appropriately when
-        freezing and unfreezing pids.  We'll keep it there as for now.
-        Pure unit test, no side effects or system calls should be done
-        here.
+        """This test should assert that suspension and resuming works.
         """
         prev=thrash_protect.SystemState()
         time.sleep(1)
