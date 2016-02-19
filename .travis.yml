@@ -1,8 +1,6 @@
 language: python
+# should work in 2.5 as well, but the test code depends on unittest library from python3.3
 python:
-  - "2.6"
-  - "2.7"
-  - "3.2"
   - "3.3"
   - "3.4"
   - "3.5"
