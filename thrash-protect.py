@@ -80,7 +80,8 @@ class config:
 
     ## ADVANCED LOGGING OPTIONS
     ## When freezing a process, enables logging of username, CPU usage, memory usage and command string
-    log_user_data = int(getenv('THRASH_PROTECT_LOG_USER_DATA', '0'))
+    log_user_data_on_freeze = int(getenv('THRASH_PROTECT_LOG_USER_DATA', '0'))
+    log_user_data_on_unfreeze = int(getenv('THRASH_PROTECT_LOG_USER_DATA2', '1'))
     ## Enable human-readable date format instead of UNIX timestamp
     date_human_readable = int(getenv('THRASH_PROTECT_DATE_HUMAN_READABLE', '1'))
 
@@ -377,26 +378,25 @@ def get_date_string():
 
 ## returns string with detailed process information
 def get_process_info(pid):
-    info = check_output("ps -p %d uf" % pid, shell = True).decode('utf-8')
-    info = info.split('\n')[1]
-    info = info.split()
-    if len(info) >= 4:
-        return "u:%10s  CPU:%5s%%  MEM:%5s%%  CMD: %s" % (info[0], info[2], info[3], ' '.join(info[10:]))
-    else:
-        return "No information available, the process was probably killed."
+    try:
+        info = check_output("ps -p %d uf" % pid, shell = True).decode('utf-8')
+        info = info.split('\n')[1]
+        info = info.split()
+        if len(info) >= 4:
+            return "u:%10s  CPU:%5s%%  MEM:%5s%%  CMD: %s" % (info[0], info[2], info[3], ' '.join(info[10:]))
+        else:
+            return "No information available, the process was probably killed."
+    except:
+        logging.error("Could not fetch process user information", exc_info=True)
+        return "problem fetching process information"
 
 ## hard coded logic as for now.  One state file and one log file.
 ## state file can be monitored, i.e. through nagios.  todo: advanced logging
 def log_frozen(pid):
-    if config.log_user_data:
-        try:
-            with open("/var/log/thrash-protect.log", 'a') as logfile:
-                logfile.write("%s - frozen   pid %5s - %s - list: %s\n" % (get_date_string(), str(pid), get_process_info(pid), frozen_pids))
-        except:
-            logging.critical("process information gathering failed for some reason", exc_info=True) 
-            config.log_user_data = False
-    if not config.log_user_data:
-        with open("/var/log/thrash-protect.log", 'a') as logfile:
+    with open("/var/log/thrash-protect.log", 'a') as logfile:
+        if config.log_user_data_on_freeze:
+            logfile.write("%s - frozen   pid %5s - %s - list: %s\n" % (get_date_string(), str(pid), get_process_info(pid), frozen_pids))
+        else:
             logfile.write("%s - frozen pid %s - frozen list: %s\n" % (get_date_string(), pid, frozen_pids))
 
     with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
@@ -404,6 +404,9 @@ def log_frozen(pid):
 
 def log_unfrozen(pid):
     with open("/var/log/thrash-protect.log", 'a') as logfile:
+        if config.log_user_data_on_unfreeze:
+            logfile.write("%s - unfrozen   pid %5s - %s - list: %s\n" % (get_date_string(), str(pid), get_process_info(pid), frozen_pids))
+        else:
             logfile.write("%s - unfrozen pid %s\n" % (get_date_string(), pid))
 
     if frozen_pids:
