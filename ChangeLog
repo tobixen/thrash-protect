@@ -1,3 +1,6 @@
+2016-02-16  Tobias Brox  <tobias@redpill-linpro.com>
+	* thrash-protect.py: misc minor stuff since last release, including some code cleanup, some error handling, better logging; much of it pulled in from other forks (sorry, I'm too lazy to do a proper job creating the missing ChangeLog entries).
+
 2014-12-18  Tobias Brox  <tobias@redpill-linpro.com>
         * thrash-protect.py: some refactoring, plus now it will STOP a parent bash process before stopping the child, not to disrupt the job control
         * tests/test_thrash_protect.py: more unit tests and a small functional test
