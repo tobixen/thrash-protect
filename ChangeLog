@@ -1,4 +1,4 @@
-2016-02-16  Tobias Brox  <tobias@redpill-linpro.com>
+2016-02-19  Tobias Brox  <tobias@redpill-linpro.com>
 	* thrash-protect.py: misc minor stuff since last release, including some code cleanup, some error handling, better logging; much of it pulled in from other forks (sorry, I'm too lazy to do a proper job creating the missing ChangeLog entries).
 
 2014-12-18  Tobias Brox  <tobias@redpill-linpro.com>
