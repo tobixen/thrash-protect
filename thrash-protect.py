@@ -377,10 +377,11 @@ def get_date_string():
 
 ## returns string with detailed process information
 def get_process_info(pid):
-    info = check_output("ps -p %d uf | tail -n +2 | tr -s ' ' | cut -d ' ' -f 1,3,4,11-" % pid, shell = True).decode('utf-8')
-    info = info.split() # 0: USER  1: CPU   2: MEM   3+:CMD
+    info = check_output("ps -p %d uf" % pid, shell = True).decode('utf-8')
+    info = info.split('\n')[1]
+    info = info.split()
     if len(info) >= 4:
-        return "u:%10s  CPU:%5s%%  MEM:%5s%%  CMD: %s" % (info[0], info[1], info[2], ' '.join(info[3:]))
+        return "u:%10s  CPU:%5s%%  MEM:%5s%%  CMD: %s" % (info[0], info[2], info[3], ' '.join(info[10:]))
     else:
         return "No information available, the process was probably killed."
 
