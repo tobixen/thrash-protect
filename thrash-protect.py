@@ -20,7 +20,7 @@ try:
 except NameError:
     FileNotFoundError=IOError
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013-2014, Tobias Brox"
 __license__ = "GPL"

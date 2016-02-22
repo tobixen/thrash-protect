@@ -232,7 +232,19 @@ Roadmap
 
 Focus up until 1.0 is deployment, testing, production-hardening,
 testing, testing, bugfixing and eventually some tweaking but only if
-it's _really_ needed.  Some things that may be considered before 1.0:
+it's _really_ needed.
+
+Some things that SHOULD be fixed before 1.0 is released:
+
+* Configuration should be done either through environment variables (for backward compatibility) or through command line switches - with "--help" being the official usage documentation
+
+* Graceful handling of SIGTERM (any suspended processes should be reanimated)
+
+* Recovery on restart (read status file and resume any suspended processes)
+
+* Clean up logging and error handling properly - logging should be done through the logging module.  Separate error log?
+
+Some things that MAY be considered before 1.0:
 
 * More "lab testing", and research on possible situations were thrash-bot wins over thrash-protect.  Verify that the mlockall() actually works.
 
@@ -247,12 +259,6 @@ it's _really_ needed.  Some things that may be considered before 1.0:
 * look into the systemd service config, can the cgroup swappiness configuration be tweaked?  
 
 * Do more testing on parent suspension problems (particularly stress-testing with the condor system, testing with other interactive shells besides bash, etc)
-
-* Graceful handling of SIGTERM (any suspended processes should be reanimated)
-
-* Recovery on restart (read status file and resume any suspended processes)
-
-* Improved logging and error handling (partially fixed through the github pull request #3, but it has outstanding issues, and we should use the logging module properly).
 
 * More work is needed on getting "make rpm" and "make debian" to work
 
