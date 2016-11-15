@@ -29,9 +29,11 @@ __email__ = "tobias@redpill-linpro.com"
 __status__ = "Development"
 __product__ = "thrash-protect"
 
-
+## subprocess.check_output is not available in python 2.6.  this is used in a
+## non-critical part of the script, already inside a try-except-scope, so the
+## import has been moved there to allow the script to work on servers without 2.7 installed.
+#from subprocess import check_output 
 from os import getenv, kill, getpid, unlink, getpgid, getsid
-from subprocess import check_output
 from collections import namedtuple
 import time
 from datetime import datetime
@@ -381,6 +383,11 @@ def get_date_string():
 ## returns string with detailed process information
 def get_process_info(pid):
     try:
+        ## check_output is only available from 2.7, and compatibility
+        ## with 2.6 is currently a requirement.
+        ## TODO: move the import back where it belongs, eventually.
+        from subprocess import check_output
+        ## TODO: we should fetch this information from /proc filesystem instead of using ps
         info = check_output("ps -p %d uf" % pid, shell = True).decode('utf-8')
         info = info.split('\n')[1]
         info = info.split()
