@@ -1,3 +1,6 @@
+2016-11-15  Tobias Brox  <tobias@redpill-linpro.com>
+	* thrash-protect.py: the script broke on python 2.6.  Done a quick and dirty workaround, the extended logging information just won't work under older python.  Released 0.11.4 (0.11.2 and 0.11.3 was redundant releases - I've completely forgotten the prerequisites for a "make release")
+
 2016-02-22  Tobias Brox  <tobias@redpill-linpro.com>
         * archlinux/ The AUR setup has been changed quite a bit, the PKGBUILD was buggy.  Version 0.11.1 only contains changes to the arch linux package management
 
