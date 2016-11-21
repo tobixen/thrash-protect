@@ -7,5 +7,8 @@ The PRIMARY AUTHORS are (and/or have been):
 
 Other significant contributors:
 
+    * Bjørn Pettersen - quick code review and constructive criticism
+    * wyg3958 - code cleanup
+    * Xavier Martin - done some work on prettify the logging a bit
     * Unnamed colleague - for setting up swap and not editing the MaxClients setting under apache on a production server running some php application, such that we got downtime due to thrashing - wouldn't have made thrash-protect without this one.
     * Unnamed employee at an unnamed customer - for bypassing our job-scheduling system and running some very memory-intensive processes directly on some of the computing nodes, repeatedly causing nodes to go down due to thrashing.  (thrash-protect eventually did allow his processes to complete, without downtime or further manual work).
