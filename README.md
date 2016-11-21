@@ -197,6 +197,13 @@ Drawbacks and problems
   process and resumed after the child process has been resumed.
   Please tell if more process names ought to be added to that list.
 
+* Thrash-protect may be "unfair".  Say there are two significant
+  processes A and B; letting both of them run causes thrashing,
+  suspending one of them stops the thrashing.  Probably thrash-protect
+  should be flapping between suspending A and suspending B.  What may
+  happen is that process B is flapping between suspended and running,
+  while A is allowed to run 100%.
+
 * I've observed situations where parent processes automatically have
   gone into suspend-mode as the children got suspended and been stuck
   there even as the child process got resumed.  I've done a quick
@@ -213,9 +220,9 @@ Drawbacks and problems
   amounts of RAM (i.e. half a gig) thrash_protect itself can consume
   significant amounts of memory.
 
-* It has been reported that "swapoff" failed to complete while
-  thrash-protect was running - though I somehow doubt trash-protect
-  was to blame.
+* It seems very unlikely to be related, but it has been reported that
+  "swapoff" failed to complete on a server where thrash-protect was
+  running.
 
 Other thoughts
 --------------
