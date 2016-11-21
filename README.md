@@ -276,8 +276,3 @@ Things that eventually may go into 2.0:
 * Replace floats with ints
 
 * Rewrite to C for better control of the memory footprint
-
-Donations
----------
-
-Donations are not expected - but as long as this is a one-man hobby project it's non-problematic to receive donations.  Use bitcoin address 12jZRp4MVNySnQ9ypEP746G84jYmJATTVs or http://tobixen.tip.me eventually.  Specific feature requests will probably be released faster if the maintainer is bribed ;-)
