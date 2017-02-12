@@ -188,8 +188,14 @@ class ProcessSelector:
         if isinstance(sfn, int):
             sfn = "/proc/%s/stat" % sfn
         with open(sfn, 'r') as stat_file:
-            stats = stat_file.readline().split(' ')
-        return self.procstat(stats[1][1:].split('/')[0].split(')')[0], stats[2], int(stats[11]), int(stats[3]))
+            stats=[]
+            stats_tx = stat_file.readline()
+            stats_tx = stats_tx.split("(",1)
+            stats.append(stats_tx[0])
+            stats_tx=stats_tx[1].rsplit(")",1)   
+            stats.append(stats_tx[0])
+            stats.extend(stats_tx[1].split(' ')[1:])
+        return self.procstat(stats[1], stats[2], int(stats[11]), int(stats[3]))
 
     def checkParents(self, pid, ppid=None):
         """
