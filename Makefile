@@ -26,6 +26,7 @@ ChangeLog.recent: ChangeLog
 install: thrash-protect.py
 	install "thrash-protect.py" "$(PREFIX)/sbin/thrash-protect"
 	if [ -d "$(PREFIX)/lib/systemd/system" ]; then install systemd/thrash-protect.service "$(PREFIX)/lib/systemd/system" ; fi
+	if [ -d "$(INSTALL_ROOT)/etc/systemd/system" ]; then install systemd/thrash-protect.service "$(INSTALL_ROOT)/etc/systemd/system" ; fi
 	if [ -d "$(INSTALL_ROOT)/etc/init" ]; then install upstart/thrash-protect.conf "$(INSTALL_ROOT)/etc/init/thrash-protect.conf" ; fi
 	[ -d "$(PREFIX)/lib/systemd/system" ] || [ -d "$(INSTALL_ROOT)/etc/init" ] || install systemv/thrash-protect "$(INSTALL_ROOT)/etc/init.d/thrash-protect"
 
