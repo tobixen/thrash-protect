@@ -27,7 +27,7 @@ true
 mkdir -p $RPM_BUILD_ROOT/lib/systemd/system
 mkdir -p $RPM_BUILD_ROOT/sbin
 mkdir -p $RPM_BUILD_ROOT%{_defaultdocdir}/%{name}-%{version}
-make INSTALL_ROOT=$RPM_BUILD_ROOT
+make install INSTALL_ROOT=$RPM_BUILD_ROOT
 
 
 %files
