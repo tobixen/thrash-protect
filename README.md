@@ -67,12 +67,12 @@ Simple solution
 ---------------
 
 This script will be checking the pswpin and pswpout variables in
-/proc/vmstat on configurable intervals.  If both swap in and swap out
-is detected within the interval, the program will STOP the most nasty
-process.  The same will happen if there has been significant amounts
-of swap in or swap out.  When the host has stopped swapping the host
-will resume one of the stopped processes.  If the host starts swapping
-again, the last resumed PID will be refrozen.
+/proc/vmstat on configurable intervals.  If too much swapping 
+is detected within the interval (and particularly if the swapping is 
+bidirectional), the program will STOP the most nasty process. 
+When the host has stopped swapping the host will resume one of the 
+stopped processes.  If the host starts swapping again, the last 
+resumed PID will be refrozen.
 
 Finding the most "nasty" process seems to be a bit non-trivial, as
 there is no per-process counters on swapin/swapout.  Perhaps it's
