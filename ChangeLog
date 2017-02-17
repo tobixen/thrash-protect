@@ -1,3 +1,15 @@
+2016-02-17  Tobias Brox  <tobias@redpill-linpro.com>
+	* rpm/thrash-protect.spec: bugfix, trying to generate an rpm for centos7
+
+2016-02-11  Riccardo Balbo  <riccardo@forkforge.net>
+	* thrash-protect: bugfix: processes with spaces or paranthesis in the name was not properly handled
+
+2016-11-21  Tobias Brox  <tobias@redpill-linpro.com>
+	* puppet/templates/nrpe.cfg.erb: puppet/nrpe tuning; stuck frozen pid list is not allowed to be more than 3s old (was 5s).
+	* archlinux/Makefile: bugfix: "make archlinux" should be indempotent
+	* AUTHOR: added other contributors
+	* README: added info on a theoretical problem that thrash-protect will be suspending processes "unfairly", removed donation section
+
 2016-11-15  Tobias Brox  <tobias@redpill-linpro.com>
 	* thrash-protect.py: the script broke on python 2.6.  Done a quick and dirty workaround, the extended logging information just won't work under older python.  Released 0.11.4 (0.11.2 and 0.11.3 was redundant releases - I've completely forgotten the prerequisites for a "make release")
 
