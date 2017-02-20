@@ -24,8 +24,8 @@ problems, and in many cases the problems will resolve by themselves.
 true
 
 %install
-mkdir -p $RPM_BUILD_ROOT/lib/systemd/system
-mkdir -p $RPM_BUILD_ROOT/sbin
+mkdir -p $RPM_BUILD_ROOT/usr/lib/systemd/system
+mkdir -p $RPM_BUILD_ROOT/usr/sbin
 mkdir -p $RPM_BUILD_ROOT%{_defaultdocdir}/%{name}-%{version}
 make install INSTALL_ROOT=$RPM_BUILD_ROOT
 
