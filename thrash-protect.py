@@ -529,8 +529,8 @@ frozen_pids = []
 num_unfreezes = 0
 ## A singleton ...
 global_process_selector = GlobalProcessSelector()
-                                
-if __name__ == '__main__':
+
+def main():
     try:
         import argparse
         p = argparse.ArgumentParser(description="protect a linux host from thrashing")
@@ -541,4 +541,7 @@ if __name__ == '__main__':
         args = None
     thrash_protect(args)
 
+                                
+if __name__ == '__main__':
+    main()
 
