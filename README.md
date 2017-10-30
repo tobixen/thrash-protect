@@ -10,11 +10,18 @@ situation if there is a sysadm around, and if not - hopefully allowing
 boxes to become just slightly degraded instead of completely thrashed,
 all until the offending processes ends or the oom killer kicks in.
 
+When presented for my fellow sysadmins, there is this knee-jerk
+reaction, suspending random processes is rather scary - i.e. on a
+server running a LAMP-stack, the mysql component may typically become
+suspended.  Keep in mind, it will only happen if the server doesn't
+have enough memory installed, it will probably only happen for
+milliseconds, and the alternative would often be far worse.
+
 As of 2014-09, the development seems to have stagnated - for the very
 simple reason that it seems to work well enough for me.
 
-Problem
--------
+The problem
+-----------
 
 It's common to add relatively much swap space to linux installations.
 Swapping things out is good as long as the the swapped-out data is
@@ -50,21 +57,20 @@ answer would be one out of four:
   etc.  Enabling swap can be a lifesaver when a much-needed memory
   upgrade is delayed.
 
+* Tune the kernel parameters to avoid overcommitment, and/or restrict
+  your processes with ulimit.  The resource utilization won't be that
+  good, it may be expensive to buy enough memory - and some
+  applications may be dependent on allocating "too much" memory.
+
 * Tune the swap amount to prevent thrashing.  This doesn't actually
   work - even a modest amount of swap can be sufficient to cause
-  severe thrash situations.
+  severe thrash situations (yes, I've experienced that).
 
-* Restrict your processes with ulimit.  In general it makes sense, but
-  doesn't really help against the thrashing problem; if one wants to
-  use swap one will risk thrashing.
+The most fail-safe way to prevent thrashing seems to be a combination
+of the three first ones, a rare combination.
 
-There is also a fifth avenue that I haven't done any research on:
-maybe it's possible to tune the kernel parameters to ensure that
-malloc(3) will fail if allocating too much memory.  Anyway, that will
-cause inefficient resource utilization.
-
-Simple solution
----------------
+The simple solution
+-------------------
 
 This script will be checking the pswpin and pswpout variables in
 /proc/vmstat on configurable intervals.  If too much swapping 
@@ -130,29 +136,27 @@ Tweaks implemented
 
 I guess there are a lot of ways to tweak and tune this script, though
 I'm worried that the simplicity will go down the drain if doing too
-much tweaking.  After experimenting with the "thrash-bot.py"-script, I
-realized some tweaking was necessary though.
+much tweaking - but some was needed.
 
-I very soon realized that both a queue approach and a stack approach
-on the frozen pid list has its problems (the stack may permanently
-freeze relatively innocent processes, the queue is inefficient and
-causes quite much paging) so I made some logic "get from the head of
-the list sometimes, pop from the tail most of the times".
+Should a stack or queue be used for the suspended process list?  The
+stack may permanently freeze relatively innocent processes, the queue
+is inefficient and causes quite much paging.  Eventually I landed on
+some logic "get from the head of the list sometimes, pop from the tail
+most of the times".
 
-Up until and including 0.6 only delta maj_page_faults when deciding
-which process to STOP.  More algorithms was implemented in 0.7.
+How to identify potentially "bad" processes?  This seems to be
+non-trivial, eventually I made three independent algorithms (first one
+is triggering on delta maj_page_faults, second one checks the
+oom_score, third one just assumes the last frozen process is the bad
+one - if the script resumes some process and the host immediately
+starts thrashing again, it's probably smart to refreeze the same
+process, it's also a very cheap operation).
 
-If the script resumes some process and the host immediately starts
-thrashing again, it's probably smart to refreeze the same process,
-hence a third method for discovering which pid to freeze was created.
-This is also a very cheap operation, so it's always the first method
-run after unfreezing a process.
-
-Finally, I found that I couldn't allow to do a full
-sleep(sleep_interval) between each frozen process if the box was
-thrashing.  I've also attempted to detect if there are delays in the
-processing, and let the script be more aggressive.  Unfortunately this
-change introduced quite some added complexity.
+I found that I couldn't allow to do a full sleep(sleep_interval)
+between each frozen process if the box was thrashing.  I've also
+attempted to detect if there are delays in the processing, and let the
+script be more aggressive.  Unfortunately this change introduced quite
+some added complexity.
 
 It's important to do some research to learn if the program would
 benefit significantly from being rewritten into C before doing too
@@ -165,37 +169,53 @@ pid/pagefault dict, read more options, improved log handling, etc).
 Experiences
 -----------
 
-As of 2014-09, this script has been run on several production systems
-and some workstations/laptops for almost a year without problems, it
-has definitively saved us from several power-cyclings.  Best of all,
-in most of the cases I haven't had to do anything - except, under some
-circumstances, I had to add more swap space.  Instead of a whole
-server or VM being thrashed beyond rescue some "badass" processes have
-been peacefully and temporary suspended without anyone noticing, and
-eventually the situation has resolved itself.  Hence I like to have it
-running on any system having any kind of swap capacity mounted up.
-Anyway, the script hasn't been through any thorough peer-review, and
-it hasn't been deployed to many systems yet - don't blame me if you
-start up this script and anything goes kaboom.
+As of 2017-11, this script has been run on several production systems
+aa well as workstations/laptops for several years without significant
+problems, it has definitively saved us from several power-cyclings.
 
-I would strongly recommend to give this script a shot as a temporary
-stop-gap-solution if you have a server that have had thrashing problem
-earlier, and where the problem cannot be solved (in a timely manner)
-by adding more memory or shrinking the swap partition.
+In most of the cases I haven't had to do any manual interventions to
+solve the thrashing problems.  Instead of a whole server or VM being
+thrashed beyond rescue some "badass" processes have been peacefully
+and temporary suspended without anyone noticing.  Sometimes the
+"badass" process has been killed by the OOM-manager, eventually.
+Sometimes the thrashing situation has been of temporary nature,
+suspending some processes throughout the periods with excessive memory
+usage has been sufficient to get through.  I've had situations where
+the "badass" process has been some important computing job, three
+times the server was crashing due to thrashing, after installing
+thrash-protect the job got killed by the OOM-manager, fifth time I
+installed more swap and the job managed to lug itself into completion.
+One of the ideas was that the sysadmin should be able to log in and
+resolve the problem, but it has rarely happened that the
+thrash-protect-monitoring has been causing alarm situations.
+
+Due to the good experiences, I'd like to have it running everywhere,
+combined with generous swap capacity mounted up.  Anyway, the script
+hasn't been through any thorough peer-review, and it hasn't been
+deployed to many systems yet - don't blame me if you start up this
+script and anything goes kaboom.
 
 Drawbacks and problems
 ----------------------
 
-* Some parent processes may behave unexpectedly when the children gets
-  suspended, particularly interactive processes under bash - mutt,
-  less, even running a minecraft server interactively under bash
-  (work-around: start them directly from screen).  We've observed one
-  problem with the condor job control system, but we haven't checked
-  if the problem was related to thrash-protect.  Implementation fix:
-  if the parent process name is within a configurable list (default:
-  bash), then the parent process will be suspended before the child
-  process and resumed after the child process has been resumed.
-  Please tell if more process names ought to be added to that list.
+* Some parent processes (notably bash when running interactive
+  programs under it, possibly condor) does have job control schemes
+  causing side effects when the child process is suspended.
+  Workaround implemented: if the parent process name is within a
+  configurable list (default: bash, sudo), then the parent process
+  will be suspended before the child process and resumed after the
+  child process has been resumed.  **There is a significant risk that
+  this applies to other processes as well**.  Perhaps the
+  "suspend-parent-first"-logic should apply always, and not only for a
+  list of identified parent process names.
+
+* I've observed situations where parent processes automatically have
+  gone into suspend-mode as the children got suspended and been stuck
+  there even as the child process got resumed.  Work-arounds
+  implemented: always running SIGCONT on the session process id and
+  group process id.  This may be harmful if you're actively using
+  SIGSTOP on processes having children, and also added "sudo" to the
+  list of processes where the parent process also should be suspended.
 
 * Thrash-protect may be "unfair".  Say there are two significant
   processes A and B; letting both of them run causes thrashing,
@@ -203,13 +223,6 @@ Drawbacks and problems
   should be flapping between suspending A and suspending B.  What may
   happen is that process B is flapping between suspended and running,
   while A is allowed to run 100%.
-
-* I've observed situations where parent processes automatically have
-  gone into suspend-mode as the children got suspended and been stuck
-  there even as the child process got resumed.  I've done a quick
-  work-around on this by always running SIGCONT on the session process
-  id and group process id.  This may be harmful if you're actively
-  using SIGSTOP on processes having children.
 
 * This was supposed to be a rapid prototype, so it doesn't recognize
   any options.  Configuration settings can be given through OS
@@ -223,6 +236,10 @@ Drawbacks and problems
 * It seems very unlikely to be related, but it has been reported that
   "swapoff" failed to complete on a server where thrash-protect was
   running.
+
+A proper fix for the two first problems seems to be to always STOP the
+parent process (no matter the name of the parent process), see [issue
+#12](https://github.com/tobixen/thrash-protect/issues/12) at github.
 
 Other thoughts
 --------------

@@ -70,7 +70,7 @@ class config:
     cmd_whitelist = getenv('THRASH_PROTECT_CMD_WHITELIST', '')
     cmd_whitelist = cmd_whitelist.split(' ') if cmd_whitelist else ['sshd', 'bash', 'xinit', 'X', 'spectrwm', 'screen', 'SCREEN', 'mutt', 'ssh', 'xterm', 'rxvt', 'urxvt', 'Xorg.bin', 'systemd-journal']
     cmd_blacklist = getenv('THRASH_PROTECT_CMD_BLACKLIST', '').split(' ')
-    cmd_jobctrllist = getenv('THRASH_PROTECT_CMD_JOBCTRLLIST', 'bash').split(' ')
+    cmd_jobctrllist = getenv('THRASH_PROTECT_CMD_JOBCTRLLIST', 'bash sudo').split(' ')
     blacklist_score_multiplier = int(getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', '16'))
     whitelist_score_divider = int(getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', str(blacklist_score_multiplier*4)))
 
