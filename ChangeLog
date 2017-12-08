@@ -1,6 +1,7 @@
 2017-12-08  Tobias Brox  <tobias@redpill-linpro.com>
 	* thrash-protect.py: a bug in the thrash-detecting algorithm; the threshold for detecting thrashing has efficiently been 1 all the time, even though it's defaulted to 512 in the config section.  Fixed the bug and lowered the default to 4, not to change the behaviour too drastically.  This will cause thrash-protect to be less aggressive.
-	* ChangeLog: updated, preparing for new release 0.11.6
+	* ChangeLog: updated, preparing for new release 0.11.6 ... 0.11.7 even
+	* Makefile: latest changes did not work well for the archlinux install
 
 2017-10-30  Tobias Brox  <tobias@redpill-linpro.com>
 	* README: documentation tweaks and new thoughts
