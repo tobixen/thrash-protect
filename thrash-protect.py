@@ -20,7 +20,7 @@ try:
 except NameError:
     FileNotFoundError=IOError
 
-__version__ = "0.11.5"
+__version__ = "0.11.6"
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013-2016, Tobias Brox"
 __license__ = "GPL"
@@ -61,7 +61,7 @@ class config:
     max_acceptable_time_delta = interval/16.0
 
     ## Number of acceptable page swaps during the above interval
-    swap_page_threshold = int(getenv('THRASH_PROTECT_SWAP_PAGE_THRESHOLD', '512'))
+    swap_page_threshold = int(getenv('THRASH_PROTECT_SWAP_PAGE_THRESHOLD', '4'))
 
     ## After X number of major pagefaults, we should initiate a process scanning
     pgmajfault_scan_threshold = int(getenv('THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD', swap_page_threshold*4))
