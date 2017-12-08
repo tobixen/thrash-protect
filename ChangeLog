@@ -1,7 +1,25 @@
-2016-02-17  Tobias Brox  <tobias@redpill-linpro.com>
+2017-12-08  Tobias Brox  <tobias@redpill-linpro.com>
+	* thrash-protect.py: a bug in the thrash-detecting algorithm; the threshold for detecting thrashing has efficiently been 1 all the time, even though it's defaulted to 512 in the config section.  Fixed the bug and lowered the default to 4, not to change the behaviour too drastically.  This will cause thrash-protect to be less aggressive.
+	* ChangeLog: updated, preparing for new release 0.11.6
+
+2017-10-30  Tobias Brox  <tobias@redpill-linpro.com>
+	* README: documentation tweaks and new thoughts
+	* thrash-protect.py: sudo is added to the list of processes where it may be important to suspend the parent process
+
+2017-10-11  Tobias Brox  <tobias@redpill-linpro.com>
+	* Makefile: attempting to get directories right for other distros - credits to @anophelesgreyhoe@github
+
+2017-02-23  Chris Coetzee  <chriscz93@gmail.com>
+	* setup.py: pypi-compatible setup script
+	* thrash-protect.py: moving logics to a main sub - minor refactoring to follow best pypi-practice
+
+2017-02-20  Tobias Brox  <tobias@redpill-linpro.com>
+	* rpm/thrash-protect.spec: bugfixing the rpm build
+
+2017-02-17  Tobias Brox  <tobias@redpill-linpro.com>
 	* rpm/thrash-protect.spec: bugfix, trying to generate an rpm for centos7
 
-2016-02-11  Riccardo Balbo  <riccardo@forkforge.net>
+2017-02-11  Riccardo Balbo  <riccardo@forkforge.net>
 	* thrash-protect: bugfix: processes with spaces or paranthesis in the name was not properly handled
 
 2016-11-21  Tobias Brox  <tobias@redpill-linpro.com>
