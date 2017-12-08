@@ -134,7 +134,7 @@ class SystemState:
         
         ## will return True if we have bidirectional traffic to swap, or if we have
         ## a big one-directional flow of data
-        ret = (self.swapcount[0]-prev.swapcount[0]+1.0/config.swap_page_threshold) * (self.swapcount[1]-prev.swapcount[1]+1.0/config.swap_page_threshold) > 1.0
+        ret = (self.swapcount[0]-prev.swapcount[0]+1.0) * (self.swapcount[1]-prev.swapcount[1]+1.0) / config.swap_page_threshold > 1.0
         ## Increase or decrease the busy-counter ... or keep it where it is
         if ret:
             ## thrashing alert, increase the counter
