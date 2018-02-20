@@ -72,7 +72,7 @@ class config:
     cmd_blacklist = getenv('THRASH_PROTECT_CMD_BLACKLIST', '').split(' ')
     cmd_jobctrllist = getenv('THRASH_PROTECT_CMD_JOBCTRLLIST', 'bash sudo').split(' ')
     blacklist_score_multiplier = int(getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', '16'))
-    whitelist_score_divider = int(getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', str(blacklist_score_multiplier*4)))
+    whitelist_score_divider = int(getenv('THRASH_PROTECT_WHITELIST_SCORE_MULTIPLIER', str(blacklist_score_multiplier*4)))
 
     ## Unfreezing processes: Ratio of POP compared to GET (integer)
     unfreeze_pop_ratio = int(getenv('THRASH_PROTECT_UNFREEZE_POP_RATIO', '5'))
@@ -163,7 +163,7 @@ class SystemState:
         delta = time.time() - self.timestamp - expected_delay
         debug("interval: %s cooldown_counter: %s expected delay: %s delta: %s time: %s frozen pids: %s" % (config.interval, self.cooldown_counter, expected_delay, delta, time.time(), frozen_pids))
         if delta > config.max_acceptable_time_delta:
-            debug("red alert!  unacceptable time delta observed!")
+            logging.error("red alert!  unacceptable time delta observed!")
             self.cooldown_counter += 1
             return False
         return True
