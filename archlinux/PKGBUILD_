@@ -14,9 +14,8 @@ package() {
   mkdir -p "$pkgdir/usr/bin/"
   ln -s "$pkgdir/usr/bin/" "$pkgdir/usr/sbin"
   cd "$srcdir/$pkgname-$pkgver/"
-  make PREFIX=$pkgdir/usr install
+  make PREFIX=$pkgdir/usr INSTALL_ROOT=$pkgdir install
   rm "$pkgdir/usr/sbin"
 }
 
 
-md5sums=('73634f06b4b794777e6dcc588d171b49')

@@ -25,9 +25,10 @@ ChangeLog.recent: ChangeLog
 
 install: thrash-protect.py
 	install "thrash-protect.py" "$(PREFIX)/sbin/thrash-protect"
-	if [ -d "$(PREFIX)/lib/systemd/system" ]; then install systemd/thrash-protect.service "$(PREFIX)/lib/systemd/system" ; fi
+	if [ -d "$(INSTALL_ROOT)/lib/systemd/system" ]; then install systemd/thrash-protect.service "$(INSTALL_ROOT)/lib/systemd/system" ; \
+        elif [ -d "$(PREFIX)/lib/systemd/system" ]; then install systemd/thrash-protect.service "$(PREFIX)/lib/systemd/system" ; fi
 	if [ -d "$(INSTALL_ROOT)/etc/init" ]; then install upstart/thrash-protect.conf "$(INSTALL_ROOT)/etc/init/thrash-protect.conf" ; fi
-	[ -d "$(PREFIX)/lib/systemd/system" ] || [ -d "$(INSTALL_ROOT)/etc/init" ] || install systemv/thrash-protect "$(INSTALL_ROOT)/etc/init.d/thrash-protect"
+	[ -d "$(PREFIX)/lib/systemd/system" ] || [ -d "$(INSTALL_ROOT)/etc/init" ] || [ -d "$(INSTALL_ROOT)/lib/systemd/system" ] || install systemv/thrash-protect "$(INSTALL_ROOT)/etc/init.d/thrash-protect"
 
 .tag.${version}: ChangeLog.recent
 	if ! git show --oneline -s "v${version}" > /dev/null 2>&1; then git status ; cat ChangeLog.recent ; git tag -s "v${version}" -F ChangeLog.recent ; git push origin "v${version}" ; fi

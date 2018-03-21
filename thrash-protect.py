@@ -20,7 +20,7 @@ try:
 except NameError:
     FileNotFoundError=IOError
 
-__version__ = "0.11.5"
+__version__ = "0.11.7"
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013-2016, Tobias Brox"
 __license__ = "GPL"
@@ -61,7 +61,7 @@ class config:
     max_acceptable_time_delta = interval/16.0
 
     ## Number of acceptable page swaps during the above interval
-    swap_page_threshold = int(getenv('THRASH_PROTECT_SWAP_PAGE_THRESHOLD', '512'))
+    swap_page_threshold = int(getenv('THRASH_PROTECT_SWAP_PAGE_THRESHOLD', '4'))
 
     ## After X number of major pagefaults, we should initiate a process scanning
     pgmajfault_scan_threshold = int(getenv('THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD', swap_page_threshold*4))
@@ -70,9 +70,9 @@ class config:
     cmd_whitelist = getenv('THRASH_PROTECT_CMD_WHITELIST', '')
     cmd_whitelist = cmd_whitelist.split(' ') if cmd_whitelist else ['sshd', 'bash', 'xinit', 'X', 'spectrwm', 'screen', 'SCREEN', 'mutt', 'ssh', 'xterm', 'rxvt', 'urxvt', 'Xorg.bin', 'systemd-journal']
     cmd_blacklist = getenv('THRASH_PROTECT_CMD_BLACKLIST', '').split(' ')
-    cmd_jobctrllist = getenv('THRASH_PROTECT_CMD_JOBCTRLLIST', 'bash').split(' ')
+    cmd_jobctrllist = getenv('THRASH_PROTECT_CMD_JOBCTRLLIST', 'bash sudo').split(' ')
     blacklist_score_multiplier = int(getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', '16'))
-    whitelist_score_divider = int(getenv('THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER', str(blacklist_score_multiplier*4)))
+    whitelist_score_divider = int(getenv('THRASH_PROTECT_WHITELIST_SCORE_MULTIPLIER', str(blacklist_score_multiplier*4)))
 
     ## Unfreezing processes: Ratio of POP compared to GET (integer)
     unfreeze_pop_ratio = int(getenv('THRASH_PROTECT_UNFREEZE_POP_RATIO', '5'))
@@ -134,7 +134,10 @@ class SystemState:
         
         ## will return True if we have bidirectional traffic to swap, or if we have
         ## a big one-directional flow of data
-        ret = (self.swapcount[0]-prev.swapcount[0]+1.0/config.swap_page_threshold) * (self.swapcount[1]-prev.swapcount[1]+1.0/config.swap_page_threshold) > 1.0
+        ret = (
+            ((self.swapcount[0]-prev.swapcount[0])/config.swap_page_threshold + 1.0) *
+            ((self.swapcount[1]-prev.swapcount[1])/config.swap_page_threshold + 1.0)
+            > 1.0)
         ## Increase or decrease the busy-counter ... or keep it where it is
         if ret:
             ## thrashing alert, increase the counter
@@ -160,7 +163,7 @@ class SystemState:
         delta = time.time() - self.timestamp - expected_delay
         debug("interval: %s cooldown_counter: %s expected delay: %s delta: %s time: %s frozen pids: %s" % (config.interval, self.cooldown_counter, expected_delay, delta, time.time(), frozen_pids))
         if delta > config.max_acceptable_time_delta:
-            debug("red alert!  unacceptable time delta observed!")
+            logging.error("red alert!  unacceptable time delta observed!")
             self.cooldown_counter += 1
             return False
         return True
@@ -449,11 +452,13 @@ def freeze_something(pids_to_freeze=None):
             continue
     if not pids_to_freeze in frozen_pids:
             frozen_pids.append(pids_to_freeze)
-    ## Logging after freezing - as logging itself may be resource- and timeconsuming.
-    ## Perhaps we should even fork it out.
-    debug("going to freeze %s" % str(pid_to_freeze))
-    log_frozen(pid_to_freeze)
-    return pids_to_freeze
+
+    for pid_to_freeze in pids_to_freeze:
+        ## Logging after freezing - as logging itself may be resource- and timeconsuming.
+        ## Perhaps we should even fork it out.
+        debug("froze pid %s" % str(pid_to_freeze))
+        log_frozen(pid_to_freeze)
+        return pids_to_freeze
 
 def unfreeze_something():
     global frozen_pids
