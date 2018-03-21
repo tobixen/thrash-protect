@@ -132,11 +132,20 @@ class SystemState:
             self.cooldown_counter = prev.cooldown_counter+1
             return True
         
-        ## will return True if we have bidirectional traffic to swap, or if we have
-        ## a big one-directional flow of data
+        ## will return True if we have bidirectional traffic to swap,
+        ## or if we have a big one-directional flow of data.
+        ##
+        ## * if both swap counters are above the swap_page_threshold, trigger
+        ##
+        ## * if one of the swap counters is quite much above the
+        ##   swap_page_threshold, while the other is 0, we should trigger
+        ##
+        ## the below algorithm seems to satisfy those two criterias, though
+        ## I'm not much happy with the arbitrary constant "0.1" being thrown
+        ## in.
         ret = (
-            ((self.swapcount[0]-prev.swapcount[0])/(config.swap_page_threshold + 1.0)) *
-            ((self.swapcount[1]-prev.swapcount[1])/(config.swap_page_threshold + 1.0))
+            ((self.swapcount[0]-prev.swapcount[0]+0.1)/config.swap_page_threshold) *
+            ((self.swapcount[1]-prev.swapcount[1]+0.1)/config.swap_page_threshold)
             > 1.0)
         ## Increase or decrease the busy-counter ... or keep it where it is
         if ret:
