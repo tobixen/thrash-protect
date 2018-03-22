@@ -1,3 +1,12 @@
+2018-03-21  Tobias Brox  <tobias@redpill-linpro.com>
+        * thrash-protect.py: bugfix in logging, when parent pids are suspended they should also be logged
+        * thrash-protect.py: Trying yet another time to fix the thrash-detecting algorithm; apparently the December bugfix was not well enough tested or thought through.
+        * ChangeLog: updaed, preparing for new release 0.12.
+
+2018-02-08  Tobias Brox  <tobias@redpill-linpro.com>
+        * thrash-protect.py: Silly-stupid bugfix for the THRASH_PROTECT_WHITELIST configuration environmental variable
+        * README: doc tweaks
+
 2017-12-08  Tobias Brox  <tobias@redpill-linpro.com>
 	* thrash-protect.py: a bug in the thrash-detecting algorithm; the threshold for detecting thrashing has efficiently been 1 all the time, even though it's defaulted to 512 in the config section.  Fixed the bug and lowered the default to 4, not to change the behaviour too drastically.  This will cause thrash-protect to be less aggressive.
 	* ChangeLog: updated, preparing for new release 0.11.6 ... 0.11.7 even
