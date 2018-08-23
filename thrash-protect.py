@@ -22,7 +22,7 @@ except NameError:
 
 __version__ = "0.12"
 __author__ = "Tobias Brox"
-__copyright__ = "Copyright 2013-2016, Tobias Brox"
+__copyright__ = "Copyright 2013-2018, Tobias Brox"
 __license__ = "GPL"
 __maintainer__ = "Tobias Brox"
 __email__ = "tobias@redpill-linpro.com"
@@ -90,7 +90,7 @@ class config:
     date_human_readable = int(getenv('THRASH_PROTECT_DATE_HUMAN_READABLE', '1'))
 
 ## Poor mans logging.  Should eventually set up the logging module
-#debug = print
+#debu g= print
 debug = lambda foo: None
 
 class SystemState:
@@ -172,7 +172,7 @@ class SystemState:
         delta = time.time() - self.timestamp - expected_delay
         debug("interval: %s cooldown_counter: %s expected delay: %s delta: %s time: %s frozen pids: %s" % (config.interval, self.cooldown_counter, expected_delay, delta, time.time(), frozen_pids))
         if delta > config.max_acceptable_time_delta:
-            logging.error("red alert!  unacceptable time delta observed!")
+            logging.error("red alert!  unacceptable time delta observed! interval: %s cooldown_counter: %s expected delay: %s delta: %s time: %s frozen pids: %s" % (config.interval, self.cooldown_counter, expected_delay, delta, time.time(), frozen_pids))
             self.cooldown_counter += 1
             return False
         return True

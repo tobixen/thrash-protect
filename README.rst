@@ -240,9 +240,8 @@ it's *really* needed.
 
 Some things that SHOULD be fixed before 1.0 is released:
 
--  Configuration should be done either through environment variables
-   (for backward compatibility) or through command line switches - with
-   "--help" being the official usage documentation
+-  Support configuration through command line switches as well as through
+   a config file.  Fix official usage documentation to be availabe at --help.
 
 -  Graceful handling of SIGTERM (any suspended processes should be
    reanimated)
@@ -253,7 +252,14 @@ Some things that SHOULD be fixed before 1.0 is released:
 -  Clean up logging and error handling properly - logging should be done
    through the logging module. Separate error log?
 
+-  More testing, make sure all the code has been tested.  I.e. is the 
+   check_delay function useful?
+
 Some things that MAY be considered before 1.0:
+
+-  Add more automated unit tests and functional test code.  
+   All parts of the code needs to be exercised, including 
+   parsing configuration variables, etc.
 
 -  More "lab testing", and research on possible situations were
    thrash-bot wins over thrash-protect. Verify that the mlockall()
