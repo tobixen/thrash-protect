@@ -90,7 +90,7 @@ class config:
     date_human_readable = int(getenv('THRASH_PROTECT_DATE_HUMAN_READABLE', '1'))
 
 ## Poor mans logging.  Should eventually set up the logging module
-#debu g= print
+#debug = print
 debug = lambda foo: None
 
 class SystemState:
