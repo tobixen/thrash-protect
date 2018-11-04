@@ -3,15 +3,15 @@ thrash-protect
 
 Simple-Stupid user-space program protecting a linux host from thrashing.
 
-The script attempts to detect thrashing situations and temporary stop
-rogue processes, hopefully before things get too much out of control,
-hopefully giving a sysadm enough time to investigate and handle the
-situation if there is a sysadm around, and if not - hopefully allowing
-boxes to become just slightly degraded instead of completely thrashed,
-all until the offending processes ends or the oom killer kicks in.
+The script attempts to detect thrashing situations and stop rogue
+processes for short intervals.  It works a bit like the ABS break on
+the car - hopefully allowing a sysadmin to get control over the
+situation despite the thrashing - or eventually letting the box become
+slightly degraded instead of completely thrashed (until the rogue
+process ends or gets killed by the oom killer).
 
-As of 2014-09, the development seems to have stagnated - for the very
-simple reason that it seems to work well enough for me.
+There commit rate has been fairly low during the last few years - for
+the very simple reason that it seems to work well enough.
 
 Problem
 -------
@@ -65,18 +65,26 @@ inefficient resource utilization.
 Simple solution
 ---------------
 
-This script will be checking the pswpin and pswpout variables in
-/proc/vmstat on configurable intervals. If too much swapping is detected
-within the interval (and particularly if the swapping is bidirectional),
-the program will STOP the most nasty process. When the host has stopped
-swapping the host will resume one of the stopped processes. If the host
-starts swapping again, the last resumed PID will be refrozen.
+The reason why the box becomes completely thrashed is that Linux
+spends all available resources on context switches; it's not much
+smart to spend seconds on context switching and then let the
+application run for milliseconds until the next context switch.  By
+stopping rogue processes for seconds rather than switching it out for
+milliseconds, things will still work despite the thrashing.
 
-Finding the most "nasty" process seems to be a bit non-trivial, as there
-is no per-process counters on swapin/swapout. Perhaps it's possible to
-check the delta of the total swap pages used and sum it together with
-the number of page faults. Currently three algorithms have been
-implemented and the script uses them in this order:
+This script will be checking the pswpin and pswpout variables in
+/proc/vmstat on configurable intervals to detect thrashing.  The
+formula is set up so that a lot of unidirectional swap movement or a
+little bit of bidirectional swapping within a time interval will trigger (something like
+`(swapin+epsilon)*(swapout+epsilon)>threshold`).  The program will then STOP
+the most nasty process. When the host has stopped swapping the host
+will resume one of the stopped processes. If the host starts swapping
+again, the last resumed PID will be refrozen.
+
+Finding the most "nasty" process seems to be a bit non-trivial, as
+there is no per-process counters on swapin/swapout. Currently three
+algorithms have been implemented and the script uses them in this
+order:
 
 -  Last unfrozen pid, if it's still running. Of course this can't work
    as a stand-alone solution, but it's a very cheap operation and just
@@ -84,32 +92,35 @@ implemented and the script uses them in this order:
    unfreezing some pid - hence it's always the first algorithm to run
    after unfreezing some pid.
 
--  oom\_score; intended to catch processes gobbling up memory without
-   making significant amounts of page faults. It has some drawbacks - it
-   doesn't target the program behaviour "right now", and it will give
-   priority to parent pids - when suspending a process, it may not help
-   to simply suspend the parent process.
+-  oom\_score; intended to catch processes gobbling up "too much"
+   memory. It has some drawbacks - it doesn't target the program
+   behaviour "right now", and it will give priority to parent pids -
+   when suspending a process, it may not help to simply suspend the
+   parent process.
 
--  Number of page faults. This is non-ideal because a rogue process
-   gobbling up memory and swap through write-only operations won't cause
-   page faults. Also, a "page fault" is not the same as swapin - it may
-   also happen when a program wants to access data that the kernel has
-   postponed loading from disk (typically program code - hence one
-   typically gets lots of page fault when starting some relatively big
-   application). The worst problem with this approach is that it
-   requires state about every process to be stored in memory, this
-   memory may be swapped out, and if the box is really thrashed it may
-   take forever to get through this algorithm.
+-  Number of page faults. This was the first algorithm I made, but it
+   does not catch rogue processes gobbling up memory and swap through
+   write-only operations, as that won't cause page faults.  The
+   algorithm also came up with false positives, a "page fault" is not
+   the same as swapin - it also happens when a program wants to
+   access data that the kernel has postponed loading from disk
+   (typically program code - hence one typically gets lots of page
+   fault when starting some relatively big application). The worst
+   problem with this approach is that it requires state about every
+   process to be stored in memory, this memory may be swapped out, and
+   if the box is really thrashed it may take forever to get through
+   this algorithm.
 
 The script creates a file on /tmp when there are frozen processes, nrpe
-can eventually be set up to monitor the existance of such a file as well
-as the existance of suspended processes.
+can eventually be set up to monitor the existence of such a file as well
+as the existence of suspended processes.
 
-Important processes (say, sshd) can be whitelisted, and processes known
-to be nasty or unimportant can be blacklisted. Note that the
-"black/whitelisting" is done by weighting - randomly stopping
-blacklisted processes may not be sufficient to stop thrashing, and a
-whitelisted process may still be particularly nasty and stopped.
+Important processes (say, sshd) can be whitelisted, and processes
+known to be nasty or unimportant can be blacklisted (there are some
+default settings on this). Note that the "black/whitelisting" is done
+by weighting - randomly stopping blacklisted processes may not be
+sufficient to stop thrashing, and a whitelisted process may still be
+particularly nasty and stopped.
 
 With this approach, hopefully the most-thrashing processes will be
 slowed down sufficiently that it will always be possible to ssh into a
@@ -122,63 +133,47 @@ A prototype has been made in python - my initial thought was to
 reimplement in C for smallest possible footstep, memory consumption and
 fastest possible action - though I'm not sure if it's worth the effort.
 
-Tweaks implemented
-------------------
-
-I guess there are a lot of ways to tweak and tune this script, though
-I'm worried that the simplicity will go down the drain if doing too much
-tweaking. After experimenting with the "thrash-bot.py"-script, I
-realized some tweaking was necessary though.
-
 I very soon realized that both a queue approach and a stack approach on
 the frozen pid list has its problems (the stack may permanently freeze
 relatively innocent processes, the queue is inefficient and causes quite
 much paging) so I made some logic "get from the head of the list
 sometimes, pop from the tail most of the times".
 
-Up until and including 0.6 only delta maj\_page\_faults when deciding
-which process to STOP. More algorithms was implemented in 0.7.
+I found that I couldn't allow to do a full sleep(sleep\_interval)
+between each frozen process if the box was thrashing. I've also
+attempted to detect if there are delays in the processing, and let the
+script be more aggressive. Unfortunately this change introduced quite
+some added complexity.
 
-If the script resumes some process and the host immediately starts
-thrashing again, it's probably smart to refreeze the same process, hence
-a third method for discovering which pid to freeze was created. This is
-also a very cheap operation, so it's always the first method run after
-unfreezing a process.
-
-Finally, I found that I couldn't allow to do a full
-sleep(sleep\_interval) between each frozen process if the box was
-thrashing. I've also attempted to detect if there are delays in the
-processing, and let the script be more aggressive. Unfortunately this
-change introduced quite some added complexity.
-
-It's important to do some research to learn if the program would benefit
-significantly from being rewritten into C before doing too much tweaking
-on the python script. If not, the python script should be tweaked,
-refactored and optimized a bit (i.e. using re instead of split, skip
-floats and use ints instead, look through and simplify the algorithm
-where possible, garbage collection of old processes from the
-pid/pagefault dict, read more options, improved log handling, etc).
+Some research should eventually be done to learn if the program would
+benefit significantly from being rewritten into C - but it seems like
+I won't bother, it seems to work well enough in python.
 
 Experiences
 -----------
 
-As of 2014-09, this script has been run on several production systems
-and some workstations/laptops for almost a year without problems, it has
-definitively saved us from several power-cyclings. Best of all, in most
-of the cases I haven't had to do anything - except, under some
-circumstances, I had to add more swap space. Instead of a whole server
-or VM being thrashed beyond rescue some "badass" processes have been
-peacefully and temporary suspended without anyone noticing, and
-eventually the situation has resolved itself. Hence I like to have it
-running on any system having any kind of swap capacity mounted up.
-Anyway, the script hasn't been through any thorough peer-review, and it
-hasn't been deployed to many systems yet - don't blame me if you start
-up this script and anything goes kaboom.
+As of 2018, I feel pretty confident that there are no significant
+drawbacks with running this script, and that it almost eliminates the
+risk of having to reboot a system due to thrashing.  I'm running it
+everywhere, both on personal desktops and production servers at work,
+and I've done that for years.
 
-I would strongly recommend to give this script a shot as a temporary
-stop-gap-solution if you have a server that have had thrashing problem
-earlier, and where the problem cannot be solved (in a timely manner) by
-adding more memory or shrinking the swap partition.
+The script has definitively saved us from several power-cyclings. Best
+of all, in most of the cases I haven't had to do anything.  Once I
+actually added more swap, to let the "rogue" process finish up (it was
+an important calculation job started by a customer).  Before
+thrash-protect I couldn't even identify the "rogue" process because
+the whole server went down too quickly, after thrash-protect it was
+easy to spot the "rogue" process, it ate a lot of memory, but it
+completed!
+
+Another thing, if thrash protect is creating log lines, it's probably
+about time to upgrade the memory on a box.  I've found this to be a
+more useful and reliable indicator than anything else!
+
+All this said, the script hasn't been through any thorough
+peer-review, and it hasn't been deployed to many systems yet - don't
+blame me if you start up this script and anything goes kaboom.
 
 Drawbacks and problems
 ----------------------
@@ -189,7 +184,7 @@ Drawbacks and problems
    (work-around: start them directly from screen). We've observed one
    problem with the condor job control system, but we haven't checked if
    the problem was related to thrash-protect. Implementation fix: if the
-   parent process name is within a configurable list (default: bash),
+   parent process name is within a configurable list (with sane defaults),
    then the parent process will be suspended before the child process
    and resumed after the child process has been resumed. Please tell if
    more process names ought to be added to that list.
@@ -291,3 +286,8 @@ Things that eventually may go into 2.0:
 -  Replace floats with ints
 
 -  Rewrite to C for better control of the memory footprint
+
+-  Use regexps instead of split (?)
+
+-  Garbage collection of old processes from the pid/pagefault dict
+
