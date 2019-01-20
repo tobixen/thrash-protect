@@ -20,7 +20,7 @@ try:
 except NameError:
     FileNotFoundError=IOError
 
-__version__ = "0.12"
+__version__ = "0.12.1"
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013-2018, Tobias Brox"
 __license__ = "GPL"
@@ -516,7 +516,7 @@ def thrash_protect(args=None):
         import ctypes
         assert(not ctypes.cdll.LoadLibrary('libc.so.6').mlockall(ctypes.c_int(3)))
     except:
-        logging.warning("failed to do mlockall() - this makes the program vulnerable of being swapped out in an extreme thrashing event", exc_info=True)
+        logging.warning("failed to do mlockall() - this makes the program vulnerable of being swapped out in an extreme thrashing event (maybe you're not running the script as root?)", exc_info=False)
 
     while True:
         prev = current
