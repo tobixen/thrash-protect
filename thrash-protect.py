@@ -176,7 +176,7 @@ class SystemState:
         global frozen_pids
         delta = time.time() - self.timestamp - expected_delay
         if delta > config.max_acceptable_time_delta:
-            logging.error("red alert!  unacceptable time delta observed! interval: %s cooldown_counter: %s expected delay: %s max acceptable delta: %s delta: %s time: %s frozen pids: %s" % (config.interval, self.cooldown_counter, expected_delay, config.max_acceptable_time_delta, delta, time.time(), frozen_pids))
+            logging.warning("red alert!  unacceptable time delta observed! interval: %s cooldown_counter: %s expected delay: %s max acceptable delta: %s delta: %s time: %s frozen pids: %s" % (config.interval, self.cooldown_counter, expected_delay, config.max_acceptable_time_delta, delta, time.time(), frozen_pids))
             self.cooldown_counter += 1
             self.timer_alert = True
             return False
@@ -425,7 +425,7 @@ def get_process_info(pid):
 ## hard coded logic as for now.  One state file and one log file.
 ## state file can be monitored, i.e. through nagios.  todo: advanced logging
 def log_frozen(pid):
-    with open("/var/log/thrash-protect.log", 'a') as logfile:
+    with open("/var/log/thrash-protect.log", 'a', encoding='utf-8') as logfile:
         if config.log_user_data_on_freeze:
             logfile.write("%s - frozen   pid %5s - %s - list: %s\n" % (get_date_string(), str(pid), get_process_info(pid), frozen_pids))
         else:
