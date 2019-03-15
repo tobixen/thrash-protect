@@ -204,7 +204,7 @@ class ProcessSelector:
         """
         if isinstance(sfn, int):
             sfn = "/proc/%s/stat" % sfn
-        with open(sfn, 'r') as stat_file:
+        with open(sfn, 'rb') as stat_file:
             stats=[]
             stats_tx = stat_file.read().decode('utf-8', 'ignore')
             stats_tx = stats_tx.split("(",1)
