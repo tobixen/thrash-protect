@@ -107,6 +107,7 @@ class SystemState:
         self.swapcount = self.get_swapcount()
         self.cooldown_counter = 0
         self.unfrozen_pid = None
+        self.timer_alert = False
 
     def get_pagefaults(self):
         with open('/proc/vmstat', 'r') as vmstat:
@@ -151,9 +152,13 @@ class SystemState:
         if ret:
             ## thrashing alert, increase the counter
             self.cooldown_counter = prev.cooldown_counter+1
+            if not prev.timer_alert:
+                config.max_acceptable_time_delta/=1.1
         elif prev.cooldown_counter and prev.swapcount==self.swapcount and self.timestamp-prev.timestamp>=self.get_sleep_interval():
             ## not busy at all, and we have slept since the previous check.  Decrease counter.
             self.cooldown_counter = prev.cooldown_counter-1
+            if prev.timer_alert:
+                config.max_acceptable_time_delta*=1.1
         else:
             debug("prev.swapcount==self.swapcount: %s,  self.timestamp-prev.timestamp>=self.get_sleep_interval(): %s, self.timestamp-prev.timestamp: %s, self.get_sleep_interval(): %s" % (prev.swapcount==self.swapcount, self.timestamp-prev.timestamp>=self.get_sleep_interval(),  self.timestamp-prev.timestamp,  self.get_sleep_interval()))
             ## some swapin or swapout has been observed, or we haven't slept since previous run.  Keep the cooldown counter steady.
@@ -170,10 +175,10 @@ class SystemState:
         """
         global frozen_pids
         delta = time.time() - self.timestamp - expected_delay
-        debug("interval: %s cooldown_counter: %s expected delay: %s delta: %s time: %s frozen pids: %s" % (config.interval, self.cooldown_counter, expected_delay, delta, time.time(), frozen_pids))
         if delta > config.max_acceptable_time_delta:
-            logging.error("red alert!  unacceptable time delta observed! interval: %s cooldown_counter: %s expected delay: %s delta: %s time: %s frozen pids: %s" % (config.interval, self.cooldown_counter, expected_delay, delta, time.time(), frozen_pids))
+            logging.error("red alert!  unacceptable time delta observed! interval: %s cooldown_counter: %s expected delay: %s max acceptable delta: %s delta: %s time: %s frozen pids: %s" % (config.interval, self.cooldown_counter, expected_delay, config.max_acceptable_time_delta, delta, time.time(), frozen_pids))
             self.cooldown_counter += 1
+            self.timer_alert = True
             return False
         return True
 
