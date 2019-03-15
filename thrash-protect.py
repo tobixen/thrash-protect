@@ -425,21 +425,21 @@ def get_process_info(pid):
 ## hard coded logic as for now.  One state file and one log file.
 ## state file can be monitored, i.e. through nagios.  todo: advanced logging
 def log_frozen(pid):
-    with open("/var/log/thrash-protect.log", 'a', encoding='utf-8') as logfile:
+    with open("/var/log/thrash-protect.log", 'ab') as logfile:
         if config.log_user_data_on_freeze:
-            logfile.write("%s - frozen   pid %5s - %s - list: %s\n" % (get_date_string(), str(pid), get_process_info(pid), frozen_pids))
+            logfile.write(("%s - frozen   pid %5s - %s - list: %s\n" % (get_date_string(), str(pid), get_process_info(pid), frozen_pids)).encode("utf-8"))
         else:
-            logfile.write("%s - frozen pid %s - frozen list: %s\n" % (get_date_string(), pid, frozen_pids))
+            logfile.write(("%s - frozen pid %s - frozen list: %s\n" % (get_date_string(), pid, frozen_pids)).encode('utf-8'))
 
     with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
         logfile.write(" ".join([str(x) for x in frozen_pids]))
 
 def log_unfrozen(pid):
-    with open("/var/log/thrash-protect.log", 'a') as logfile:
+    with open("/var/log/thrash-protect.log", 'ab') as logfile:
         if config.log_user_data_on_unfreeze:
-            logfile.write("%s - unfrozen   pid %5s - %s - list: %s\n" % (get_date_string(), str(pid), get_process_info(pid), frozen_pids))
+            logfile.write(("%s - unfrozen   pid %5s - %s - list: %s\n" % (get_date_string(), str(pid), get_process_info(pid), frozen_pids)).encode('utf-8'))
         else:
-            logfile.write("%s - unfrozen pid %s\n" % (get_date_string(), pid))
+            logfile.write(("%s - unfrozen pid %s\n" % (get_date_string(), pid)).encode('utf-8'))
 
     if frozen_pids:
         with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
