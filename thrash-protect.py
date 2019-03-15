@@ -411,7 +411,7 @@ def get_process_info(pid):
         ## TODO: move the import back where it belongs, eventually.
         from subprocess import check_output
         ## TODO: we should fetch this information from /proc filesystem instead of using ps
-        info = check_output("ps -p %d uf" % pid, shell = True).decode('utf-8')
+        info = check_output("ps -p %d uf" % pid, shell = True).decode('utf-8', 'ignore')
         info = info.split('\n')[1]
         info = info.split()
         if len(info) >= 4:
