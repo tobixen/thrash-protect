@@ -58,7 +58,7 @@ class config:
     interval = float(getenv('THRASH_PROTECT_INTERVAL', '0.5'))
 
     ## max acceptable time delta in one iteration
-    max_acceptable_time_delta = interval/16.0
+    max_acceptable_time_delta = interval/8.0
 
     ## Number of acceptable page swaps during the above interval
     swap_page_threshold = int(getenv('THRASH_PROTECT_SWAP_PAGE_THRESHOLD', '4'))
