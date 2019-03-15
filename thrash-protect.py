@@ -206,7 +206,7 @@ class ProcessSelector:
             sfn = "/proc/%s/stat" % sfn
         with open(sfn, 'r') as stat_file:
             stats=[]
-            stats_tx = stat_file.readline()
+            stats_tx = stat_file.read().decode('utf-8', 'ignore')
             stats_tx = stats_tx.split("(",1)
             stats.append(stats_tx[0])
             stats_tx=stats_tx[1].rsplit(")",1)   
