@@ -412,9 +412,9 @@ def get_process_info(pid):
         if len(info) >= 4:
             return "u:%10s  CPU:%5s%%  MEM:%5s%%  CMD: %s" % (info[0], info[2], info[3], ' '.join(info[10:]))
         else:
-            return "No information available, the process was probably killed."
+            return "No information available, the process was probably killed or 'ps' returns unexpected output."
     except:
-        logging.error("Could not fetch process user information", exc_info=True)
+        logging.error("Could not fetch process user information, the process is probably gone")
         return "problem fetching process information"
 
 ## hard coded logic as for now.  One state file and one log file.
