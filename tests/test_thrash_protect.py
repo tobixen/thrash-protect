@@ -3,7 +3,7 @@
 import sys
 
 from unittest.mock import patch
-from io import StringIO
+from io import StringIO,BytesIO
 #import importlib
 import signal
 import time
@@ -24,9 +24,12 @@ class FileMockup():
         self.files.update(files_override)
 
     def open(self, fn, mode):
-        if mode == 'r' and fn in self.files:
-            return StringIO(self.files[fn])
-        elif mode == 'r':
+        if mode.startswith('r') and fn in self.files:
+            if mode == 'rb':
+                return BytesIO(self.files[fn].encode('utf-8'))
+            else:
+                return StringIO(self.files[fn])
+        elif mode.startswith('r'):
             try:
                 raise FileNotFoundError
             except AttributeError:
