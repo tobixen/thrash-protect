@@ -519,7 +519,10 @@ def thrash_protect(args=None):
     ## A best-effort attempt on running mlockall()
     try:
         import ctypes
-        assert(not ctypes.cdll.LoadLibrary('libc.so.6').mlockall(ctypes.c_int(3)))
+        try:
+            assert(not ctypes.cdll.LoadLibrary('libc.so.6').mlockall(ctypes.c_int(7)))
+        except:
+            assert(not ctypes.cdll.LoadLibrary('libc.so.6').mlockall(ctypes.c_int(3)))
     except:
         logging.warning("failed to do mlockall() - this makes the program vulnerable of being swapped out in an extreme thrashing event (maybe you're not running the script as root?)", exc_info=False)
 
