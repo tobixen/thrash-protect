@@ -49,23 +49,19 @@ answer would be one out of four:
    simply expects swap (keeping large datasets in memory), etc. Enabling
    swap can be a lifesaver when a much-needed memory upgrade is delayed.
 
--  Tune the swap amount to prevent thrashing. This doesn't actually work
-   - even a modest amount of swap can be sufficient to cause severe
+-  Tune the swap amount to prevent thrashing. This doesn't actually work,
+   even a modest amount of swap can be sufficient to cause severe
    thrash situations.
 
--  Restrict your processes with ulimit or cgroups. In general it makes
-   sense, but doesn't really help against the thrashing problem; if one 
-   wants to use swap one will risk thrashing.
-
-There is also a fifth avenue that I haven't done any research on: maybe
-it's possible to tune the kernel parameters to ensure that malloc(3)
-will fail if allocating too much memory. Anyway, that will cause
-inefficient resource utilization.
+-  Restrict your processes with ulimit, cgroups or kernel
+   parameters. In general it makes sense, but doesn't really help
+   against the thrashing problem; if one wants to use swap one will
+   risk thrashing.
 
 Simple solution
 ---------------
 
-The reason why the box becomes completely thrashed is that Linux
+The reason why the box becomes completely thrashed is typically that the time spent on actually doing useful work the time spent on context switches 
 spends all available resources on context switches; it's not much
 smart to spend seconds on context switching and then let the
 application run for milliseconds until the next context switch.  By
@@ -126,73 +122,62 @@ With this approach, hopefully the most-thrashing processes will be
 slowed down sufficiently that it will always be possible to ssh into a
 thrashing box and see what's going on.
 
-Implementation
---------------
-
-A prototype has been made in python - my initial thought was to
-reimplement in C for smallest possible footstep, memory consumption and
-fastest possible action - though I'm not sure if it's worth the effort.
-
-I very soon realized that both a queue approach and a stack approach on
-the frozen pid list has its problems (the stack may permanently freeze
-relatively innocent processes, the queue is inefficient and causes quite
-much paging) so I made some logic "get from the head of the list
-sometimes, pop from the tail most of the times".
-
-I found that I couldn't allow to do a full sleep(sleep\_interval)
-between each frozen process if the box was thrashing. I've also
-attempted to detect if there are delays in the processing, and let the
-script be more aggressive. Unfortunately this change introduced quite
-some added complexity.
-
-Some research should eventually be done to learn if the program would
-benefit significantly from being rewritten into C - but it seems like
-I won't bother, it seems to work well enough in python.
-
 Experiences
 -----------
 
-As of 2018, I feel pretty confident that there are no significant
-drawbacks with running this script, and that it almost eliminates the
-risk of having to reboot a system due to thrashing.  I'm running it
-everywhere, both on personal desktops and production servers at work,
-and I've done that for years.
+Even the quite-so-buggy first implementation saved the day.  A heavy
+computing job started by our customer had three times caused the need
+for a power-cycle.  After implementing thrash-protect it was easy to
+identify the "rogue" process and the user that had started it.  I let
+the process run - even installed some more swap as it needed it - and
+eventually the process completed successfully!
 
-The script has definitively saved us from several power-cyclings. Best
-of all, in most of the cases I haven't had to do anything.  Once I
-actually added more swap, to let the "rogue" process finish up (it was
-an important calculation job started by a customer).  Before
-thrash-protect I couldn't even identify the "rogue" process because
-the whole server went down too quickly, after thrash-protect it was
-easy to spot the "rogue" process, it ate a lot of memory, but it
-completed!
+As of 2019 I have several years of experience having thrash-protect
+actively suspending processes on dozens of VMs and real computers.
+I'm running it everywhere, both on production servers, personal work
+stations and laptops.  I can tell that ...
 
-Another thing, if thrash protect is creating log lines, it's probably
-about time to upgrade the memory on a box.  I've found this to be a
-more useful and reliable indicator than anything else!
+* ... I haven't observed any significant drawbacks with running this
+  script
+
+* ... the script definitively has saved us from several power-cyclings
+
+* ... I'm using the log files to identify when it's needed to add more
+  memory - I've found this to be a more useful and reliable indicator
+  than anything else!
+
+* ... most problems that otherwise would cause severe thrashing
+  (i.e. a backup job kicking in at night time, fighting with the
+  production application for the available memory) will resolve by
+  themselves with thrash-protect running (backup job completing but
+  taking a bit longer time and causing some performance degradation in
+  the production app, rogue process gobbling up all the memory killed
+  off by the OOM-killer, etc).
 
 All this said, the script hasn't been through any thorough
-peer-review, and it hasn't been deployed to many systems yet - don't
+peer-review, and it hasn't been deployed on any massive scale - don't
 blame me if you start up this script and anything goes kaboom.
 
 Drawbacks and problems
 ----------------------
 
--  Some parent processes may behave unexpectedly when the children gets
+- Some parent processes may behave unexpectedly when the children gets
    suspended, particularly interactive processes under bash - mutt,
    less, even running a minecraft server interactively under bash
-   (work-around: start them directly from screen). We've observed one
-   problem with the condor job control system, but we haven't checked if
-   the problem was related to thrash-protect. Implementation fix: if the
-   parent process name is within a configurable list (with sane defaults),
-   then the parent process will be suspended before the child process
-   and resumed after the child process has been resumed. Please tell if
-   more process names ought to be added to that list.
+   (early work-around: start them directly from screen). We've
+   observed one problem with the condor job control system, but we
+   haven't checked if the problem was related to
+   thrash-protect. Implementation fix: if the parent process name is
+   within a configurable list (with sane defaults), then the parent
+   process will be suspended before the child process and resumed
+   after the child process has been resumed. Please tell if more
+   process names ought to be added to that list (perhaps *all*
+   processes should be treated this way).
 
 -  Thrash-protect may be "unfair". Say there are two significant
    processes A and B; letting both of them run causes thrashing,
    suspending one of them stops the thrashing. Probably thrash-protect
-   should be flapping between suspending A and suspending B. What may
+   should be flapping between suspending A and suspending B. What *may*
    happen is that process B is flapping between suspended and running,
    while A is allowed to run 100%.
 
@@ -222,9 +207,31 @@ Other thoughts
 This should eventually be a kernel-feature - ultra slow context
 switching between swapping processes would probably "solve" a majority
 of thrashing-issues. In a majority of thrashing scenarioes the problem
-is too fast context switching between processes; this causes a very
-insignificant amount of CPU cycles to be actually be spent on the
-process, while the very most time is spent swapping between processes.
+is too fast context switching between processes, causing insignificant
+amount of CPU cycles to be actually be spent on the processes.
+
+Implementation
+--------------
+
+A prototype has been made in python - my initial thought was to
+reimplement in C for smallest possible footstep, memory consumption and
+fastest possible action - though I'm not sure if it's worth the effort.
+
+I very soon realized that both a queue approach and a stack approach on
+the frozen pid list has its problems (the stack may permanently freeze
+relatively innocent processes, the queue is inefficient and causes quite
+much paging) so I made some logic "get from the head of the list
+sometimes, pop from the tail most of the times".
+
+I found that I couldn't allow to do a full sleep(sleep\_interval)
+between each frozen process if the box was thrashing. I've also
+attempted to detect if there are delays in the processing, and let the
+script be more aggressive. Unfortunately this change introduced quite
+some added complexity.
+
+Some research should eventually be done to learn if the program would
+benefit significantly from being rewritten into C - but it seems like
+I won't bother, it seems to work well enough in python.
 
 Roadmap
 -------
