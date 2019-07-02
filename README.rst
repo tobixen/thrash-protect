@@ -61,12 +61,11 @@ answer would be one out of four:
 Simple solution
 ---------------
 
-The reason why the box becomes completely thrashed is typically that the time spent on actually doing useful work the time spent on context switches 
-spends all available resources on context switches; it's not much
-smart to spend seconds on context switching and then let the
-application run for milliseconds until the next context switch.  By
-stopping rogue processes for seconds rather than switching it out for
-milliseconds, things will still work despite the thrashing.
+The reason why the box becomes completely thrashed is typically that
+several seconds is spent on context switches for each millisecond the
+processes actually can do useful work.  By stopping rogue processes
+for seconds rather than switching it out for milliseconds, things will
+still work despite the thrashing.
 
 This script will be checking the pswpin and pswpout variables in
 /proc/vmstat on configurable intervals to detect thrashing.  The
