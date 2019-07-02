@@ -10,7 +10,7 @@ situation despite the thrashing - or eventually letting the box become
 slightly degraded instead of completely thrashed (until the rogue
 process ends or gets killed by the oom killer).
 
-There commit rate has been fairly low during the last few years - for
+The commit rate has been fairly low during the last few years - for
 the very simple reason that it seems to work well enough.
 
 Problem
