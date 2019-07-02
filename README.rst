@@ -53,9 +53,9 @@ answer would be one out of four:
    - even a modest amount of swap can be sufficient to cause severe
    thrash situations.
 
--  Restrict your processes with ulimit. In general it makes sense, but
-   doesn't really help against the thrashing problem; if one wants to
-   use swap one will risk thrashing.
+-  Restrict your processes with ulimit or cgroups. In general it makes
+   sense, but doesn't really help against the thrashing problem; if one 
+   wants to use swap one will risk thrashing.
 
 There is also a fifth avenue that I haven't done any research on: maybe
 it's possible to tune the kernel parameters to ensure that malloc(3)
