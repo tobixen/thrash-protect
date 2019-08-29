@@ -9,7 +9,7 @@
 ## This was written for python3 (there exists a python24-branch, but
 ## it won't be maintained).  python3 is not available on a lot of
 ## servers, and those seems to be the only snags when running on
-## python 2.5:
+## python 2.7:
 from __future__ import with_statement
 try:
     ProcessLookupError
@@ -20,13 +20,12 @@ try:
 except NameError:
     FileNotFoundError=IOError
 
-__version__ = "0.12.1"
+__version__ = "0.13.0"
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013-2018, Tobias Brox"
 __license__ = "GPL"
 __maintainer__ = "Tobias Brox"
 __email__ = "tobias@redpill-linpro.com"
-__status__ = "Development"
 __product__ = "thrash-protect"
 
 ## subprocess.check_output is not available in python 2.6.  this is used in a

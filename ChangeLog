@@ -1,3 +1,7 @@
+2019-08-29  Misc authors  <tobias@redpill-linpro.com>
+        * thrash-protect.py: Seems like I've forgotten to maintain the ChangeLog for more than a year.  Misc tweaks have been done, catching up on feedback and pull requests coming through github.  Bumping to 0.13.
+	* README.md: various documentation tweaks
+
 2018-08-23  Tobias Brox  <tobias@redpill-linpro.com>
         * README.md: we don't need this file anymore, since we have README.rst
         * README.rst: merged latest changes from README.md
