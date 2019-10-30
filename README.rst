@@ -161,17 +161,16 @@ Drawbacks and problems
 ----------------------
 
 - Some parent processes may behave unexpectedly when the children gets
-   suspended, particularly interactive processes under bash - mutt,
-   less, even running a minecraft server interactively under bash
-   (early work-around: start them directly from screen). We've
-   observed one problem with the condor job control system, but we
-   haven't checked if the problem was related to
-   thrash-protect. Implementation fix: if the parent process name is
-   within a configurable list (with sane defaults), then the parent
-   process will be suspended before the child process and resumed
-   after the child process has been resumed. Please tell if more
-   process names ought to be added to that list (perhaps *all*
-   processes should be treated this way).
+  suspended, particularly interactive processes under bash - mutt,
+  less, even running a minecraft server interactively under bash
+  (early work-around: start them directly from screen). We've observed
+  one problem with the condor job control system, but we haven't
+  checked if the problem was related to thrash-protect. Implementation
+  fix: if the parent process name is within a configurable list (with
+  sane defaults), then the parent process will be suspended before the
+  child process and resumed after the child process has been
+  resumed. Please tell if more process names ought to be added to that
+  list (perhaps *all* processes should be treated this way).
 
 -  Thrash-protect may be "unfair". Say there are two significant
    processes A and B; letting both of them run causes thrashing,
