@@ -309,6 +309,8 @@ Some things that MAY be considered before 1.0:
 
 -  Package should include munin plugins
 
+-  Read performance statistics from /proc/pressure/memory if it exists
+
 Things that eventually may go into 2.0:
 
 -  Replace floats with ints
@@ -319,3 +321,4 @@ Things that eventually may go into 2.0:
 
 -  Garbage collection of old processes from the pid/pagefault dict
 
+-  Rely on /proc/pressure/memory to exist
