@@ -2,9 +2,10 @@ thrash-protect
 ==============
 
 Simple-Stupid user-space program protecting a linux host from
-thrashing.  It's supposed both to be used as an "insurance" on systems
-that aren't expected to thrash and as a stop-gap measure on hosts
-where thrashing has been observed.
+thrashing, causing graceful degradation rather than thrashing on heavy
+swap usage.  It's supposed both to be used as an "insurance" on
+systems that aren't expected to thrash and as a stop-gap measure on
+hosts where thrashing has been observed.
 
 The script attempts to detect thrashing situations and stop rogue
 processes for short intervals.  It works a bit like the ABS break on
@@ -42,15 +43,16 @@ answer would be one out of four:
    bug.
 
 -  Disable swap. Even together with the advice "install enough memory"
-   this is not a fail-safe way to prevent thrashing; without sufficient
-   buffers/cache space Linux will start thrashing (ref
-   https://github.com/tobixen/thrash-protect/issues/2). It doesn't give
-   good protection against all memory getting hogged by some software
-   bug, the OOM-killer may kill the wrong process. Also, in many
-   situations swap can be a very good thing - i.e. if having processes
-   with memory leakages, aggressive usage of tmpfs, some applications
-   simply expects swap (keeping large datasets in memory), etc. Enabling
-   swap can be a lifesaver when a much-needed memory upgrade is delayed.
+   this is not a fail-safe way to prevent thrashing; without
+   sufficient buffers/cache space Linux will start thrashing (ref
+   https://github.com/tobixen/thrash-protect/issues/2). It doesn't
+   give good protection against all memory getting hogged by some
+   software bug, the OOM-killer may kill the wrong process. Also, in
+   many situations swap can be a very good thing - i.e. if having
+   processes with memory leakages, aggressive usage of tmpfs, some
+   applications simply expects swap (keeping large datasets in
+   memory), etc. Enabling swap can be a lifesaver when a much-needed
+   memory upgrade is delayed.
 
 -  Tune the swap amount to prevent thrashing. This doesn't actually work,
    even a modest amount of swap can be sufficient to cause severe
@@ -221,6 +223,87 @@ Drawbacks and problems
 -  It seems very unlikely to be related, but it has been reported that
    "swapoff" failed to complete on a server where thrash-protect was
    running.
+
+Avoiding OOM-killings
+---------------------
+The alternative to thrash-protect may be to have less swap available
+and rely on the OOM killer to take care of rogue processes causing
+thrashing.
+
+I hate the OOM-killer - one never knows the side effects of arbitrary
+processes being killed.  I believe OOM-killings are a lot more
+disruptive than temporary suspending processes through thrash-protect.
+An example: the developers may be using some local SMTP-server for
+sending important emails, maybe they didn't care to do proper error
+handling, so the emails are efficiently lost if the SMTP server is
+down.  The local SMTP-server gets downed by the OOM-killer on a
+Thursday.  Perhaps there is no monitoring on this, perhaps nobody
+notices that the SMTP-server was killed by the OOM-killer, only on
+Saturday someone notices that something is amiss, on Monday the
+SMPT-server is started again - and nobody knows how many important
+emails was lost.
+
+In some few cases the OOM-killer may work out pretty well - say, some
+java process is bloated over time due to memory leakages and finally
+killed off by the OOM-killer.  No problem, systemd is set up to
+autorestart tomcat, and apart from some few end users trying to access
+the server at the wrong time nobody notices something is amiss (I
+observed that one some few days ago, and suggested thrash-protect+more
+memory for the person responsible for the box).  Another example, some
+apache server spinning up too many memory-hogging processes due to a
+DDoS-attack - it's probably better that random processes are splatted
+by the OOM-killer than that they are suspended for 30s.
+
+As for the memory-leaking java server example, with thrash-protect and
+proper monitoring, a sysadmin will observe the issue before it gets
+into a big problem, and do a proper restart - and eventually set up
+monit or cron to restart it automatically in a controlled way.
+
+As for the apache example - I've actually experienced severe thrashing
+on a server where the swap space was adjusted to "insignificant"
+amounts and where I've attempted to tune MaxConnections.  I've later
+deployed thrash-protect and increased the swap partition
+substantially, that has solved up the problems.  Consider those
+scenarioes:
+
+- No thrash-protect, small amounts of swap installed.  In the very
+   best case, the OOM-killer will wipe out enough apache processes
+   that the remaining will work.  More likely, the whole apache server
+   will be taken down by the OOM-killer, triggering full downtime.
+
+- No thrash-protect, sufficient amounts of swap installed.  Most
+   likely the server will start thrashing, most likely no requests
+   will be successfully handled within reasonable time, perhaps it's
+   needed to power-cycle the server.
+
+- thrash-protect, sufficient amounts of swap installed, apache
+   configured with the MaxConnections a bit too high - say, standard
+   setting of 150 while the server in reality is able to handle only
+   100 requests without touching swap.  In best case, thrash-protect
+   will suspend 50 requests for some few seconds, those 50 will be
+   swapped completely out, leaving all the other memory for the other
+   hundred requests uninterrupted for several seconds, ideally most of
+   the requests will finish within those few seconds.  Net result:
+   graceful degradation, most of the resources available will be
+   efficiently spent handling requests, some of the requests served
+   will be delayed due to some few seconds of suspending.  Varnish may
+   also be set up to handle the requests in excess of those 150
+   gracefully, worst case a quick "503 guru meditation" (which is in
+   any case better than letting the client wait for a timeout).
+
+- thrash-protect installed, more than a lot of swap installed, apache
+   configured with a way too high MaxConnections (say, MaxConnections
+   increased to 1500, but Apache can handle only 30 requests without
+   some of them being swapped out).  This will not work out very well,
+   the majority of the apache requests needs to be suspended, the
+   requests may be suspended sufficiently long to cause timeouts, or
+   the end-user will sign up with a competing web service while
+   waiting for the requests to be handled.  Hopefully some on-call
+   system operator will be alerted through the alarm system.  The
+   operator will be able to log in and see what's going on and deal
+   with it, one way or another.  It's still way better scenario than
+   having to do a power cycling, and maybe better than having apache
+   killed completely by the OOM-killer.
 
 Other thoughts
 --------------
