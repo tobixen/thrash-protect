@@ -1,7 +1,10 @@
 thrash-protect
 ==============
 
-Simple-Stupid user-space program protecting a linux host from thrashing.
+Simple-Stupid user-space program protecting a linux host from
+thrashing.  It's supposed both to be used as an "insurance" on systems
+that aren't expected to thrash and as a stop-gap measure on hosts
+where thrashing has been observed.
 
 The script attempts to detect thrashing situations and stop rogue
 processes for short intervals.  It works a bit like the ABS break on
@@ -61,20 +64,24 @@ answer would be one out of four:
 Simple solution
 ---------------
 
-The reason why the box becomes completely thrashed is typically that
-several seconds is spent on context switches for each millisecond the
-processes actually can do useful work.  By stopping rogue processes
-for seconds rather than switching it out for milliseconds, things will
-still work despite the thrashing.
+In a severe thrash situation, the linux kernel may spend a second
+doing context switching just to allow the process to do useful work
+for some few milliseconds.  Wouldn't it be better if the process was
+allowed to run uninterrupted for some few seconds before the next
+context switch?  Thrash-protect attempts to suspend processes for
+seconds allowing the non-suspended processes to actually do useful
+work.
 
-This script will be checking the pswpin and pswpout variables in
-/proc/vmstat on configurable intervals to detect thrashing.  The
+This script will be checking the pswpin and pswpout variables
+/proc/vmstat on configurable intervals to detect thrashing (in the
+future, /proc/pressure/memory will probably be used instead).  The
 formula is set up so that a lot of unidirectional swap movement or a
-little bit of bidirectional swapping within a time interval will trigger (something like
-`(swapin+epsilon)*(swapout+epsilon)>threshold`).  The program will then STOP
-the most nasty process. When the host has stopped swapping the host
-will resume one of the stopped processes. If the host starts swapping
-again, the last resumed PID will be refrozen.
+little bit of bidirectional swapping within a time interval will
+trigger (something like
+`(swapin+epsilon)*(swapout+epsilon)>threshold`).  The program will
+then STOP the most nasty process. When the host has stopped swapping
+the host will resume one of the stopped processes. If the host starts
+swapping again, the last resumed PID will be refrozen.
 
 Finding the most "nasty" process seems to be a bit non-trivial, as
 there is no per-process counters on swapin/swapout. Currently three
@@ -159,6 +166,22 @@ blame me if you start up this script and anything goes kaboom.
 
 Drawbacks and problems
 ----------------------
+- On hosts actually using swap, every now and then some process will
+   be suspended for a short period of time, so it's probably not a
+   good idea to use thrash-protect on "real time"-systems (then again,
+   you would probably not be using swap or overcommitting memory on a
+   "real time"-system).  Many of my colleagues frown upon the idea of
+   a busy database server being arbitrarily suspended - but then
+   again, on almost any system a database request that normally takes
+   milliseconds will every now and then take a couple of seconds, no
+   matter if thrash-protect is in use or not.  My experience is that
+   such suspendings typically happens once per day or more rarely on
+   hosts having "sufficient" amounts of memory, and lasts for a
+   fraction of a second.  In most use-cases this is negligible. In
+   some cases many processes are suspended for more than a second or
+   many times pr hour - but in those circumstances the alternative
+   would most likely be an even worse performance degradation or even
+   total downtime due to thrashing.
 
 - Some parent processes may behave unexpectedly when the children gets
   suspended, particularly interactive processes under bash - mutt,
@@ -172,12 +195,12 @@ Drawbacks and problems
   resumed. Please tell if more process names ought to be added to that
   list (perhaps *all* processes should be treated this way).
 
--  Thrash-protect may be "unfair". Say there are two significant
-   processes A and B; letting both of them run causes thrashing,
-   suspending one of them stops the thrashing. Probably thrash-protect
-   should be flapping between suspending A and suspending B. What *may*
-   happen is that process B is flapping between suspended and running,
-   while A is allowed to run 100%.
+- Thrash-protect is not optimized to be "fair". Say there are two
+   significant processes A and B; letting both of them run causes
+   thrashing, suspending one of them stops the thrashing. Probably
+   thrash-protect should be flapping between suspending A and
+   suspending B. What *may* happen is that process B is flapping
+   between suspended and running, while A is allowed to run 100%.
 
 -  I've observed situations where parent processes automatically have
    gone into suspend-mode as the children got suspended and been stuck
@@ -192,7 +215,7 @@ Drawbacks and problems
    running it without any special configuration.
 
 -  Usage of mlockall should be made optional. On a system with small
-   amounts of RAM (i.e. half a gig) thrash\_protect itself can consume
+   amounts of RAM (i.e. half a gig) thrash-protect itself can consume
    significant amounts of memory.
 
 -  It seems very unlikely to be related, but it has been reported that
