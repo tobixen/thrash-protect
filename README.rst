@@ -305,6 +305,8 @@ scenarioes:
    having to do a power cycling, and maybe better than having apache
    killed completely by the OOM-killer.
 
+All this said, in some use-case scenarioes, killing processes may still be better than suspending them.  If you do want to depend on the OOM-killer for avoiding thrashing incidents, then I'd suggest to have a look at [oomd](https://facebookincubator.github.io/oomd/)
+
 Other thoughts
 --------------
 
