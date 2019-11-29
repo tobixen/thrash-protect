@@ -83,62 +83,6 @@ context switch?  Thrash-protect attempts to suspend processes for
 seconds allowing the non-suspended processes to actually do useful
 work.
 
-This script will be checking the pswpin and pswpout variables
-/proc/vmstat on configurable intervals to detect thrashing (in the
-future, /proc/pressure/memory will probably be used instead).  The
-formula is set up so that a lot of unidirectional swap movement or a
-little bit of bidirectional swapping within a time interval will
-trigger (something like
-`(swapin+epsilon)*(swapout+epsilon)>threshold`).  The program will
-then STOP the most nasty process. When the host has stopped swapping
-the host will resume one of the stopped processes. If the host starts
-swapping again, the last resumed PID will be refrozen.
-
-Finding the most "nasty" process seems to be a bit non-trivial, as
-there is no per-process counters on swapin/swapout. Currently three
-algorithms have been implemented and the script uses them in this
-order:
-
--  Last unfrozen pid, if it's still running. Of course this can't work
-   as a stand-alone solution, but it's a very cheap operation and just
-   the right thing to do if the host started swapping heavily just after
-   unfreezing some pid - hence it's always the first algorithm to run
-   after unfreezing some pid.
-
--  oom\_score; intended to catch processes gobbling up "too much"
-   memory. It has some drawbacks - it doesn't target the program
-   behaviour "right now", and it will give priority to parent pids -
-   when suspending a process, it may not help to simply suspend the
-   parent process.
-
--  Number of page faults. This was the first algorithm I made, but it
-   does not catch rogue processes gobbling up memory and swap through
-   write-only operations, as that won't cause page faults.  The
-   algorithm also came up with false positives, a "page fault" is not
-   the same as swapin - it also happens when a program wants to
-   access data that the kernel has postponed loading from disk
-   (typically program code - hence one typically gets lots of page
-   fault when starting some relatively big application). The worst
-   problem with this approach is that it requires state about every
-   process to be stored in memory, this memory may be swapped out, and
-   if the box is really thrashed it may take forever to get through
-   this algorithm.
-
-The script creates a file on /tmp when there are frozen processes, nrpe
-can eventually be set up to monitor the existence of such a file as well
-as the existence of suspended processes.
-
-Important processes (say, sshd) can be whitelisted, and processes
-known to be nasty or unimportant can be blacklisted (there are some
-default settings on this). Note that the "black/whitelisting" is done
-by weighting - randomly stopping blacklisted processes may not be
-sufficient to stop thrashing, and a whitelisted process may still be
-particularly nasty and stopped.
-
-With this approach, hopefully the most-thrashing processes will be
-slowed down sufficiently that it will always be possible to ssh into a
-thrashing box and see what's going on.
-
 Experiences
 -----------
 
@@ -316,6 +260,7 @@ scenarioes:
 
 All this said, in some use-case scenarioes, killing processes may still be better than suspending them.  If you do want to depend on the OOM-killer for avoiding thrashing incidents, then I'd suggest to have a look at [oomd](https://facebookincubator.github.io/oomd/)
 
+
 Other thoughts
 --------------
 
@@ -332,6 +277,65 @@ A prototype has been made in python - my initial thought was to
 reimplement in C for smallest possible footstep, memory consumption and
 fastest possible action - though I'm not sure if it's worth the effort.
 
+
+Implementation details
+----------------------
+
+This script will be checking the pswpin and pswpout variables
+/proc/vmstat on configurable intervals to detect thrashing (in the
+future, /proc/pressure/memory will probably be used instead).  The
+formula is set up so that a lot of unidirectional swap movement or a
+little bit of bidirectional swapping within a time interval will
+trigger (something like
+`(swapin+epsilon)*(swapout+epsilon)>threshold`).  The program will
+then STOP the most nasty process. When the host has stopped swapping
+the host will resume one of the stopped processes. If the host starts
+swapping again, the last resumed PID will be refrozen.
+
+Finding the most "nasty" process seems to be a bit non-trivial, as
+there is no per-process counters on swapin/swapout. Currently three
+algorithms have been implemented and the script uses them in this
+order:
+
+-  Last unfrozen pid, if it's still running. Of course this can't work
+   as a stand-alone solution, but it's a very cheap operation and just
+   the right thing to do if the host started swapping heavily just after
+   unfreezing some pid - hence it's always the first algorithm to run
+   after unfreezing some pid.
+
+-  oom\_score; intended to catch processes gobbling up "too much"
+   memory. It has some drawbacks - it doesn't target the program
+   behaviour "right now", and it will give priority to parent pids -
+   when suspending a process, it may not help to simply suspend the
+   parent process.
+
+-  Number of page faults. This was the first algorithm I made, but it
+   does not catch rogue processes gobbling up memory and swap through
+   write-only operations, as that won't cause page faults.  The
+   algorithm also came up with false positives, a "page fault" is not
+   the same as swapin - it also happens when a program wants to
+   access data that the kernel has postponed loading from disk
+   (typically program code - hence one typically gets lots of page
+   fault when starting some relatively big application). The worst
+   problem with this approach is that it requires state about every
+   process to be stored in memory, this memory may be swapped out, and
+   if the box is really thrashed it may take forever to get through
+   this algorithm.
+
+The script creates a file on /tmp when there are frozen processes, nrpe
+can eventually be set up to monitor the existence of such a file as well
+as the existence of suspended processes.
+
+Important processes (say, sshd) can be whitelisted, and processes
+known to be nasty or unimportant can be blacklisted (there are some
+default settings on this). Note that the "black/whitelisting" is done
+by weighting - randomly stopping blacklisted processes may not be
+sufficient to stop thrashing, and a whitelisted process may still be
+particularly nasty and stopped.
+
+With this approach, hopefully the most-thrashing processes will be
+slowed down sufficiently that it will always be possible to ssh into a
+thrashing box and see what's going on.
 I very soon realized that both a queue approach and a stack approach on
 the frozen pid list has its problems (the stack may permanently freeze
 relatively innocent processes, the queue is inefficient and causes quite
