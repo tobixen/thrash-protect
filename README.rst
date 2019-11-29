@@ -17,6 +17,15 @@ process ends or gets killed by the oom killer).
 The commit rate has been fairly low during the last few years - for
 the very simple reason that it seems to work well enough.
 
+Alternatives
+------------
+
+Facebook has made a tool
+[oomd](https://facebookincubator.github.io/oomd) which possibly can do
+the same as thrash-protect and more, possibly in a better way, but
+requires more configuration and a new kernel (4.2+) with performance
+stats available under /proc/pressure.
+
 Problem
 -------
 
