@@ -1,3 +1,6 @@
+2020-04-08  Niektory <niektory@gmail.com>
+	* trash-protect.py: OOMScoreProcessSelector should be used before PageFaultingProcessSelector, ref https://github.com/tobixen/thrash-protect/issues/31
+
 2019-08-29  Misc authors  <tobias@redpill-linpro.com>
         * thrash-protect.py: Seems like I've forgotten to maintain the ChangeLog for more than a year.  Misc tweaks have been done, catching up on feedback and pull requests coming through github.  Bumping to 0.13.
 	* README.md: various documentation tweaks
