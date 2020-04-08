@@ -375,7 +375,7 @@ class GlobalProcessSelector(ProcessSelector):
     """
     def __init__(self):
         ## sorted from cheap to expensive.  Also, it is surely smart to be quick on refreezing a recently unfrozen process if host starts thrashing again.
-        self.collection = [LastFrozenProcessSelector(), PageFaultingProcessSelector(), OOMScoreProcessSelector()]
+        self.collection = [LastFrozenProcessSelector(), OOMScoreProcessSelector(), PageFaultingProcessSelector()]
         self.scan_method_count = 0
 
     def update(self, prev, cur):
