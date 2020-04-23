@@ -3,7 +3,7 @@ PKGBUILD: PKGBUILD_ ../.tag.${version}
 	makepkg -g >> PKGBUILD
 
 .SRCINFO: PKGBUILD
-	mksrcinfo
+	makepkg --printsrcinfo > .SRCINFO
 
 thrash-protect:
 	git clone ssh://aur@aur.archlinux.org/thrash-protect.git
