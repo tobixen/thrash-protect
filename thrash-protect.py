@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 ### Simple-Stupid user-space program protecting a linux host from thrashing.
 ### See the README for details.
