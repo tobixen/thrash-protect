@@ -1,0 +1,12 @@
+#!/sbin/openrc-run
+
+name="thrash-protect daemon"
+description="simple-stupid program to avoid thrashing"
+command=/usr/sbin/thrash-protect
+pidfile=/var/run/thrash-protect.pid
+
+start() {
+  ebegin "Starting thrash-protect"
+    start-stop-daemon --start --exec "${command}" --pidfile "${pidfile}" --make-pidfile --background
+  eend $?
+}
