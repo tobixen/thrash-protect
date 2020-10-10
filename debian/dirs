@@ -1,2 +1,2 @@
-etc/init
+lib/systemd/system
 usr/sbin
