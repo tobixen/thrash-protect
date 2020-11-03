@@ -9,7 +9,7 @@ Vcs-Git: git@github.com:tobixen/thrash-protect.git
 
 Package: thrash-protect
 Architecture: all
-Depends: python
+Depends: python3
 Description: Simple-Stupid user-space program protecting a linux host from thrashing
  The program will on fixed intervals check if there has been a lot of
  swapping since previous run, and if there are a lot of swapping, the
