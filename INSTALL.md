@@ -7,13 +7,16 @@ Requirements
 This will only work on linux, it depends on reading stats from the
 /proc directory.
 
-python 2.5 or newer is required.  There exists a branch for python
-2.4, but it's not maintained.  No other dependencies.
+The script is made for python 3, but will probably work on 2.5 and
+newer.  There exists a branch for python 2.4, but it's not maintained.
+No other dependencies.
 
 The box or VM running thrash-protect needs to be set up with swap, or
-trash-protect won't do anything useful.  A reasonably large swap
-partition is recommended, possibly twice as much swap as physical
-memory, though YMMV.
+trash-protect won't do anything useful (even if thrash-like situations
+can happen without swap installed).  A reasonably large swap partition
+is recommended, possibly twice as much swap as physical memory, though
+YMMV, and even a very small swap partition is enough for
+thrash-protect to do useful work..
 
 My original idea was to make a rapid prototype in python, and then
 port it over to C for a smaller memory- and CPU footprint; while
@@ -27,7 +30,7 @@ Compile and Install
 As it's in python, no compilation is needed.
 
 "make install" will hopefully do the right thing and install the
-script as a service.  
+script as a service.
 
 Archlinux users may also install through AUR.  rpm and deb packages
 will be made available on request.
@@ -53,7 +56,7 @@ environment variables, best practice is probably to run it without any
 configuration.
 
 The System V init file is so far quite redhat-specific and may need
-tuning for debian or other distributions.
+tuning for usage with other distributions.
 
 Monitoring
 ----------

@@ -17,6 +17,11 @@ process ends or gets killed by the oom killer).
 The commit rate has been fairly low during the last few years - for
 the very simple reason that it seems to work well enough.
 
+How to use
+----------
+
+See the [INSTALL](INSTALL.md) file.
+
 Alternatives
 ------------
 
@@ -121,22 +126,25 @@ blame me if you start up this script and anything goes kaboom.
 
 Drawbacks and problems
 ----------------------
+- Make sure to install some swap space.  Thrash-protect is not
+  performing very well if no swap space is installed.
+  
 - On hosts actually using swap, every now and then some process will
-   be suspended for a short period of time, so it's probably not a
-   good idea to use thrash-protect on "real time"-systems (then again,
-   you would probably not be using swap or overcommitting memory on a
-   "real time"-system).  Many of my colleagues frown upon the idea of
-   a busy database server being arbitrarily suspended - but then
-   again, on almost any system a database request that normally takes
-   milliseconds will every now and then take a couple of seconds, no
-   matter if thrash-protect is in use or not.  My experience is that
-   such suspendings typically happens once per day or more rarely on
-   hosts having "sufficient" amounts of memory, and lasts for a
-   fraction of a second.  In most use-cases this is negligible. In
-   some cases many processes are suspended for more than a second or
-   many times pr hour - but in those circumstances the alternative
-   would most likely be an even worse performance degradation or even
-   total downtime due to thrashing.
+  be suspended for a short period of time, so it's probably not a
+  good idea to use thrash-protect on "real time"-systems (then again,
+  you would probably not be using swap or overcommitting memory on a
+  "real time"-system).  Many of my colleagues frown upon the idea of
+  a busy database server being arbitrarily suspended - but then
+  again, on almost any system a database request that normally takes
+  milliseconds will every now and then take a couple of seconds, no
+  matter if thrash-protect is in use or not.  My experience is that
+  such suspendings typically happens once per day or more rarely on
+  hosts having "sufficient" amounts of memory, and lasts for a
+  fraction of a second.  In most use-cases this is negligible. In
+  some cases many processes are suspended for more than a second or
+  many times pr hour - but in those circumstances the alternative
+  would most likely be an even worse performance degradation or even
+  total downtime due to thrashing.
 
 - Some parent processes may behave unexpectedly when the children gets
   suspended, particularly interactive processes under bash - mutt,
@@ -151,11 +159,11 @@ Drawbacks and problems
   list (perhaps *all* processes should be treated this way).
 
 - Thrash-protect is not optimized to be "fair". Say there are two
-   significant processes A and B; letting both of them run causes
-   thrashing, suspending one of them stops the thrashing. Probably
-   thrash-protect should be flapping between suspending A and
-   suspending B. What *may* happen is that process B is flapping
-   between suspended and running, while A is allowed to run 100%.
+  significant processes A and B; letting both of them run causes
+  thrashing, suspending one of them stops the thrashing. Probably
+  thrash-protect should be flapping between suspending A and
+  suspending B. What *may* happen is that process B is flapping
+  between suspended and running, while A is allowed to run 100%.
 
 -  I've observed situations where parent processes automatically have
    gone into suspend-mode as the children got suspended and been stuck
