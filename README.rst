@@ -48,13 +48,34 @@ station; on a production server it's just unacceptable.
 If asking around on how to solve problems with thrashing, the typical
 answer would be one out of four:
 
-- Install enough memory! In the real world, that's not always trivial; there may be physical, logistical and economical constraints delaying or stopping a memory upgrade. It may also be non-trivial to determinate how much memory one would need to install to have "enough" of it. Also, no matter how much memory is installed, one won't be safe against all the memory getting hogged by some software bug.
+-  Install enough memory! In the real world, that's not always trivial;
+   there may be physical, logistical and economical constraints delaying
+   or stopping a memory upgrade. It may also be non-trivial to
+   determinate how much memory one would need to install to have
+   "enough" of it. Also, no matter how much memory is installed, one
+   won't be safe against all the memory getting hogged by some software
+   bug.
 
-- Disable swap. Even together with the advice "install enough memory" this is not a fail-safe way to prevent thrashing; without sufficient buffers/cache space Linux will start thrashing (ref https://github.com/tobixen/thrash-protect/issues/2). It doesn't give good protection against all memory getting hogged by some software bug, the OOM-killer may kill the wrong process. Also, in many situations swap can be a very good thing - i.e. if having processes with memory leakages, aggressive usage of tmpfs, some applications simply expects swap (keeping large datasets in memory), etc. Enabling swap can be a lifesaver when a much-needed memory upgrade is delayed.
+-  Disable swap. Even together with the advice "install enough memory"
+   this is not a fail-safe way to prevent thrashing; without
+   sufficient buffers/cache space Linux will start thrashing (ref
+   https://github.com/tobixen/thrash-protect/issues/2). It doesn't
+   give good protection against all memory getting hogged by some
+   software bug, the OOM-killer may kill the wrong process. Also, in
+   many situations swap can be a very good thing - i.e. if having
+   processes with memory leakages, aggressive usage of tmpfs, some
+   applications simply expects swap (keeping large datasets in
+   memory), etc. Enabling swap can be a lifesaver when a much-needed
+   memory upgrade is delayed.
 
-- Tune the swap amount to prevent thrashing. This doesn't actually work, even a modest amount of swap can be sufficient to cause severe thrash situations.
+-  Tune the swap amount to prevent thrashing. This doesn't actually work,
+   even a modest amount of swap can be sufficient to cause severe
+   thrash situations.
 
-- Restrict your processes with ulimit, cgroups or kernel parameters. In general it makes sense, but doesn't really help against the thrashing problem; if one wants to use swap one will risk thrashing.
+-  Restrict your processes with ulimit, cgroups or kernel
+   parameters. In general it makes sense, but doesn't really help
+   against the thrashing problem; if one wants to use swap one will
+   risk thrashing.
 
 Simple solution
 ---------------
