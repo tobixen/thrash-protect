@@ -206,44 +206,44 @@ deployed thrash-protect and increased the swap partition
 substantially, that has solved up the problems.  Consider those
 scenarioes:
 
-- No thrash-protect, small amounts of swap installed.  In the very
-   best case, the OOM-killer will wipe out enough apache processes
-   that the remaining will work.  More likely, the whole apache server
-   will be taken down by the OOM-killer, triggering full downtime.
+- No thrash-protect, small amounts of swap installed.  In the very 
+  best case, the OOM-killer will wipe out enough apache processes
+  that the remaining will work.  More likely, the whole apache server
+  will be taken down by the OOM-killer, triggering full downtime.
 
 - No thrash-protect, sufficient amounts of swap installed.  Most
-   likely the server will start thrashing, most likely no requests
-   will be successfully handled within reasonable time, perhaps it's
-   needed to power-cycle the server.
+  likely the server will start thrashing, most likely no requests
+  will be successfully handled within reasonable time, perhaps it's
+  needed to power-cycle the server.
 
 - thrash-protect, sufficient amounts of swap installed, apache
-   configured with the MaxConnections a bit too high - say, standard
-   setting of 150 while the server in reality is able to handle only
-   100 requests without touching swap.  In best case, thrash-protect
-   will suspend 50 requests for some few seconds, those 50 will be
-   swapped completely out, leaving all the other memory for the other
-   hundred requests uninterrupted for several seconds, ideally most of
-   the requests will finish within those few seconds.  Net result:
-   graceful degradation, most of the resources available will be
-   efficiently spent handling requests, some of the requests served
-   will be delayed due to some few seconds of suspending.  Varnish may
-   also be set up to handle the requests in excess of those 150
-   gracefully, worst case a quick "503 guru meditation" (which is in
-   any case better than letting the client wait for a timeout).
+  configured with the MaxConnections a bit too high - say, standard
+  setting of 150 while the server in reality is able to handle only
+  100 requests without touching swap.  In best case, thrash-protect
+  will suspend 50 requests for some few seconds, those 50 will be
+  swapped completely out, leaving all the other memory for the other
+  hundred requests uninterrupted for several seconds, ideally most of
+  the requests will finish within those few seconds.  Net result:
+  graceful degradation, most of the resources available will be
+  efficiently spent handling requests, some of the requests served
+  will be delayed due to some few seconds of suspending.  Varnish may
+  also be set up to handle the requests in excess of those 150
+  gracefully, worst case a quick "503 guru meditation" (which is in
+  any case better than letting the client wait for a timeout).
 
 - thrash-protect installed, more than a lot of swap installed, apache
-   configured with a way too high MaxConnections (say, MaxConnections
-   increased to 1500, but Apache can handle only 30 requests without
-   some of them being swapped out).  This will not work out very well,
-   the majority of the apache requests needs to be suspended, the
-   requests may be suspended sufficiently long to cause timeouts, or
-   the end-user will sign up with a competing web service while
-   waiting for the requests to be handled.  Hopefully some on-call
-   system operator will be alerted through the alarm system.  The
-   operator will be able to log in and see what's going on and deal
-   with it, one way or another.  It's still way better scenario than
-   having to do a power cycling, and maybe better than having apache
-   killed completely by the OOM-killer.
+  configured with a way too high MaxConnections (say, MaxConnections
+  increased to 1500, but Apache can handle only 30 requests without
+  some of them being swapped out).  This will not work out very well,
+  the majority of the apache requests needs to be suspended, the
+  requests may be suspended sufficiently long to cause timeouts, or
+  the end-user will sign up with a competing web service while
+  waiting for the requests to be handled.  Hopefully some on-call
+  system operator will be alerted through the alarm system.  The
+  operator will be able to log in and see what's going on and deal
+  with it, one way or another.  It's still way better scenario than
+  having to do a power cycling, and maybe better than having apache
+  killed completely by the OOM-killer.
 
 All this said, in some use-case scenarioes, killing processes may still be better than suspending them.  If you do want to depend on the OOM-killer for avoiding thrashing incidents, then I'd suggest to have a look at [oomd](https://facebookincubator.github.io/oomd/)
 
