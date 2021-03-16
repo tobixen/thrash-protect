@@ -421,8 +421,18 @@ def get_process_info(pid):
         logging.error("Could not fetch process user information, the process is probably gone")
         return "problem fetching process information"
 
+def failure_unacceptable(method):
+    def _try_except_pass(*args, **kwargs):
+        try:
+            method(*args, **kwargs)
+        except:
+            logging.critical("Exception ignored", exc_info=True)
+
+    return _try_except_pass
+
 ## hard coded logic as for now.  One state file and one log file.
 ## state file can be monitored, i.e. through nagios.  todo: advanced logging
+@failure_unacceptable
 def log_frozen(pid):
     with open("/var/log/thrash-protect.log", 'ab') as logfile:
         if config.log_user_data_on_freeze:
@@ -431,8 +441,9 @@ def log_frozen(pid):
             logfile.write(("%s - frozen pid %s - frozen list: %s\n" % (get_date_string(), pid, frozen_pids)).encode('utf-8'))
 
     with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
-        logfile.write(" ".join([str(x) for x in frozen_pids]))
+            logfile.write(" ".join([" ".join([str(pid) for pid in pid_group]) for pid_group in frozen_pids]) + "\n")
 
+@failure_unacceptable
 def log_unfrozen(pid):
     with open("/var/log/thrash-protect.log", 'ab') as logfile:
         if config.log_user_data_on_unfreeze:
@@ -442,7 +453,7 @@ def log_unfrozen(pid):
 
     if frozen_pids:
         with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
-            logfile.write(" ".join([str(pid) for pid in frozen_pids]) + "\n")
+            logfile.write(" ".join([" ".join([str(pid) for pid in pid_group]) for pid_group in frozen_pids]) + "\n")
     else:
         try:
             unlink("/tmp/thrash-protect-frozen-pid-list")
@@ -552,6 +563,9 @@ num_unfreezes = 0
 global_process_selector = GlobalProcessSelector()
 
 def main():
+    ## Parsing arguments (TODO: none provided as for now.  The
+    ## configuration passed through environment should also be
+    ## possible to pass through parameters)
     try:
         import argparse
         p = argparse.ArgumentParser(description="protect a linux host from thrashing")
@@ -560,7 +574,26 @@ def main():
     except ImportError:
         ## argparse is only available from 2.7 and up
         args = None
-    thrash_protect(args)
+
+    ## Cleanup - unfreezing pids from last run, if applicable
+    try:
+        ## this may arguably be harmful, if box has been rebooted, or long time
+        ## has passed, and the pidfile actually contains processes that should be frozen
+        with open("/tmp/thrash-protect-frozen-pid-list", "r") as pidfile:
+            logging.info("cleaning up - unfreezing pids from last run")
+            pids_to_open = logfile.read()
+            for pid in pids_to_open.split():
+                kill(int(pid_to_unfreeze), signal.SIGCONT)
+    except IOError:
+        pass
+
+    try:
+        thrash_protect(args)
+    finally:
+        ## Clean up if exiting due to an exception.
+        global frozen_pids
+        for pid_to_unfreeze in frozen_pids:
+            kill(pid_to_unfreeze, signal.SIGCONT)
 
                                 
 if __name__ == '__main__':

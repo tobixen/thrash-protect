@@ -2,7 +2,7 @@
 
 import sys
 
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from io import StringIO,BytesIO
 #import importlib
 import signal
@@ -15,7 +15,8 @@ import thrash_protect
 from nose.tools import assert_equal
 
 class FileMockup():
-    def __init__(self, files_override={}):
+    def __init__(self, files_override={}, write_failure=False):
+        self.write_failure = write_failure
         self.files = {
             '/proc/10/stat': b'10 (cat) R 9 11054 16079 34823 11054 4202496 122 0 321 0 0 0 0 0 20 0 1 0 26355394 21721088 272 18446744073709551615 4194304 4239532 140734890833696 140734890833192 139859681691520 0 0 0 0 0 0 0 17 1 0 0 0 0 0 6340112 6341396 9216000 140734890837648 140734890837668 140734890837668 140734890840043 0\n',
             '/proc/9/stat': b'9 (bash) S 16077 16079 16079 34823 19840 4202496 5108 15681 0 1 22 3 64 17 20 0 1 0 20562390 31199232 1440 18446744073709551615 4194304 4959876 140736853723312 140736853721992 139725430523274 0 65536 3670020 1266777851 18446744071579314463 0 0 17 0 0 0 7 0 0 7060960 7076956 39927808 140736853724444 140736853724449 140736853724449 140736853725166 0\n',
@@ -35,6 +36,11 @@ class FileMockup():
                 raise FileNotFoundError
             except AttributeError:
                 raise thrash_protect.FileNotFoundError
+        elif mode.startswith('w') or mode.startswith('a'):
+            if self.write_failure:
+                raise IOError
+            else:
+                return MagicMock()
         else:
             raise NotImplementedError
     
@@ -71,11 +77,25 @@ class TestUnitTest:
         for i in range(1,7):
             assert ((i*10, signal.SIGSTOP),) in call_list
 
+    @patch('logging.critical')
+    @patch('thrash_protect.open', new=FileMockup(write_failure=True).open)
     @patch('thrash_protect.getpgid')
     @patch('thrash_protect.getsid')
     @patch('thrash_protect.kill')
-    @patch('thrash_protect.open')
-    def testTupleFreezeUnfreeze(self, open, kill, getsid, getpgid):
+    def testTupleFreezeUnfreezeLogFailure(self, kill, getsid, getpgid, critical):
+        self._testTupleFreezeUnfreeze(kill)
+        assert_equal(critical.call_count, 4)
+
+    @patch('logging.critical')
+    @patch('thrash_protect.getpgid')
+    @patch('thrash_protect.getsid')
+    @patch('thrash_protect.kill')
+    @patch('thrash_protect.open', new=FileMockup().open)
+    def testTupleFreezeUnfreeze(self, kill, getsid, getpgid, critical):
+        self._testTupleFreezeUnfreeze(kill)
+        assert_equal(critical.call_count, 0)
+
+    def _testTupleFreezeUnfreeze(self, kill):
         """
         In some cases the parent pid does not like the child to be suspended (processes implementing job control, like an interactive bash session).  To cater for this, we'll need to make sure the parent is suspended before the child, and that the child is resumed before the parent.  Such pairs (or even longer chains) should be handled as tuples.
         """
@@ -102,8 +122,6 @@ class TestUnitTest:
         assert_equal(thrash_protect.ProcessSelector().checkParents(9, 16077), (9,))  
         assert_equal(thrash_protect.ProcessSelector().checkParents(10),       (9, 10))
         assert_equal(thrash_protect.ProcessSelector().checkParents(10, 9),    (9, 10))
-
-
 
 class TestFuncTest:
     """
@@ -146,7 +164,7 @@ class TestFuncTest:
 
         assert_equal(log_frozen.call_args_list, frozen_calls)
         assert_equal(len(log_unfrozen.call_args_list), len(log_frozen.call_args_list))
-        
+
         thrash_protect.global_process_selector.update(current, thrash_protect.SystemState())
 
         ## once again, to make sure the "unfreeze_last_frozen" also gets excersised
