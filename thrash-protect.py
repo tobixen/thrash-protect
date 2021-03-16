@@ -556,6 +556,25 @@ def thrash_protect(args=None):
             time.sleep(sleep_interval)
             current.check_delay(sleep_interval)
 
+def unfreeze_from_tmpfile():
+    """
+    Cleanup - unfreezing pids from last run, if applicable
+
+    this may arguably be harmful, if box has been rebooted, or long
+    time has passed, and the pidfile actually contains processes that
+    should be frozen.  At the other hand, if thrash-protect dies for
+    any reason, and is instantly restarted by systemd, it's probably a
+    good thing to start fresh from scratch.
+    """
+    try:
+        with open("/tmp/thrash-protect-frozen-pid-list", "r") as pidfile:
+            logging.info("cleaning up - unfreezing pids from last run")
+            pids_to_open = pidfile.read()
+            for pid in pids_to_open.split():
+                kill(int(pid), signal.SIGCONT)
+    except IOError:
+        pass
+
 ## Globals ... we've refactored most of them away, but some still remains ...
 frozen_pids = []
 num_unfreezes = 0
@@ -575,17 +594,7 @@ def main():
         ## argparse is only available from 2.7 and up
         args = None
 
-    ## Cleanup - unfreezing pids from last run, if applicable
-    try:
-        ## this may arguably be harmful, if box has been rebooted, or long time
-        ## has passed, and the pidfile actually contains processes that should be frozen
-        with open("/tmp/thrash-protect-frozen-pid-list", "r") as pidfile:
-            logging.info("cleaning up - unfreezing pids from last run")
-            pids_to_open = logfile.read()
-            for pid in pids_to_open.split():
-                kill(int(pid_to_unfreeze), signal.SIGCONT)
-    except IOError:
-        pass
+    unfreeze_from_tmpfile()
 
     try:
         thrash_protect(args)
