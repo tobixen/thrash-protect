@@ -20,9 +20,9 @@ try:
 except NameError:
     FileNotFoundError=IOError
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 __author__ = "Tobias Brox"
-__copyright__ = "Copyright 2013-2018, Tobias Brox"
+__copyright__ = "Copyright 2013-2021, Tobias Brox"
 __license__ = "GPL"
 __maintainer__ = "Tobias Brox"
 __email__ = "tobias@redpill-linpro.com"
@@ -152,12 +152,16 @@ class SystemState:
             ## thrashing alert, increase the counter
             self.cooldown_counter = prev.cooldown_counter+1
             if not prev.timer_alert:
-                config.max_acceptable_time_delta*=1.05
+                ## potential thrashing detected, but we got no timing alarm.
+                ## Perhaps max_acceptable_time_delta should be tweaked down
+                config.max_acceptable_time_delta/=1.1
         elif prev.cooldown_counter and prev.swapcount==self.swapcount and self.timestamp-prev.timestamp>=self.get_sleep_interval():
             ## not busy at all, and we have slept since the previous check.  Decrease counter.
             self.cooldown_counter = prev.cooldown_counter-1
             if prev.timer_alert:
-                config.max_acceptable_time_delta/=1.05
+                ## we got a timer alert, even if the system is not busy.
+                ## We should increase the timer alert threshold.
+                config.max_acceptable_time_delta*=1.1
         else:
             debug("prev.swapcount==self.swapcount: %s,  self.timestamp-prev.timestamp>=self.get_sleep_interval(): %s, self.timestamp-prev.timestamp: %s, self.get_sleep_interval(): %s" % (prev.swapcount==self.swapcount, self.timestamp-prev.timestamp>=self.get_sleep_interval(),  self.timestamp-prev.timestamp,  self.get_sleep_interval()))
             ## some swapin or swapout has been observed, or we haven't slept since previous run.  Keep the cooldown counter steady.
