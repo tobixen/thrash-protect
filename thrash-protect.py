@@ -32,7 +32,7 @@ __product__ = "thrash-protect"
 ## non-critical part of the script, already inside a try-except-scope, so the
 ## import has been moved there to allow the script to work on servers without 2.7 installed.
 #from subprocess import check_output 
-from os import getenv, kill, getpid, unlink, getpgid, getsid
+from os import getenv, kill, getpid, unlink, getpgid, getsid, getpid
 from collections import namedtuple
 import time
 from datetime import datetime
@@ -152,7 +152,7 @@ class SystemState:
             ## thrashing alert, increase the counter
             self.cooldown_counter = prev.cooldown_counter+1
             if not prev.timer_alert:
-                config.max_acceptable_time_delta/=1.1
+                config.max_acceptable_time_delta/=1.01 ## tune it down more slowly, to generate less noise
         elif prev.cooldown_counter and prev.swapcount==self.swapcount and self.timestamp-prev.timestamp>=self.get_sleep_interval():
             ## not busy at all, and we have slept since the previous check.  Decrease counter.
             self.cooldown_counter = prev.cooldown_counter-1
@@ -175,7 +175,7 @@ class SystemState:
         global frozen_pids
         delta = time.time() - self.timestamp - expected_delay
         if delta > config.max_acceptable_time_delta:
-            logging.warning("red alert!  unacceptable time delta observed! interval: %s cooldown_counter: %s expected delay: %s max acceptable delta: %s delta: %s time: %s frozen pids: %s" % (config.interval, self.cooldown_counter, expected_delay, config.max_acceptable_time_delta, delta, time.time(), frozen_pids))
+            logging.warning("relatively big time delta observed. interval: %s cooldown_counter: %s expected delay: %s max acceptable delta: %s delta: %s time: %s frozen pids: %s.  (this message is to be expected every now and then as the max acceptable delta parameter is autotuned)" % (config.interval, self.cooldown_counter, expected_delay, config.max_acceptable_time_delta, delta, time.time(), frozen_pids))
             self.cooldown_counter += 1
             self.timer_alert = True
             return False
@@ -466,9 +466,12 @@ def freeze_something(pids_to_freeze=None):
     pids_to_freeze = pids_to_freeze or global_process_selector.scan()
     if not pids_to_freeze:
         ## process disappeared. ignore failure
-        return
+        return ()
     if not hasattr(pids_to_freeze, '__iter__'):
         pids_to_freeze = (pids_to_freeze,)
+    if getpid() in pids_to_freeze:
+        logging.critical("Oups.  Own pid is next on the list of processes to freeze.  This is very bad.  Skipping.")
+        return ()
     for pid_to_freeze in pids_to_freeze:
         try:
             kill(pid_to_freeze, signal.SIGSTOP)
