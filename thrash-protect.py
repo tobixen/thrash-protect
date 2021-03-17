@@ -32,7 +32,7 @@ __product__ = "thrash-protect"
 ## non-critical part of the script, already inside a try-except-scope, so the
 ## import has been moved there to allow the script to work on servers without 2.7 installed.
 #from subprocess import check_output 
-from os import getenv, kill, getpid, unlink, getpgid, getsid, getpid
+from os import getenv, kill, getpid, unlink, getpgid, getsid, getpid, getppid
 from collections import namedtuple
 import time
 from datetime import datetime
@@ -270,7 +270,7 @@ class OOMScoreProcessSelector(ProcessSelector):
                     oom_score *= config.blacklist_score_multiplier
                 if oom_score > max:
                     ## ignore self
-                    if pid == getpid():
+                    if pid in (getpid(), getppid()):
                         continue
                     max = oom_score
                     worstpid = (pid, stats.ppid)
