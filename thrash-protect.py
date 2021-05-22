@@ -180,7 +180,7 @@ class SystemState:
         delta = time.time() - self.timestamp - expected_delay
         if delta > config.max_acceptable_time_delta:
             logging.warning("relatively big time delta observed. interval: %s cooldown_counter: %s expected delay: %s max acceptable delta: %s delta: %s time: %s frozen pids: %s.  (this message is to be expected every now and then as the max acceptable delta parameter is autotuned)" % (config.interval, self.cooldown_counter, expected_delay, config.max_acceptable_time_delta, delta, time.time(), frozen_pids))
-            self.cooldown_counter += 1
+            self.cooldown_counter += 2
             self.timer_alert = True
             return False
         return True
@@ -201,6 +201,16 @@ class ProcessSelector:
     procstat = namedtuple('procstat', ('cmd', 'state', 'majflt', 'ppid'))
 
     def readStat(self, sfn):
+        ## double try to keep it compatible both with python 2.5 and python 3
+        try: 
+            try:
+                return self.readStat_(sfn)
+            except FileNotFoundError:
+                return None
+        except ProcessLookupError:
+            return None
+
+    def readStat_(self, sfn):
         """
         helper method - reads the stats file and returns a tuple (cmd, state, 
         majflt, pids)
@@ -229,11 +239,14 @@ class ProcessSelector:
         'bash'.
         """
         if ppid is None:
-            ppid = self.readStat(pid).ppid
+            stats = self.readStat(pid)
+            if not stats:
+                return ()
+            ppid = stats.ppid
         if ppid <= 1:
             return (pid,)
         pstats = self.readStat(ppid)
-        if pstats.cmd in config.cmd_jobctrllist:
+        if pstats and pstats.cmd in config.cmd_jobctrllist:
             return self.checkParents(ppid, pstats.ppid) + (pid,)
         else:
             return (pid,)
@@ -256,6 +269,8 @@ class OOMScoreProcessSelector(ProcessSelector):
                 with open(fn, 'r') as oom_score_file:
                     oom_score = int(oom_score_file.readline())
                 stats = self.readStat(pid)
+                if not stats:
+                    continue
                 if 'T' in stats.state:
                     debug("oom_score: %s, cmd: %s, pid: %s, state: %s - no touch" % (oom_score, stats.cmd, pid, stats.state))
                     continue
@@ -340,12 +355,8 @@ class PageFaultingProcessSelector(ProcessSelector):
                 pid = int(fn.split('/')[2])
             except ValueError:
                 continue
-            try:
-              try: ## double try to keep it compatible with both python 2.5 and python 3.0
-                stats = self.readStat(fn)
-              except FileNotFoundError:
-                  continue
-            except ProcessLookupError:
+            stats = self.readStat(fn)
+            if not stats:
                 continue
             if stats.majflt > 0:
                 prev = self.pagefault_by_pid.get(pid, 0)
@@ -608,10 +619,10 @@ def main():
     finally:
         ## Clean up if exiting due to an exception.
         global frozen_pids
-        for pid_to_unfreeze in frozen_pids:
-            kill(pid_to_unfreeze, signal.SIGCONT)
+        for pids_to_unfreeze in frozen_pids:
+            for pid_to_unfreeze in reversed(pids_to_unfreeze):
+                kill(pid_to_unfreeze[0], signal.SIGCONT)
 
-                                
 if __name__ == '__main__':
     main()
 
