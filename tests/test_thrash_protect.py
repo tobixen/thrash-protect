@@ -2,7 +2,10 @@
 
 import sys
 
-from unittest.mock import patch, MagicMock
+try:
+    from mock import patch, MagicMock
+except:
+    from unittest.mock import patch, MagicMock
 from io import StringIO,BytesIO
 #import importlib
 import signal
