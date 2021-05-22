@@ -626,7 +626,6 @@ def main():
     try:
         thrash_protect(args)
     finally:
-        pass
         cleanup()
 
 if __name__ == '__main__':
