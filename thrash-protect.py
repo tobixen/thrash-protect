@@ -587,6 +587,21 @@ def unfreeze_from_tmpfile():
     except FileNotFoundError:
         pass
 
+def cleanup():
+    ## Clean up if exiting due to an exception.
+    global frozen_pids
+    for pids_to_unfreeze in frozen_pids:
+        for pid_to_unfreeze in reversed(pids_to_unfreeze):
+            try:
+                kill(pid_to_unfreeze, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+    try:
+        unlink("/tmp/thrash-protect-frozen-pid-list")
+    except FileNotFoundError:
+        pass
+    
+
 ## Globals ... we've refactored most of them away, but some still remains ...
 frozen_pids = []
 num_unfreezes = 0
@@ -611,15 +626,7 @@ def main():
     try:
         thrash_protect(args)
     finally:
-        ## Clean up if exiting due to an exception.
-        global frozen_pids
-        for pids_to_unfreeze in frozen_pids:
-            for pid_to_unfreeze in reversed(pids_to_unfreeze):
-                kill(pid_to_unfreeze[0], signal.SIGCONT)
-        try:
-            unlink("/tmp/thrash-protect-frozen-pid-list")
-        except FileNotFoundError:
-            pass
+        cleanup()
 
 if __name__ == '__main__':
     main()

@@ -143,11 +143,22 @@ class TestUnitTest:
         assert_equal(thrash_protect.ProcessSelector().checkParents(10),       (9, 10))
         assert_equal(thrash_protect.ProcessSelector().checkParents(10, 9),    (9, 10))
 
-class TestFuncTest:
-    """
-    Making good unit tests that doesn't have side effects is sometimes
+    @patch('thrash_protect.kill')
+    @patch('thrash_protect.unlink')
+    def test_cleanup(self, unlink, kill):
+        thrash_protect.frozen_pids = [(10,),(20, 30),(40,)]
+        thrash_protect.cleanup()
+        assert_equal(len(kill.call_args_list), 4)
+        assert_equal(len(unlink.call_args_list), 1)
+
+
+class TestRootFuncTest:
+    """Making good unit tests that doesn't have side effects is sometimes
     not really trivial.  We'll allow the methods in this class to have
-    side effects.
+    side effects.  Also, those tests have to be run as root.  That's
+    not recommended practice.  Don't run this as root in a production
+    environment, and don't blame me if anything goes kaboom when
+    running this as root.
     """
     def __init__(self):
         if os.geteuid():
@@ -161,10 +172,10 @@ class TestFuncTest:
         ## Freezing something 6 times (to make sure we pass the default
         ## unfreeze_pop_ratio)
         my_frozen_pids = []
+        prev=thrash_protect.SystemState()
+        time.sleep(1)
+        current=thrash_protect.SystemState()
         for i in range(0,6):
-            prev=thrash_protect.SystemState()
-            time.sleep(1)
-            current=thrash_protect.SystemState()
             thrash_protect.global_process_selector.update(prev, current)
             my_frozen_pids.append(thrash_protect.freeze_something())
 
@@ -195,3 +206,4 @@ class TestFuncTest:
         ## Unfreeze
         for i in range(0,6):
             thrash_protect.unfreeze_something()
+
