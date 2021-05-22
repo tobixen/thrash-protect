@@ -9,6 +9,7 @@ except:
 from io import StringIO,BytesIO
 #import importlib
 import signal
+import logging
 import time
 import os
 import nose.plugins
@@ -50,8 +51,6 @@ class FileMockup():
                 return self.file_mocks[fn]
         else:
             raise NotImplementedError
-    
-
 
 class TestUnitTest:
     """
@@ -159,6 +158,52 @@ class TestUnitTest:
         assert_equal(len(kill.call_args_list), 4)
         assert_equal(len(unlink.call_args_list), 1)
 
+class TestUncleanUnitTest:
+    """
+    Those unit tests will do some probing into the system, but should
+    not require root and should not have any side effects.  Because
+    mockups are tedious.
+    """
+    def _find_unused_pid(self):
+        """Some tests requires a pid that is not in use.  Let's do an attempt
+        on finding a pid that is unlikely to be in use.
+        """
+        pid = os.getpid()
+        if pid<1024:
+            pid += 30000
+        while True:
+            pid -= 1
+            ## Either we're running on a very weird very overloaded system,
+            ## or something is wrong in this very algorithm
+            assert(pid > 1)
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                self.unused_pid = pid
+                return pid
+            except PermissionError:
+                pass
+
+    def setup(self):
+        self._find_unused_pid()
+
+    def testReadStatSelf(self):
+        read_stat = thrash_protect.ProcessSelector().readStat
+        my_stats = read_stat(os.getpid())
+        logging.info("my cmd is " + my_stats.cmd)
+        parent_stats = read_stat(my_stats.ppid)
+        logging.info("my parent cmd is " + parent_stats.cmd)
+        ## No asserts done here.  Probably cmd is "nosetests" and parent cmd
+        ## is "bash", but we cannot assert that.
+        ## read_stats can accept both a file name and an integer
+        my_stats2 = read_stat("/proc/%i/stat" % os.getpid())
+        assert_equal(my_stats2.cmd, my_stats.cmd)
+        assert_equal(my_stats2.ppid, my_stats.ppid)
+
+    def testReadStatNonExistent(self):
+        read_stat = thrash_protect.ProcessSelector().readStat
+        should_be_none = read_stat(self.unused_pid)
+        assert(should_be_none is None)
 
 class TestRootFuncTest:
     """Making good unit tests that doesn't have side effects is sometimes
