@@ -148,21 +148,21 @@ class TestFuncTest:
     """
     def __init__(self):
         if os.geteuid():
-            raise nose.plugins.skip.SkipTest()
+            raise nose.plugins.skip.SkipTest("Functional tests have to be run as root (which is generally not a good idea.  In this case, the functional tests may suspend and maybe resume arbitrary processes.  You have been warned.)")
 
     @patch('thrash_protect.log_frozen')
     @patch('thrash_protect.log_unfrozen')
     def testSimpleFreezeUnfreeze(self, log_unfrozen, log_frozen):
         """This test should assert that suspension and resuming works.
         """
-        prev=thrash_protect.SystemState()
-        time.sleep(1)
-        current=thrash_protect.SystemState()
-        thrash_protect.global_process_selector.update(prev, current)
         ## Freezing something 6 times (to make sure we pass the default
         ## unfreeze_pop_ratio)
         my_frozen_pids = []
         for i in range(0,6):
+            prev=thrash_protect.SystemState()
+            time.sleep(1)
+            current=thrash_protect.SystemState()
+            thrash_protect.global_process_selector.update(prev, current)
             my_frozen_pids.append(thrash_protect.freeze_something())
 
         frozen_calls = log_frozen.call_args_list

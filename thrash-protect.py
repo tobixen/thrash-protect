@@ -88,10 +88,6 @@ class config:
     ## Enable human-readable date format instead of UNIX timestamp
     date_human_readable = int(getenv('THRASH_PROTECT_DATE_HUMAN_READABLE', '1'))
 
-## Poor mans logging.  Should eventually set up the logging module
-#debug = print
-debug = lambda foo: None
-
 class SystemState:
     """A "system state" is a collection of observed and calculated
     variables at a specific point of time.  We'll probably never have
@@ -163,7 +159,7 @@ class SystemState:
                 ## We should increase the timer alert threshold.
                 config.max_acceptable_time_delta*=1.1
         else:
-            debug("prev.swapcount==self.swapcount: %s,  self.timestamp-prev.timestamp>=self.get_sleep_interval(): %s, self.timestamp-prev.timestamp: %s, self.get_sleep_interval(): %s" % (prev.swapcount==self.swapcount, self.timestamp-prev.timestamp>=self.get_sleep_interval(),  self.timestamp-prev.timestamp,  self.get_sleep_interval()))
+            logging.debug("prev.swapcount==self.swapcount: %s,  self.timestamp-prev.timestamp>=self.get_sleep_interval(): %s, self.timestamp-prev.timestamp: %s, self.get_sleep_interval(): %s" % (prev.swapcount==self.swapcount, self.timestamp-prev.timestamp>=self.get_sleep_interval(),  self.timestamp-prev.timestamp,  self.get_sleep_interval()))
             ## some swapin or swapout has been observed, or we haven't slept since previous run.  Keep the cooldown counter steady.
             ## (Hm - we risk that process A gets frozen but never unfrozen due to process B generating swap activity?)
         return ret
@@ -272,14 +268,14 @@ class OOMScoreProcessSelector(ProcessSelector):
                 if not stats:
                     continue
                 if 'T' in stats.state:
-                    debug("oom_score: %s, cmd: %s, pid: %s, state: %s - no touch" % (oom_score, stats.cmd, pid, stats.state))
+                    logging.debug("oom_score: %s, cmd: %s, pid: %s, state: %s - no touch" % (oom_score, stats.cmd, pid, stats.state))
                     continue
             except FileNotFoundError:
                 continue
             if oom_score > 0:
-                debug("oom_score: %s, cmd: %s, pid: %s" % (oom_score, stats.cmd, pid))
+                logging.debug("oom_score: %s, cmd: %s, pid: %s" % (oom_score, stats.cmd, pid))
                 if stats.cmd in config.cmd_whitelist:
-                    debug("whitelisted process %s %s %s" % (pid, stats.cmd, oom_score))
+                    logging.debug("whitelisted process %s %s %s" % (pid, stats.cmd, oom_score))
                     oom_score /= config.whitelist_score_divider
                 if stats.cmd in config.cmd_blacklist:
                     oom_score *= config.blacklist_score_multiplier
@@ -289,7 +285,7 @@ class OOMScoreProcessSelector(ProcessSelector):
                         continue
                     max = oom_score
                     worstpid = (pid, stats.ppid)
-        debug("oom scan completed - selected pid: %s" % (worstpid and worstpid[0]))
+        logging.debug("oom scan completed - selected pid: %s" % (worstpid and worstpid[0]))
         if worstpid != None:
             return self.checkParents(*worstpid)
         else:
@@ -317,11 +313,11 @@ class LastFrozenProcessSelector(ProcessSelector):
         """
         If a process was just resumed and the system start thrashing again, it would probably be smart to freeze that process again.  This is also a very cheap operation
         """
-        debug("last unfrozen_pid is %s" % self.last_unfrozen_pid)
+        logging.debug("last unfrozen_pid is %s" % self.last_unfrozen_pid)
         if self.last_unfrozen_pid in frozen_pids:
-          debug("last unfrozen_pid is already frozen")
+          logging.debug("last unfrozen_pid is already frozen")
           return None
-        debug("last unfrozen process return - selected pid: %s" % self.last_unfrozen_pid)
+        logging.debug("last unfrozen process return - selected pid: %s" % self.last_unfrozen_pid)
         return self.last_unfrozen_pid
 
 class PageFaultingProcessSelector(ProcessSelector):
@@ -369,7 +365,7 @@ class PageFaultingProcessSelector(ProcessSelector):
                 if stats.cmd in config.cmd_blacklist:
                     diff *= config.blacklist_score_multiplier
                 if stats.cmd in config.cmd_whitelist:
-                    debug("whitelisted process %s %s %s" % (pid, stats.cmd, diff))
+                    logging.debug("whitelisted process %s %s %s" % (pid, stats.cmd, diff))
                     diff /= config.whitelist_score_divider
                 if diff > max:
                     ## ignore self
@@ -377,8 +373,8 @@ class PageFaultingProcessSelector(ProcessSelector):
                         continue
                     max = diff
                     worstpid = (pid, stats.ppid)
-                debug("pagefault score: %s, cmd: %s, pid: %s" % (diff, stats.cmd, pid))
-        debug("pagefault scan completed - selected pid: %s" % (worstpid and worstpid[0]))
+                logging.debug("pagefault score: %s, cmd: %s, pid: %s" % (diff, stats.cmd, pid))
+        logging.debug("pagefault scan completed - selected pid: %s" % (worstpid and worstpid[0]))
         ## give a bit of protection against whitelisted and innocent processes being stopped
         ## (TODO: hardcoded constants)
         if max > 4.0 / (self.cooldown_counter + 1.0):
@@ -400,16 +396,16 @@ class GlobalProcessSelector(ProcessSelector):
             c.update(prev, cur)
 
     def scan(self):
-        debug("scan_processes")
+        logging.debug("scan_processes")
 
         ## a for loop here to make sure we fall back on the next method if the first method fails to find anything.
         for i in range(0,len(self.collection)):
-            debug("scan method: %s" % (self.scan_method_count % len(self.collection)))
+            logging.debug("scan method: %s" % (self.scan_method_count % len(self.collection)))
             ret = self.collection[self.scan_method_count % len(self.collection)].scan()
             self.scan_method_count += 1
-        if ret:
-          return ret
-    debug("found nothing to stop!? :-(")
+            if ret:
+                return ret
+    logging.debug("found nothing to stop!? :-(")
 
 def get_date_string():
     if config.date_human_readable:
@@ -481,11 +477,12 @@ def freeze_something(pids_to_freeze=None):
     pids_to_freeze = pids_to_freeze or global_process_selector.scan()
     if not pids_to_freeze:
         ## process disappeared. ignore failure
+        logging.info("nothing to freeze found, or the process we were going to suspend has already exited")
         return ()
     if not hasattr(pids_to_freeze, '__iter__'):
         pids_to_freeze = (pids_to_freeze,)
     if getpid() in pids_to_freeze:
-        logging.critical("Oups.  Own pid is next on the list of processes to freeze.  This is very bad.  Skipping.")
+        logging.error("Oups.  Own pid is next on the list of processes to freeze.  This is very bad.  Skipping.")
         return ()
     for pid_to_freeze in pids_to_freeze:
         try:
@@ -498,7 +495,7 @@ def freeze_something(pids_to_freeze=None):
     for pid_to_freeze in pids_to_freeze:
         ## Logging after freezing - as logging itself may be resource- and timeconsuming.
         ## Perhaps we should even fork it out.
-        debug("froze pid %s" % str(pid_to_freeze))
+        logging.debug("froze pid %s" % str(pid_to_freeze))
         log_frozen(pid_to_freeze)
         return pids_to_freeze
 
@@ -519,7 +516,7 @@ def unfreeze_something():
         pids_to_unfreeze.reverse()
         for pid_to_unfreeze in pids_to_unfreeze:
             try:
-                debug("going to unfreeze %s" % str(pid_to_unfreeze))
+                logging.debug("going to unfreeze %s" % str(pid_to_unfreeze))
                 kill(pid_to_unfreeze, signal.SIGCONT)
                 ## Sometimes the parent process also gets suspended.
                 ## TODO: we're doing some simple assumptions here; 
@@ -570,7 +567,7 @@ def thrash_protect(args=None):
         
         if current.check_delay() and not busy:
             sleep_interval = current.get_sleep_interval()
-            debug("going to sleep %s" % sleep_interval)
+            logging.debug("going to sleep %s" % sleep_interval)
             time.sleep(sleep_interval)
             current.check_delay(sleep_interval)
 
@@ -582,7 +579,8 @@ def unfreeze_from_tmpfile():
     time has passed, and the pidfile actually contains processes that
     should be frozen.  At the other hand, if thrash-protect dies for
     any reason, and is instantly restarted by systemd, it's probably a
-    good thing to start fresh from scratch.
+    good thing to start fresh from scratch.  (or maybe the system will
+    go insta-thrashed, that would be quite bad indeed).
     """
     try:
         with open("/tmp/thrash-protect-frozen-pid-list", "r") as pidfile:
