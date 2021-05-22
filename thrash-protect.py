@@ -197,13 +197,9 @@ class ProcessSelector:
     procstat = namedtuple('procstat', ('cmd', 'state', 'majflt', 'ppid'))
 
     def readStat(self, sfn):
-        ## double try to keep it compatible both with python 2.5 and python 3
         try: 
-            try:
-                return self.readStat_(sfn)
-            except FileNotFoundError:
-                return None
-        except ProcessLookupError:
+            return self.readStat_(sfn)
+        except (FileNotFoundError, ProcessLookupError):
             return None
 
     def readStat_(self, sfn):
@@ -588,7 +584,7 @@ def unfreeze_from_tmpfile():
             pids_to_open = pidfile.read()
             for pid in pids_to_open.split():
                 kill(int(pid), signal.SIGCONT)
-    except IOError:
+    except FileNotFoundError:
         pass
 
 ## Globals ... we've refactored most of them away, but some still remains ...
@@ -620,6 +616,10 @@ def main():
         for pids_to_unfreeze in frozen_pids:
             for pid_to_unfreeze in reversed(pids_to_unfreeze):
                 kill(pid_to_unfreeze[0], signal.SIGCONT)
+        try:
+            unlink("/tmp/thrash-protect-frozen-pid-list")
+        except FileNotFoundError:
+            pass
 
 if __name__ == '__main__':
     main()
