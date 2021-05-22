@@ -493,7 +493,7 @@ def freeze_something(pids_to_freeze=None):
         ## Perhaps we should even fork it out.
         logging.debug("froze pid %s" % str(pid_to_freeze))
         log_frozen(pid_to_freeze)
-        return pids_to_freeze
+    return pids_to_freeze
 
 def unfreeze_something():
     global frozen_pids
