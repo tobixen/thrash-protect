@@ -205,6 +205,11 @@ class TestUncleanUnitTest:
         should_be_none = read_stat(self.unused_pid)
         assert(should_be_none is None)
 
+    def testOOMScoreProcessSelectorProcessNotFound(self):
+        ## this could earlier crash if a process exited while the algorithm was running
+        with patch('glob.glob', return_value=["/proc/%i/oom_score" % self.unused_pid]) as glob:
+            thrash_protect.OOMScoreProcessSelector().scan()
+
 class TestRootFuncTest:
     """Making good unit tests that doesn't have side effects is sometimes
     not really trivial.  We'll allow the methods in this class to have
