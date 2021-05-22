@@ -92,8 +92,12 @@ class TestUnitTest:
     @patch('thrash_protect.kill')
     @patch('thrash_protect.unlink')
     def testTupleFreezeUnfreezeLogFailure(self, unlink, kill, getsid, getpgid, critical):
+        """A logging failure should not cause the application to exit, but
+        should log criticals
+
+        """
         self._testTupleFreezeUnfreeze(kill)
-        assert_equal(critical.call_count, 4)
+        assert_equal(critical.call_count, 6)
 
     
     @patch('logging.critical')
@@ -108,8 +112,12 @@ class TestUnitTest:
             assert_equal(critical.call_count, 0)
         
     def _testTupleFreezeUnfreeze(self, kill):
-        """
-        In some cases the parent pid does not like the child to be suspended (processes implementing job control, like an interactive bash session).  To cater for this, we'll need to make sure the parent is suspended before the child, and that the child is resumed before the parent.  Such pairs (or even longer chains) should be handled as tuples.
+        """In some cases the parent pid does not like the child to be
+        suspended (processes implementing job control, like an
+        interactive bash session).  To cater for this, we'll need to
+        make sure the parent is suspended before the child, and that
+        the child is resumed before the parent.  Such pairs (or even
+        longer chains) should be handled as tuples.
         """
         thrash_protect.freeze_something((10, 20, 30))
         thrash_protect.unfreeze_something()

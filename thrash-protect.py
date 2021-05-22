@@ -428,7 +428,7 @@ def get_process_info(pid):
         logging.error("Could not fetch process user information, the process is probably gone")
         return "problem fetching process information"
 
-def failure_unacceptable(method):
+def ignore_failure(method):
     def _try_except_pass(*args, **kwargs):
         try:
             method(*args, **kwargs)
@@ -439,7 +439,7 @@ def failure_unacceptable(method):
 
 ## hard coded logic as for now.  One state file and one log file.
 ## state file can be monitored, i.e. through nagios.  todo: advanced logging
-@failure_unacceptable
+@ignore_failure
 def log_frozen(pid):
     with open("/var/log/thrash-protect.log", 'ab') as logfile:
         if config.log_user_data_on_freeze:
@@ -450,7 +450,7 @@ def log_frozen(pid):
     with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
             logfile.write(" ".join([" ".join([str(pid) for pid in pid_group]) for pid_group in frozen_pids]) + "\n")
 
-@failure_unacceptable
+@ignore_failure
 def log_unfrozen(pid):
     with open("/var/log/thrash-protect.log", 'ab') as logfile:
         if config.log_user_data_on_unfreeze:
