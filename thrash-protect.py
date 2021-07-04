@@ -509,8 +509,7 @@ def unfreeze_something():
             pids_to_unfreeze = [pids_to_unfreeze]
         else:
             pids_to_unfreeze = list(pids_to_unfreeze)
-        pids_to_unfreeze.reverse()
-        for pid_to_unfreeze in pids_to_unfreeze:
+        for pid_to_unfreeze in reversed(pids_to_unfreeze):
             try:
                 logging.debug("going to unfreeze %s" % str(pid_to_unfreeze))
                 kill(pid_to_unfreeze, signal.SIGCONT)
