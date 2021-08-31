@@ -53,8 +53,10 @@ class config:
     a config file and initiate some object with the name config in
     some future version)
     """
-    ## debug logging
+    ## debug
     debug_logging = getenv('THRASH_PROTECT_DEBUG_LOGGING', False)
+    ## will check the state and warn if thrash_protects attempts unfreezing a process that is running or freezing a process that is already suspended
+    debug_checkstate = getenv('THRASH_PROTECT_DEBUG_CHECKSTATE', False)
     
     ## Normal sleep interval, in seconds.
     interval = float(getenv('THRASH_PROTECT_INTERVAL', '0.5'))
@@ -176,7 +178,7 @@ class SystemState:
         global frozen_pids
         delta = time.time() - self.timestamp - expected_delay
         if delta > config.max_acceptable_time_delta:
-            logging.warning("relatively big time delta observed. interval: %s cooldown_counter: %s expected delay: %s max acceptable delta: %s delta: %s time: %s frozen pids: %s.  (this message is to be expected every now and then as the max acceptable delta parameter is autotuned)" % (config.interval, self.cooldown_counter, expected_delay, config.max_acceptable_time_delta, delta, time.time(), frozen_pids))
+            logging.info("relatively big time delta observed. interval: %s cooldown_counter: %s expected delay: %s max acceptable delta: %s delta: %s time: %s frozen pids: %s.  (this message is to be expected every now and then as the max acceptable delta parameter is autotuned)" % (config.interval, self.cooldown_counter, expected_delay, config.max_acceptable_time_delta, delta, time.time(), frozen_pids))
             self.cooldown_counter += 2
             self.timer_alert = True
             return False
@@ -470,6 +472,22 @@ def log_unfrozen(pid):
         except (FileNotFoundError, OSError):
             pass
 
+def _debug_check_state(pid, should_be_suspended=False):
+    procstate = ProcessSelector().readStat(pid)
+    if not procstate and not should_be_suspended:
+        return
+    if not procstate:
+        logging.warn("Pid %s should be suspended, but is gone" % pid)
+        return
+    is_suspended = 'T' in procstate.state
+    if is_suspended != should_be_suspended:
+        logging.warn("Pid %s - state: %s, should_be_suspended: %s - mismatch" % (pid, procstate, should_be_suspended))
+
+if config.debug_checkstate:
+    debug_check_state = _debug_check_state
+else:
+    debug_check_state = lambda a,b: None
+
 def freeze_something(pids_to_freeze=None):
     global frozen_pids
     global global_process_selector
@@ -485,6 +503,7 @@ def freeze_something(pids_to_freeze=None):
         return ()
     for pid_to_freeze in pids_to_freeze:
         try:
+            debug_check_state(pid_to_freeze, 0)
             kill(pid_to_freeze, signal.SIGSTOP)
         except ProcessLookupError:
             continue
@@ -515,6 +534,7 @@ def unfreeze_something():
         for pid_to_unfreeze in reversed(pids_to_unfreeze):
             try:
                 logging.debug("going to unfreeze %s" % str(pid_to_unfreeze))
+                debug_check_state(pid_to_unfreeze, 1)
                 kill(pid_to_unfreeze, signal.SIGCONT)
                 ## Sometimes the parent process also gets suspended.
                 ## TODO: we're doing some simple assumptions here; 

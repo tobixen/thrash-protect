@@ -229,7 +229,6 @@ class TestRootFuncTest:
         """
         ## Freezing something 6 times (to make sure we pass the default
         ## unfreeze_pop_ratio)
-        import pdb; pdb.set_trace()
         my_frozen_pids = []
         prev=thrash_protect.SystemState()
         time.sleep(1)
