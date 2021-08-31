@@ -53,6 +53,9 @@ class config:
     a config file and initiate some object with the name config in
     some future version)
     """
+    ## debug logging
+    debug_logging = getenv('THRASH_PROTECT_DEBUG_LOGGING', False)
+    
     ## Normal sleep interval, in seconds.
     interval = float(getenv('THRASH_PROTECT_INTERVAL', '0.5'))
 
@@ -148,15 +151,13 @@ class SystemState:
             ## thrashing alert, increase the counter
             self.cooldown_counter = prev.cooldown_counter+1
             if not prev.timer_alert:
-                ## potential thrashing detected, but we got no timing alarm.
-                ## Perhaps max_acceptable_time_delta should be tweaked down
+                logging.debug("potential thrashing detected, but we got no timing alarm. Perhaps max_acceptable_time_delta should be tweaked down")
                 config.max_acceptable_time_delta/=1.1
         elif prev.cooldown_counter and prev.swapcount==self.swapcount and self.timestamp-prev.timestamp>=self.get_sleep_interval():
             ## not busy at all, and we have slept since the previous check.  Decrease counter.
             self.cooldown_counter = prev.cooldown_counter-1
             if prev.timer_alert:
-                ## we got a timer alert, even if the system is not busy.
-                ## We should increase the timer alert threshold.
+                logging.debug("we got a timer alert, even if the system is not busy.  Increasing the timer alert threshold")
                 config.max_acceptable_time_delta*=1.1
         else:
             logging.debug("prev.swapcount==self.swapcount: %s,  self.timestamp-prev.timestamp>=self.get_sleep_interval(): %s, self.timestamp-prev.timestamp: %s, self.get_sleep_interval(): %s" % (prev.swapcount==self.swapcount, self.timestamp-prev.timestamp>=self.get_sleep_interval(),  self.timestamp-prev.timestamp,  self.get_sleep_interval()))
@@ -327,6 +328,7 @@ class PageFaultingProcessSelector(ProcessSelector):
     yet are needed, it's also a "page fault")
     """
     def __init__(self):
+        ## TODO: garbage collection
         self.pagefault_by_pid = {}
         self.cooldown_counter = 0
 
@@ -350,7 +352,7 @@ class PageFaultingProcessSelector(ProcessSelector):
             stats = self.readStat(fn)
             if not stats:
                 continue
-            if stats.majflt > 0:
+            if stats.majflt > 0 and not 'T' in stats.state:
                 prev = self.pagefault_by_pid.get(pid, 0)
                 self.pagefault_by_pid[pid] = stats.majflt
                 diff = stats.majflt - prev
@@ -392,6 +394,7 @@ class GlobalProcessSelector(ProcessSelector):
             c.update(prev, cur)
 
     def scan(self):
+        global frozen_pids
         logging.debug("scan_processes")
 
         ## a for loop here to make sure we fall back on the next method if the first method fails to find anything.
@@ -399,7 +402,7 @@ class GlobalProcessSelector(ProcessSelector):
             logging.debug("scan method: %s" % (self.scan_method_count % len(self.collection)))
             ret = self.collection[self.scan_method_count % len(self.collection)].scan()
             self.scan_method_count += 1
-            if ret:
+            if ret and not ret in frozen_pids:
                 return ret
     logging.debug("found nothing to stop!? :-(")
 
@@ -628,5 +631,7 @@ def main():
         cleanup()
 
 if __name__ == '__main__':
+    if config.debug_logging:
+        logging.root.setLevel(10)
     main()
 
