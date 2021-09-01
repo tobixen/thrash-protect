@@ -198,9 +198,9 @@ Drawbacks and problems
   "swapoff" failed to complete on a server where thrash-protect was
   running.
 
--  There has been some bugs in the script, sometimes it's not doing
-   it's job well enough, other times it has not been resuming processes
-   once they were suspended.
+- There has been some bugs in the script, sometimes it's not doing
+  it's job well enough, other times it has not been resuming processes
+  once they were suspended.
 
 Avoiding OOM-killings
 ---------------------
