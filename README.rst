@@ -119,6 +119,12 @@ stations and laptops.  I can tell that ...
   the production app, rogue process gobbling up all the memory killed
   off by the OOM-killer, etc).
 
+* ... I got one feedback in the mail box the other day from some
+  off-grid person, thrash-protect made him sleep better during the
+  nights.  Thrashing may increase the power consumption from a laptop
+  by magnitudes, and had caused batteries to become flat during the
+  night time.
+
 All this said, the script hasn't been through any thorough
 peer-review, and it hasn't been deployed on any massive scale - don't
 blame me if you start up this script and anything goes kaboom.
@@ -214,6 +220,14 @@ notices that the SMTP-server was killed by the OOM-killer, only on
 Saturday someone notices that something is amiss, on Monday the
 SMPT-server is started again - and nobody knows how many important
 emails was lost.
+
+My colleague experienced a busy, huge mysql server getting killed by
+the OOM - causing corruption to the data directory, and again causing
+hours of downtime on a busy production server.  I'd say that's a
+problem with mysql, corruptions due to OOM'ing should generally not
+happen - but anyway, it probably wouldn't have happened if there would
+have been significant amounts of swap there, thrash-protect and good
+monitoring.
 
 In some few cases the OOM-killer may work out pretty well - say, some
 java process is bloated over time due to memory leakages and finally
