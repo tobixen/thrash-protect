@@ -317,6 +317,11 @@ class LastFrozenProcessSelector(ProcessSelector):
           logging.debug("last unfrozen_pid is already frozen")
           return None
         logging.debug("last unfrozen process return - selected pid: %s" % self.last_unfrozen_pid)
+
+        ## it may have exited already, in that case we should purge the record
+        if self.last_unfrozen_pid and not [True for x in self.last_unfrozen_pid if self.readStat(x)]:
+            self.last_unfrozen_pid = None
+
         return self.last_unfrozen_pid
 
 class PageFaultingProcessSelector(ProcessSelector):
@@ -396,7 +401,6 @@ class GlobalProcessSelector(ProcessSelector):
             c.update(prev, cur)
 
     def scan(self):
-        global frozen_pids
         logging.debug("scan_processes")
 
         ## a for loop here to make sure we fall back on the next method if the first method fails to find anything.
@@ -404,7 +408,7 @@ class GlobalProcessSelector(ProcessSelector):
             logging.debug("scan method: %s" % (self.scan_method_count % len(self.collection)))
             ret = self.collection[self.scan_method_count % len(self.collection)].scan()
             self.scan_method_count += 1
-            if ret and not ret in frozen_pids:
+            if ret:
                 return ret
     logging.debug("found nothing to stop!? :-(")
 
@@ -505,10 +509,12 @@ def freeze_something(pids_to_freeze=None):
         try:
             debug_check_state(pid_to_freeze, 0)
             kill(pid_to_freeze, signal.SIGSTOP)
+            if len(pids_to_freeze)>1:
+                time.sleep(config.max_acceptable_delta/3)
         except ProcessLookupError:
             continue
     if not pids_to_freeze in frozen_pids:
-            frozen_pids.append(pids_to_freeze)
+        frozen_pids.append(pids_to_freeze)
 
     for pid_to_freeze in pids_to_freeze:
         ## Logging after freezing - as logging itself may be resource- and timeconsuming.
@@ -531,22 +537,14 @@ def unfreeze_something():
             pids_to_unfreeze = [pids_to_unfreeze]
         else:
             pids_to_unfreeze = list(pids_to_unfreeze)
+        logging.debug("pids to unfreeze: %s" % pids_to_unfreeze)
         for pid_to_unfreeze in reversed(pids_to_unfreeze):
             try:
                 logging.debug("going to unfreeze %s" % str(pid_to_unfreeze))
                 debug_check_state(pid_to_unfreeze, 1)
                 kill(pid_to_unfreeze, signal.SIGCONT)
-                ## Sometimes the parent process also gets suspended.
-                ## TODO: we're doing some simple assumptions here; 
-                ## 1) this
-                ## problem only applies to process group id or session id
-                ## (we probably need to walk through all the parents - or maybe just the ppid?)
-                ## 2) it is harmless to CONT the pgid and sid.  This may not always be so.
-                ## To correct this, we may need to traverse parents
-                ## (peeking into /proc/<pid>/status recursively) prior to freezing the proc.
-                ## all parents that aren't already frozen should be added to the unfreeze stack
-                #kill(getpgid(pid_to_unfreeze), signal.SIGCONT)
-                #kill(getsid(pid_to_unfreeze), signal.SIGCONT)
+                if len(pids_to_unfreeze)>1:
+                    time.sleep(config.max_acceptable_delta)
             except ProcessLookupError:
                 ## ignore failure
                 pass
