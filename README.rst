@@ -15,10 +15,10 @@ slightly degraded instead of completely thrashed (until the rogue
 process ends or gets killed by the oom killer).
 
 The commit rate has been fairly low during the last few years - for
-the very simple reason that it seems to work well enough.
+the very simple reason that it seems to work fairly well.
 
-How to use
-----------
+How to use and how to configure
+-------------------------------
 
 See the [INSTALL](INSTALL.md) file.
 
@@ -103,8 +103,7 @@ actively suspending processes on dozens of VMs and real computers.
 I'm running it everywhere, both on production servers, personal work
 stations and laptops.  I can tell that ...
 
-* ... I haven't observed any significant drawbacks with running this
-  script
+* ... I haven't observed many drawbacks with running this script
 
 * ... the script definitively has saved us from several power-cyclings
 
@@ -126,9 +125,36 @@ blame me if you start up this script and anything goes kaboom.
 
 Drawbacks and problems
 ----------------------
+- Possibly the biggest problem: some parent processes may behave
+  unexpectedly when the children gets suspended.  You may easily check this manually by starting up processes and running "kill -STOP" and "kill -CONT" towards the pids.  A workaround has been implemented in the script (see the job control thing in the configuration), but it's not failsafe.  I'm only aware of problems with bash and sudo - and possibly the condor job control system.  Problems observed:
+  
+  * If running a process under sudo (i.e. "sudo sleep 3600") and the subprocess (sleep) is suspended, the parent process (sudo) will automatically also be suspended and has to be manually resumed.
+
+  * If running an non-interactive process "in the foreground" in an interactive bash session (i.e. "sleep 3600") and the process is suspended, it's moved "to the background" and will stay "backgrounded" if it's resumed.  In particular, doing "while [ 1 ] ; do heavy_task ; done" may cause heavy_task to be spawned in parallell as the while-loop will continue running when heavy_task gets backgrounded (workaround: throw an ampersand behind and the whole loop will be backgrounded from the beginning).
+
+  * If running an interactive process "in the foreground" (i.e. an email reader, an IRC-session or a minecraft server) it will also be "backgrounded" but will stay suspended even if it's resumed.  (work-around: start the processes directly from screen - though tmux seems to run everything through the shell, so the problem persists with tmux).
+
+  * There has been one (1) report of problems with the condor job control service on a VM running thrash-protect, but I wasn't able to reproduce the problem.
+
 - Make sure to install some swap space.  Thrash-protect is not
   performing very well if no swap space is installed.
   
+- The default settings are not very well tuned for a host with fast
+  swap (SSD).  You may risk that the performance goes down on a host
+  actively using the swap space.  At the other hand, for SSDs,
+  thrash-protect will likely increase the life time of the SSD.
+
+- Thrash-protect is optimized for servers, not desktops.  One may
+  experience that GUI-sessions (XOrg, Wayland, window managers, etc)
+  won't work at all if heavy thrashing is going on.  Keep in mind that
+  under such circumstances normally the whole system would be
+  completely down for infinite time - with thrash-protect, if you can
+  get out into a console (try ctrl-alt-F2 or ctrl-alt-F3, etc) or if
+  you can access the host through ssh, things should work out without
+  any significant interruptions.  If you know a little bit about
+  sysadmin work, you should be able to find and kill the processes
+  causing the thrashing.
+ 
 - On hosts actually using swap, every now and then some process will
   be suspended for a short period of time, so it's probably not a
   good idea to use thrash-protect on "real time"-systems (then again,
@@ -146,18 +172,6 @@ Drawbacks and problems
   would most likely be an even worse performance degradation or even
   total downtime due to thrashing.
 
-- Some parent processes may behave unexpectedly when the children gets
-  suspended, particularly interactive processes under bash - mutt,
-  less, even running a minecraft server interactively under bash
-  (early work-around: start them directly from screen). We've observed
-  one problem with the condor job control system, but we haven't
-  checked if the problem was related to thrash-protect. Implementation
-  fix: if the parent process name is within a configurable list (with
-  sane defaults), then the parent process will be suspended before the
-  child process and resumed after the child process has been
-  resumed. Please tell if more process names ought to be added to that
-  list (perhaps *all* processes should be treated this way).
-
 - Thrash-protect is not optimized to be "fair". Say there are two
   significant processes A and B; letting both of them run causes
   thrashing, suspending one of them stops the thrashing. Probably
@@ -165,25 +179,18 @@ Drawbacks and problems
   suspending B. What *may* happen is that process B is flapping
   between suspended and running, while A is allowed to run 100%.
 
--  I've observed situations where parent processes automatically have
-   gone into suspend-mode as the children got suspended and been stuck
-   there even as the child process got resumed. I've done a quick
-   work-around on this by always running SIGCONT on the session process
-   id and group process id. This may be harmful if you're actively using
-   SIGSTOP on processes having children.
+- This was supposed to be a rapid prototype, so it doesn't recognize
+  any options. Configuration settings can be given through OS
+  environment, but there exists no documentation. I've always been
+  running it without any special configuration.
 
--  This was supposed to be a rapid prototype, so it doesn't recognize
-   any options. Configuration settings can be given through OS
-   environment, but there exists no documentation. I've always been
-   running it without any special configuration.
+- Usage of mlockall should be made optional. On a system with small
+  amounts of RAM (i.e. half a gig) thrash-protect itself can consume
+  significant amounts of memory.
 
--  Usage of mlockall should be made optional. On a system with small
-   amounts of RAM (i.e. half a gig) thrash-protect itself can consume
-   significant amounts of memory.
-
--  It seems very unlikely to be related, but it has been reported that
-   "swapoff" failed to complete on a server where thrash-protect was
-   running.
+- It seems very unlikely to be related, but it has been reported that
+  "swapoff" failed to complete on a server where thrash-protect was
+  running.
 
 Avoiding OOM-killings
 ---------------------

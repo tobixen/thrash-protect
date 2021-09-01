@@ -5,10 +5,8 @@ Requirements
 ------------
 
 This will only work on linux, it depends on reading stats from the
-/proc directory.
+/proc directory, it depends on python 3 (python 2.5 or higher should probably work - and an old version of the script was backported to python 2.4).
 
-The script is made for python 3, but will probably work on 2.5 and
-newer.  There exists a branch for python 2.4, but it's not maintained.
 No other dependencies.
 
 The box or VM running thrash-protect needs to be set up with swap, or
@@ -16,7 +14,7 @@ trash-protect won't do anything useful (even if thrash-like situations
 can happen without swap installed).  A reasonably large swap partition
 is recommended, possibly twice as much swap as physical memory, though
 YMMV, and even a very small swap partition is enough for
-thrash-protect to do useful work..
+thrash-protect to do useful work.
 
 My original idea was to make a rapid prototype in python, and then
 port it over to C for a smaller memory- and CPU footprint; while
@@ -33,15 +31,8 @@ As it's in python, no compilation is needed.
 script as a service.
 
 Archlinux users may also install through AUR.  rpm and deb packages
-will be made available on request.
+will be made available on request.  There are some logic in the Makefile for creating such packages, but it's poorly tested.
 
-Configuration
--------------
-
-It should theoretically be possible to configure the script through
-environment variables.  This is neither tested nor supported in the
-init-scripts by now.  Probably the default configuration will work out
-for you.
 
 Usage
 -----
@@ -57,6 +48,31 @@ configuration.
 
 The System V init file is so far quite redhat-specific and may need
 tuning for usage with other distributions.
+
+Configuration
+-------------
+
+It should be possible to configure the script through environment
+variables, though this is poorly tested - the default configuration
+has mostly been working out for me.  However, the defaults was made in 2013 and may possibly need a bit of tweaking for state-of-the-art equipment.
+
+Configuration environment variables that may need tweaking:
+
+* THRASH_PROTECT_CMD_WHITELIST - a list of processes that you rather don't want thrash-protect to touch (no guarantees - it just adds a weight).  Defaults to "sshd bash xinit X spectrwm screen SCREEN mutt ssh xterm rxvt urxvt Xorg.bin Xorg systemd-journal".  Can most likely be trimmed down, particularly on servers.  On desktop systems you may want to add more processes, depending on your desktop system.
+* THRASH_PROTECT_CMD_BLACKLIST - opposite of whitelist - processes thrash-protect should prioritize to stop.  Defaults to ''.
+* THRASH_PROTECT_CMD_JOBCTRLLIST - processes that may be confused if the child process gets suspended.  Defaults to "bash sudo".  You may want to do some research if you use another shell, run bash under some pseudonym, or have other job control systems or experience problems with other processes.  (See the README for details).
+* THRASH_PROTECT_INTERVAL - thrash protect is set to sleep for 0.5s between each normal iteration, as long as no thrashing is detected.  This default was set in 2013, perhaps it can be tuned down on modern hardware.
+* SWAP_PAGE_THRESHOLD - defaults to 4.  If there is 4 pages swapped in and 4 pages swapped out during the interval, the script will be triggered.  There is also a hard coded constant 10x for single-direction swapping during the interval, so if 40 blocks are swapped in or out, the algorithm will also trigger.  The default was set in 2013, maybe it should be adjusted upwards on swap media with high bandwidth, to prevent thrash-protect from suspending processes when it's not needed.
+* THRASH_PROTECT_UNFREEZE_POP_RATIO - default 5.  TLDR: should probably be lowered on interactive desktops and increased on servers doing only batch processing.  All suspended processes are put in a double ended queue (a double ended queue behaves both as a queue and a stack - so the pid is placed at the end of the queue or at the top of the stack according to how you look at it).  If the host has stopped thrashing, the "fair" thing to do would be to always resume the process at the front of the queue (unfreeze_pop_ratio set to 1), but the most effective thing to do is probably to resume and suspend the same process over and over again (unfreeze_pop_ratio set to MAXINT). When set to five it will pop four processes from the top of the stack before it pulls out one process from the front of the queue.
+* THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER - default 16.  A blacklisted job will be 16 times more likely to be picked up for suspension than a non-blacklisted job.
+* THRASH_PROTECT_WHITELIST_SCORE_MULTIPLIER - default 4 times the blacklist score multiplier.  A non-whitelisted job will by default be 64 times more likely to be choosen for suspension than a whitelisted job.
+* THRASH_PROTECT_LOG_USER_DATA_ON_FREEZE - we may log extra process data when freezing processes.  The current code forks up a `ps` subprocess (should be rewritten to just check up /proc/stat).  Since the system may be critically overloaded when we want to freeze a process, it's considered that we probably don't want to do this, so it's defaulted to false.  Note that this is about "hard" logging and the log location is hard coded to /var/log/thrash-protect.log (should probably be consolidated with logging done through the logging module).
+* THRASH_PROTECT_LOG_USER_DATA_ON_UNFREEZE - much the same as the former.  Since the system is probably not critically overloaded when we want to unfreeze a process, it's considered that we probably do want this logging, so default is set to true.
+* THRASH_PROTECT_DEBUG_LOGGING - leave it turned off, or thrash-protect will log a lot to stderr (trough the logging module).
+* THRASH_PROTECT_DEBUG_CHECKSTATE - will log warnings (through the logging module) if processes are in unexpected states, i.e. because two instances of the script is running at the same time.
+* THRASH_PROTECT_DATE_HUMAN_READABLE - the early versions of the script logged timestamps in unix format (long int).  Set to 0 if you prefer such timestamps.
+* THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD - the script maintains a list of processes and amount of "major page faults" every process has done.  This is a bit expensive process hence it's only done when the global major page fault counter has passed some threshold.  Default set to swap_page_threshold*4.  Can probably be left where it is.
+ * THRASH_PROTECT_TEST_MODE - pretend the system is thrashed every now and then, for testing purposes.  This hasn't been exercised for quite some years, should probably be removed.
 
 Monitoring
 ----------
