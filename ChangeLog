@@ -1,3 +1,8 @@
+2021-09-01  Tobias <tobias@redpill-linpro.com>
+	* trash-protect.py: bugfixing and adding debug code (see changelog-0.14.2.md)
+	* INSTALL.md: information about configuration options
+	* README.md: more information about the job control issue
+
 2020-04-08  Niektory <niektory@gmail.com>
 	* trash-protect.py: OOMScoreProcessSelector should be used before PageFaultingProcessSelector, ref https://github.com/tobixen/thrash-protect/issues/31
 
