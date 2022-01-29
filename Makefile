@@ -1,6 +1,6 @@
 export INSTALL_ROOT = "$(DESTDIR)"
 export PREFIX = ${INSTALL_ROOT}/usr
-export pkgname = "thrash-protect"
+export pkgname = thrash-protect
 
 ## can't do "thrash-protect.py --version" since it's unsupported in python versions lower than 2.7.
 export version = $(shell grep '__version__.*=' thrash-protect.py | cut -f2 -d'"')
@@ -40,7 +40,9 @@ release: .tag.${version}
 archlinux: .tag.${version} archlinux/PKGBUILD_ thrash-protect.py
 	${MAKE} -C $@ archlinux
 
-rpm: .tag.${version} rpm/thrash-protect.spec thrash-protect.py
+rpm: .tag.${version} rpm/thrash-protect.spec thrash-protect.py dist
+	rsync ${pkgname}-${version}.tar.gz  ${HOME}/rpmbuild/SOURCES/v${version}.tar.gz
+	touch .tag.${version}
 	${MAKE} -C $@ rpm
 
 ## TODO: debian target (with systemv)
