@@ -510,7 +510,7 @@ def freeze_something(pids_to_freeze=None):
             debug_check_state(pid_to_freeze, 0)
             kill(pid_to_freeze, signal.SIGSTOP)
             if len(pids_to_freeze)>1:
-                time.sleep(config.max_acceptable_delta/3)
+                time.sleep(config.max_acceptable_time_delta/3)
         except ProcessLookupError:
             continue
     if not pids_to_freeze in frozen_pids:
@@ -544,7 +544,7 @@ def unfreeze_something():
                 debug_check_state(pid_to_unfreeze, 1)
                 kill(pid_to_unfreeze, signal.SIGCONT)
                 if len(pids_to_unfreeze)>1:
-                    time.sleep(config.max_acceptable_delta)
+                    time.sleep(config.max_acceptable_time_delta)
             except ProcessLookupError:
                 ## ignore failure
                 pass
