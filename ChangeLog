@@ -1,3 +1,7 @@
+2022-01-31  Tobias <tobias@redpill-linpro.com>
+	* thrash-protect.py: terrible, embarrassing bugfix (revealing a lack of code coverage in tests).  Bumped version to 0.14.3.
+	* Makefile: worked a bit more on rpm releases
+
 2021-09-01  Tobias <tobias@redpill-linpro.com>
 	* trash-protect.py: bugfixing and adding debug code (see changelog-0.14.2.md)
 	* INSTALL.md: information about configuration options
