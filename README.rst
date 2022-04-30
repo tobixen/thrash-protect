@@ -125,8 +125,27 @@ blame me if you start up this script and anything goes kaboom.
 
 Drawbacks and problems
 ----------------------
+- The tool (and/or the default settings) was written for magnetic
+  disks - SSDs are magnitudes faster, hence "thrashing" to a SSD does
+  not cause the same kind of extreme performance issues as "thrashing"
+  to a spinning disk.  On one production system we had quite some
+  problems due to thrash-protect, the problems vanished when I turned
+  off the service as the small amount of "thrashing" on the system is
+  causing insignificant performance issues.  Arguably, swapping to SSD
+  can be bad because the life time of the SSD may depend on the number
+  of write cycles (particularly for SSDs made for consumer hardware),
+  in that regard thrash-protect may still be useful - but perhaps the
+  thresholds to identify "thrashing" should be tuned up a bit.  (It
+  can be adjusted through the environment variable
+  THRASH_PROTECT_SWAP_PAGE_THRESHOLD, the default is 4, I'd suggest
+  64, but haven't been experimenting with it yet).
 - Possibly the biggest problem: some parent processes may behave
-  unexpectedly when the children gets suspended.  You may easily check this manually by starting up processes and running "kill -STOP" and "kill -CONT" towards the pids.  A workaround has been implemented in the script (see the job control thing in the configuration), but it's not failsafe.  I'm only aware of problems with bash and sudo - and possibly the condor job control system.  Problems observed:
+  unexpectedly when the children gets suspended.  You may easily check
+  this manually by starting up processes and running "kill -STOP" and
+  "kill -CONT" towards the pids.  A workaround has been implemented in
+  the script (see the job control thing in the configuration), but
+  it's not failsafe.  I'm only aware of problems with bash and sudo -
+  and possibly the condor job control system.  Problems observed:
   
   * If running a process under sudo (i.e. "sudo sleep 3600") and the subprocess (sleep) is suspended, the parent process (sudo) will automatically also be suspended and has to be manually resumed.
 
@@ -139,11 +158,6 @@ Drawbacks and problems
 - Make sure to install some swap space.  Thrash-protect is not
   performing very well if no swap space is installed.
   
-- The default settings are not very well tuned for a host with fast
-  swap (SSD).  You may risk that the performance goes down on a host
-  actively using the swap space.  At the other hand, for SSDs,
-  thrash-protect will likely increase the life time of the SSD.
-
 - Thrash-protect is optimized for servers, not desktops.  One may
   experience that GUI-sessions (XOrg, Wayland, window managers, etc)
   won't work at all if heavy thrashing is going on.  Keep in mind that
