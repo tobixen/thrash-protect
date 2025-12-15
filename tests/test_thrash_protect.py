@@ -1,12 +1,8 @@
 ## TODO: I had to add a symlink from thrash-protect to thrash_protect to get this to work ...
 
 import sys
-
-try:
-    from mock import patch, MagicMock
-except:
-    from unittest.mock import patch, MagicMock
-from io import StringIO,BytesIO
+from unittest.mock import patch, MagicMock
+from io import StringIO, BytesIO
 #import importlib
 import signal
 import logging

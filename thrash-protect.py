@@ -6,20 +6,6 @@
 
 ### This is a rapid prototype implementation.  I'm considering to implement in C.
 
-## This was written for python3 (there exists a python24-branch, but
-## it won't be maintained).  python3 is not available on a lot of
-## servers, and those seems to be the only snags when running on
-## python 2.7:
-from __future__ import with_statement
-try:
-    ProcessLookupError
-except NameError:
-    ProcessLookupError=OSError
-try:
-    FileNotFoundError
-except NameError:
-    FileNotFoundError=IOError
-
 __version__ = "0.14.3"
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013-2021, Tobias Brox"
@@ -28,11 +14,8 @@ __maintainer__ = "Tobias Brox"
 __email__ = "tobias@redpill-linpro.com"
 __product__ = "thrash-protect"
 
-## subprocess.check_output is not available in python 2.6.  this is used in a
-## non-critical part of the script, already inside a try-except-scope, so the
-## import has been moved there to allow the script to work on servers without 2.7 installed.
-#from subprocess import check_output 
 from os import getenv, kill, getpid, unlink, getpgid, getsid, getpid, getppid
+from subprocess import check_output
 from collections import namedtuple
 import time
 from datetime import datetime
@@ -421,12 +404,8 @@ def get_date_string():
 ## returns string with detailed process information
 def get_process_info(pid):
     try:
-        ## check_output is only available from 2.7, and compatibility
-        ## with 2.6 is currently a requirement.
-        ## TODO: move the import back where it belongs, eventually.
-        from subprocess import check_output
         ## TODO: we should fetch this information from /proc filesystem instead of using ps
-        info = check_output("ps -p %d uf" % pid, shell = True).decode('utf-8', 'ignore')
+        info = check_output(["ps", "-p", str(pid), "uf"]).decode('utf-8', 'ignore')
         info = info.split('\n')[1]
         info = info.split()
         if len(info) >= 4:
@@ -632,14 +611,10 @@ def main():
     ## Parsing arguments (TODO: none provided as for now.  The
     ## configuration passed through environment should also be
     ## possible to pass through parameters)
-    try:
-        import argparse
-        p = argparse.ArgumentParser(description="protect a linux host from thrashing")
-        p.add_argument('--version', action='version', version='%(prog)s ' + __version__)
-        args = p.parse_args()
-    except ImportError:
-        ## argparse is only available from 2.7 and up
-        args = None
+    import argparse
+    p = argparse.ArgumentParser(description="protect a linux host from thrashing")
+    p.add_argument('--version', action='version', version='%(prog)s ' + __version__)
+    args = p.parse_args()
 
     unfreeze_from_tmpfile()
 
