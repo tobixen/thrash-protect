@@ -36,6 +36,7 @@ release: ChangeLog.recent
 	git push
 	@echo "=== Recent ChangeLog entries ===" && cat ChangeLog.recent && echo "================================"
 	@read -p "Enter version to release (e.g., 0.15.0): " ver && \
+	ver=$${ver#v} && \
 	if [ -z "$$ver" ]; then echo "Error: version required"; exit 1; fi && \
 	if git show --oneline -s "v$$ver" > /dev/null 2>&1; then \
 		echo "Tag v$$ver already exists"; \
