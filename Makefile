@@ -35,7 +35,18 @@ install: thrash-protect.py
 release: ChangeLog.recent
 	git push
 	@echo "=== Recent ChangeLog entries ===" && cat ChangeLog.recent && echo "================================"
-	@read -p "Enter version to release (e.g., 0.15.0): " ver && \
+	@latest=$$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1) && \
+	latest=$${latest#v} && \
+	if [ -n "$$latest" ]; then \
+		major=$$(echo $$latest | cut -d. -f1) && \
+		minor=$$(echo $$latest | cut -d. -f2) && \
+		patch=$$(echo $$latest | cut -d. -f3) && \
+		suggested="$$major.$$minor.$$((patch + 1))"; \
+	else \
+		suggested="0.1.0"; \
+	fi && \
+	read -p "Enter version to release [$$suggested]: " ver && \
+	ver=$${ver:-$$suggested} && \
 	ver=$${ver#v} && \
 	if [ -z "$$ver" ]; then echo "Error: version required"; exit 1; fi && \
 	if git show --oneline -s "v$$ver" > /dev/null 2>&1; then \

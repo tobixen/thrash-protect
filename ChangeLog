@@ -8,6 +8,7 @@
 	* pyproject.toml: setuptools-scm for version from git tags
 	* Makefile: Interactive release workflow, version passed on command line
 	* Makefile: Auto-push before tagging, strip 'v' prefix from version input
+	* Makefile: Auto-suggest next patch version based on latest tag
 	* .gitignore: Updated for Make-generated files
 	* .github/workflows/ci.yml: Added GitHub Actions for linting and testing
 	* .github/workflows/release.yml: Added automatic PyPI release on tags
