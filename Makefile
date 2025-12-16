@@ -33,6 +33,7 @@ install: thrash-protect.py
 
 ## Interactive release: prompts for version, shows changelog, creates signed tag
 release: ChangeLog.recent
+	git push
 	@echo "=== Recent ChangeLog entries ===" && cat ChangeLog.recent && echo "================================"
 	@read -p "Enter version to release (e.g., 0.15.0): " ver && \
 	if [ -z "$$ver" ]; then echo "Error: version required"; exit 1; fi && \
