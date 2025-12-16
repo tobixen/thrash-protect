@@ -175,6 +175,8 @@ thrash-protect is a useful, battle-tested tool. Major modernization completed in
 
 ### 🔲 Remaining (lower priority)
 - **SSD defaults**: Tune `swap_page_threshold` for SSD systems
+- **Bare except clauses**: Replace bare `except:` with `except Exception:`
+- **Global variables**: Consider encapsulating in a `ThrashProtect` class
 - **Type annotations**: Add type hints for better maintainability
 - **Log path configuration**: Make log paths configurable via environment variables
 - **Package restructure**: Consider src/ layout for larger refactors
