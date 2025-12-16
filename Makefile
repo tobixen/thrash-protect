@@ -2,10 +2,7 @@ export INSTALL_ROOT = "$(DESTDIR)"
 export PREFIX = ${INSTALL_ROOT}/usr
 export pkgname = thrash-protect
 
-## can't do "thrash-protect.py --version" since it's unsupported in python versions lower than 2.7.
-export version = $(shell grep '__version__.*=' thrash-protect.py | cut -f2 -d'"')
-
-.PHONY: build install clean distclean rpm archlinux dist release ubuntu
+.PHONY: build install clean distclean rpm archlinux dist release do-release ubuntu
 
 all: build
 
@@ -17,7 +14,10 @@ clean:
 
 distclean: clean
 
-dist: distclean
+dist: ChangeLog.recent
+ifndef version
+	$(error dist requires version=X.Y.Z)
+endif
 	tar czf ${pkgname}-${version}.tar.gz --transform='s,^,${pkgname}-${version}/,' *
 
 ChangeLog.recent: ChangeLog
@@ -31,30 +31,66 @@ install: thrash-protect.py
 	if [ -x "$(INSTALL_ROOT)/sbin/openrc-run" ] ; then install openrc/thrash-protect "$(INSTALL_ROOT)/etc/init.d/thrash-protect" ; fi
 	[ -d "$(PREFIX)/lib/systemd/system" ] || [ -d "$(INSTALL_ROOT)/etc/init" ] || [ -d "$(INSTALL_ROOT)/lib/systemd/system" ] || [ -x "$(INSTALL_ROOT)/sbin/openrc-run" ] || install systemv/thrash-protect "$(INSTALL_ROOT)/etc/init.d/thrash-protect"
 
-.tag.${version}: ChangeLog.recent
-	if ! git show --oneline -s "v${version}" > /dev/null 2>&1; then git status ; cat ChangeLog.recent ; git tag -s "v${version}" -F ChangeLog.recent ; git push origin "v${version}" ; fi
-	touch ".tag.${version}"
+## Interactive release: prompts for version, shows changelog, creates signed tag
+release: ChangeLog.recent
+	@echo "=== Recent ChangeLog entries ===" && cat ChangeLog.recent && echo "================================"
+	@read -p "Enter version to release (e.g., 0.15.0): " ver && \
+	if [ -z "$$ver" ]; then echo "Error: version required"; exit 1; fi && \
+	if git show --oneline -s "v$$ver" > /dev/null 2>&1; then \
+		echo "Tag v$$ver already exists"; \
+	else \
+		git status && \
+		read -p "Create and push tag v$$ver? [y/N] " confirm && \
+		if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
+			git tag -s "v$$ver" -F ChangeLog.recent && \
+			git push origin "v$$ver" && \
+			touch ".tag.$$ver" && \
+			echo "Released v$$ver"; \
+		else \
+			echo "Aborted"; \
+		fi \
+	fi
 
-release: .tag.${version}
+## Package targets require version=X.Y.Z on command line
+## Example: make archlinux version=0.15.0
 
-archlinux: .tag.${version} archlinux/PKGBUILD_ thrash-protect.py
+archlinux: archlinux/PKGBUILD_ thrash-protect.py
+ifndef version
+	$(error archlinux requires version=X.Y.Z)
+endif
+	@test -f .tag.${version} || { echo "Error: Run 'make release' first to create tag v${version}"; exit 1; }
 	${MAKE} -C $@ archlinux
 
-rpm: .tag.${version} rpm/thrash-protect.spec thrash-protect.py dist
-	rsync ${pkgname}-${version}.tar.gz  ${HOME}/rpmbuild/SOURCES/v${version}.tar.gz
-	touch .tag.${version}
+rpm: rpm/thrash-protect.spec thrash-protect.py
+ifndef version
+	$(error rpm requires version=X.Y.Z)
+endif
+	@test -f .tag.${version} || { echo "Error: Run 'make release' first to create tag v${version}"; exit 1; }
+	$(MAKE) dist version=${version}
+	rsync ${pkgname}-${version}.tar.gz ${HOME}/rpmbuild/SOURCES/v${version}.tar.gz
 	${MAKE} -C $@ rpm
 
 ## TODO: debian target (with systemv)
 
 ## TODO: not tested
-ubuntu: .tag.${version} debian/changelog
+ubuntu: debian/changelog
+ifndef version
+	$(error ubuntu requires version=X.Y.Z)
+endif
+	@test -f .tag.${version} || { echo "Error: Run 'make release' first to create tag v${version}"; exit 1; }
 	rm -f debian/${pkgname}.init
 	dpkg-buildpackage
 
-debian: .tag.${version} debian/changelog
+debian: debian/changelog
+ifndef version
+	$(error debian requires version=X.Y.Z)
+endif
+	@test -f .tag.${version} || { echo "Error: Run 'make release' first to create tag v${version}"; exit 1; }
 	dpkg-buildpackage
 
-debian/changelog: .tag.${version}
+debian/changelog:
+ifndef version
+	$(error debian/changelog requires version=X.Y.Z)
+endif
 	dch --distribution=UNRELEASED -v ${version} "version bump"
 
