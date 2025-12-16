@@ -57,7 +57,6 @@ fallback_version = "0.15.0"
 target-version = "py39"
 line-length = 120
 exclude = [
-    "setup.py",           # Legacy, will be removed
     "tests/thrash-bot*.py",  # Utility scripts
 ]
 

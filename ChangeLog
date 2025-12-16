@@ -6,6 +6,7 @@
 	* tests/test_thrash_protect.py: Migrated from nose to pytest
 	* pyproject.toml: New modern build configuration (replaces setup.py)
 	* pyproject.toml: setuptools-scm for version from git tags
+	* setup.py: Removed (replaced by pyproject.toml)
 	* Makefile: Interactive release workflow, version passed on command line
 	* Makefile: Auto-push before tagging, strip 'v' prefix from version input
 	* Makefile: Auto-suggest next patch version based on latest tag
