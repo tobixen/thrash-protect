@@ -1,5 +1,28 @@
-.pyc
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg
+*.egg-info/
 /build/
 /dist/
-/*.egg-info
-/*.egg
+
+# Make-generated files
+ChangeLog.recent
+.tag.*
+/*.tar.gz
+
+# archlinux/Makefile generated
+archlinux/PKGBUILD
+archlinux/.SRCINFO
+archlinux/thrash-protect/
+archlinux/*.tar.gz
+
+# rpm/Makefile generated
+rpm/*.spec.bak
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*~
