@@ -24,10 +24,12 @@ There was no commits to this project for several years, but it's been running on
 
 The rapid attempts on releases (0.15.7 was released same day as 0.15) is mostly due to problems getting the auto-publish-to-pypi-feature up and running.
 
+See `docs/TODO.md <docs/TODO.md>`_ for the current development roadmap.
+
 How to use and how to configure
 -------------------------------
 
-See the [INSTALL](INSTALL.md) file.
+See the `INSTALL.md <INSTALL.md>`_ file.
 
 Alternatives
 ------------
