@@ -1,3 +1,14 @@
+2025-12-16  Tobias Brox  <tobias@redpill-linpro.com>
+	* thrash-protect.py: Removed Python 2 compatibility code (Python 3.9+ required now)
+	* thrash-protect.py: Applied ruff linting and formatting, removed unused imports
+	* tests/test_thrash_protect.py: Migrated from nose to pytest
+	* pyproject.toml: New modern build configuration (replaces setup.py)
+	* .github/workflows/ci.yml: Added GitHub Actions for linting and testing
+	* .github/workflows/release.yml: Added automatic PyPI release on tags
+	* .pre-commit-config.yaml: Added pre-commit hooks for ruff
+	* docs/CODE_REVIEW.md: Code review with improvement recommendations
+	* docs/TODO.md: TODO list including SSD default tuning issue
+
 2022-01-31  Tobias <tobias@redpill-linpro.com>
 	* thrash-protect.py: terrible, embarrassing bugfix (revealing a lack of code coverage in tests).  Bumped version to 0.14.3.
 	* Makefile: worked a bit more on rpm releases

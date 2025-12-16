@@ -1,10 +1,11 @@
 # Code Review: thrash-protect
 
-Date: 2025-12-15
+Date: 2025-12-16 (Updated)
+Original review: 2025-12-15
 
 ## Overview
 
-thrash-protect is a user-space daemon that protects Linux systems from thrashing by detecting swap activity and temporarily suspending processes using SIGSTOP/SIGCONT signals. The project is mature and functional but needs modernization to align with current Python best practices.
+thrash-protect is a user-space daemon that protects Linux systems from thrashing by detecting swap activity and temporarily suspending processes using SIGSTOP/SIGCONT signals. The project is mature and functional. Recent modernization work has brought it up to current Python best practices.
 
 ## Architecture
 
@@ -41,27 +42,20 @@ See README.rst lines 128-141 for documented issues.
 
 This is to be procrastinated a bit, we probably need auto-detection and some playing around to find sensible defaults.
 
-#### 2. Python 2 Compatibility Code (Remove)
-Lines 13-21 contain Python 2.7 compatibility shims:
-```python
-from __future__ import with_statement
-try:
-    ProcessLookupError
-except NameError:
-    ProcessLookupError=OSError
-```
+#### 2. ~~Python 2 Compatibility Code~~ ✅ FIXED
+~~Lines 13-21 contain Python 2.7 compatibility shims.~~
 
-Python 2 reached EOL in 2020. This code should be removed.
+**Status**: Python 2 compatibility code has been removed. Now requires Python 3.9+.
 
-#### 3. No pyproject.toml
-The project uses legacy `setup.py` with hacky `shutil.copy()` to work around naming issues (`thrash-protect.py` vs `thrash_protect`).
+#### 3. ~~No pyproject.toml~~ ✅ FIXED
+~~The project uses legacy `setup.py` with hacky `shutil.copy()` to work around naming issues.~~
 
-**Recommendation**: Migrate to `pyproject.toml` with proper package structure.
+**Status**: Migrated to `pyproject.toml` with setuptools-scm for automatic versioning from git tags.
 
-#### 4. Test Framework (nose is deprecated)
-Tests use `nose` which is unmaintained since 2015.
+#### 4. ~~Test Framework (nose is deprecated)~~ ✅ FIXED
+~~Tests use `nose` which is unmaintained since 2015.~~
 
-**Recommendation**: Migrate to `pytest`.
+**Status**: Migrated to `pytest`.
 
 ### Medium Priority
 
@@ -99,26 +93,27 @@ Log files are hardcoded:
 
 ### Low Priority
 
-#### 9. Outdated CI
-`.travis.yml` exists but Travis CI is deprecated for open source. No GitHub Actions workflow.
+#### 9. ~~Outdated CI~~ ✅ FIXED
+~~`.travis.yml` exists but Travis CI is deprecated for open source. No GitHub Actions workflow.~~
 
-**Recommendation**: Add `.github/workflows/` with ruff linting and pytest.
+**Status**: Added GitHub Actions workflows:
+- `.github/workflows/ci.yml`: Linting with ruff, testing with pytest on Python 3.9-3.13
+- `.github/workflows/release.yml`: Automatic PyPI release on version tags using trusted publishing
 
-#### 10. Outdated Python Version Classifiers
-setup.py lists Python 2.5-3.6. Current Python is 3.12+.
+#### 10. ~~Outdated Python Version Classifiers~~ ✅ FIXED
+~~setup.py lists Python 2.5-3.6. Current Python is 3.12+.~~
 
-**Recommendation**: Update to Python 3.9+ only.
+**Status**: Updated to Python 3.9+ only in pyproject.toml classifiers.
 
-#### 11. Version Management
-Version is defined in `thrash-protect.py` line 23 and extracted by regex in setup.py.
+#### 11. ~~Version Management~~ ✅ FIXED
+~~Version is defined in `thrash-protect.py` line 23 and extracted by regex in setup.py.~~
 
-**Recommendation**: Use `setuptools-scm` or similar for automatic versioning from git tags.
+**Status**: Now using `setuptools-scm` for automatic versioning from git tags, with `importlib.metadata` for runtime version retrieval.
 
-#### 12. Code Style
-Minor style issues that ruff would flag:
-- Some long lines
-- f-strings could replace `%` formatting
-- Unused imports possible
+#### 12. ~~Code Style~~ ✅ FIXED
+~~Minor style issues that ruff would flag.~~
+
+**Status**: Applied ruff linting and formatting. Added `.pre-commit-config.yaml` for automated checks.
 
 ## File Structure Recommendations
 
@@ -166,8 +161,21 @@ Current test coverage is limited:
 
 ## Summary
 
-thrash-protect is a useful, battle-tested tool that needs modernization:
+thrash-protect is a useful, battle-tested tool. Major modernization completed in 2025-12:
 
-1. **Must do**: pyproject.toml, remove Python 2 code, fix SSD defaults
-2. **Should do**: Migrate to pytest, add type hints, GitHub Actions
-3. **Nice to have**: Restructure as proper package, increase test coverage
+### ✅ Completed
+- pyproject.toml with modern build system
+- Python 2 compatibility code removed (Python 3.9+ required)
+- Migrated from nose to pytest
+- GitHub Actions CI (ruff lint + pytest on Python 3.9-3.13)
+- GitHub Actions PyPI release workflow (trusted publishing)
+- Automatic versioning via setuptools-scm
+- ruff linting and formatting applied
+- pre-commit hooks configured
+
+### 🔲 Remaining (lower priority)
+- **SSD defaults**: Tune `swap_page_threshold` for SSD systems
+- **Type annotations**: Add type hints for better maintainability
+- **Log path configuration**: Make log paths configurable via environment variables
+- **Package restructure**: Consider src/ layout for larger refactors
+- **Test coverage**: Increase unit test coverage for edge cases

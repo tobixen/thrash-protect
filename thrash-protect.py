@@ -6,9 +6,15 @@
 
 ### This is a rapid prototype implementation.  I'm considering to implement in C.
 
-__version__ = "0.14.3"
+try:
+    from importlib.metadata import version as get_version
+
+    __version__ = get_version("thrash-protect")
+except Exception:
+    __version__ = "0.0.0.dev"  # Fallback for development/editable installs
+
 __author__ = "Tobias Brox"
-__copyright__ = "Copyright 2013-2021, Tobias Brox"
+__copyright__ = "Copyright 2013-2025, Tobias Brox"
 __license__ = "GPL"
 __maintainer__ = "Tobias Brox"
 __email__ = "tobias@redpill-linpro.com"
