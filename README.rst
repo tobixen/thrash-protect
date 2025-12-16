@@ -17,6 +17,13 @@ process ends or gets killed by the oom killer).
 The commit rate has been fairly low during the last few years - for
 the very simple reason that it seems to work fairly well.
 
+Update 2025-12
+--------------
+
+There was no commits to this project for several years, but it's been running on several servers as well as my personal laptop.  Over the last few years I've realized that the default values aren't optimized for SSDs.  Nowadays there are also statistics available under /proc/pressure on any modern linux systems, statistics that are likely to be more reliable than the current thrash detection algorithm.  As of 2025-12-16 I've done some QA work getting the project up to "best current practices", release 0.15 should be functionally completely equivalent with the latest 0.14, but the code base has been cleaned up a bit for better maintanability.  If I get time for it, I'm planning to make better functionality for auto-tuning the configuration values as well as reading /proc/pressure to make better decisions on weather we're observing thrashing or not.
+
+The rapid attempts on releases (0.15.7 was released same day as 0.15) is mostly due to problems getting the auto-publish-to-pypi-feature up and running.
+
 How to use and how to configure
 -------------------------------
 
