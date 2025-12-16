@@ -13,6 +13,7 @@
 	* .github/workflows/ci.yml: Added GitHub Actions for linting and testing
 	* .github/workflows/release.yml: Added automatic PyPI release on tags
 	* .github/workflows/release.yml: Fixed version detection using SETUPTOOLS_SCM_PRETEND_VERSION
+	* .github/workflows/release.yml: Use --no-isolation to ensure env var is inherited
 	* .pre-commit-config.yaml: Added pre-commit hooks for ruff
 	* docs/CODE_REVIEW.md: Code review with improvement recommendations
 	* docs/TODO.md: TODO list including SSD default tuning issue

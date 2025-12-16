@@ -29,12 +29,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install build dependencies
-        run: pip install build
+        run: pip install build setuptools setuptools-scm
 
       - name: Build package
         env:
           SETUPTOOLS_SCM_PRETEND_VERSION: ${{ steps.version.outputs.version }}
-        run: python -m build
+        run: python -m build --no-isolation
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
