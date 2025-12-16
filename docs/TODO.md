@@ -22,32 +22,51 @@ The default `swap_page_threshold=4` was tuned for spinning magnetic disks. SSDs 
 
 See README.rst "Drawbacks and problems" section for more context.
 
-## Medium Priority
+### Use /proc/pressure for Thrash Detection
 
-### Remove Python 2 Compatibility
+Modern Linux kernels (4.20+) provide Pressure Stall Information (PSI) via `/proc/pressure/`. This could provide a more accurate and efficient way to detect memory pressure than the current approach.
 
-Python 2 reached end-of-life in January 2020. The compatibility shims at the top of `thrash-protect.py` can be removed:
+**Files available**:
+- `/proc/pressure/memory` - memory pressure metrics
+- `/proc/pressure/io` - I/O pressure metrics
+- `/proc/pressure/cpu` - CPU pressure metrics
 
-```python
-from __future__ import with_statement
-try:
-    ProcessLookupError
-except NameError:
-    ProcessLookupError=OSError
-# etc.
+**Example output** from `/proc/pressure/memory`:
+```
+some avg10=0.00 avg60=0.00 avg300=0.00 total=0
+full avg10=0.00 avg60=0.00 avg300=0.00 total=0
 ```
 
-### Migrate Tests to pytest
+**Benefits**:
+- Kernel-provided metric specifically designed for detecting resource pressure
+- "some" line: percentage of time at least one task is stalled
+- "full" line: percentage of time all tasks are stalled (more severe)
+- More holistic view than page fault counting
+- Could complement or replace current swap page threshold detection
 
-Tests currently use `nose` which has been unmaintained since 2015. Should migrate to `pytest`:
+**Implementation ideas**:
+1. Add PSI-based detection as an alternative/additional trigger
+2. Use `full` memory pressure avg10 > threshold as trigger
+3. Fall back to current method on older kernels without PSI support
+4. Add config option: `THRASH_PROTECT_USE_PSI=auto|yes|no`
 
-- Replace `nose.tools.assert_equal` with plain `assert`
-- Replace `nose.plugins.skip.SkipTest` with `pytest.skip()`
-- Update test fixtures to use pytest fixtures
+**References**:
+- https://docs.kernel.org/accounting/psi.html
+- https://facebookmicrosites.github.io/psi/
+
+## Medium Priority
 
 ### Add Type Annotations
 
 Add type hints to improve code maintainability and enable static analysis with mypy.
+
+### Bare Except Clauses
+
+Several places use bare `except:` which catches all exceptions including `KeyboardInterrupt` and `SystemExit`. Should use `except Exception:` or specific exceptions.
+
+### Global Variables
+
+Consider encapsulating the global variables (`frozen_pids`, `num_unfreezes`, `global_process_selector`) in a `ThrashProtect` class for better testability.
 
 ## Low Priority
 
@@ -93,3 +112,11 @@ Consider adding:
 - `dbus-daemon`
 - `polkitd`
 - Common container runtimes
+
+## Completed
+
+- ✅ Remove Python 2 compatibility code (done in 0.15.x)
+- ✅ Migrate tests from nose to pytest (done in 0.15.x)
+- ✅ Add pyproject.toml with modern build system (done in 0.15.x)
+- ✅ Add GitHub Actions CI/CD (done in 0.15.x)
+- ✅ Automatic versioning via setuptools-scm (done in 0.15.x)
