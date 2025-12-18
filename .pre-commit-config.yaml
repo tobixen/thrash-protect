@@ -13,3 +13,10 @@ repos:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
+
+  - repo: https://github.com/lycheeverse/lychee
+    rev: lychee-v0.22.0
+    hooks:
+      - id: lychee-docker
+        args: ["--no-progress", "--timeout", "10"]
+        types: [markdown, rst]
