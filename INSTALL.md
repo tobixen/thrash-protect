@@ -72,8 +72,8 @@ thrash-protect can be configured through multiple methods. Configuration is
 loaded in this priority order (highest to lowest):
 
 1. **Command-line arguments** (`--interval=1.0`)
-2. **Config file** (auto-detected or specified with `--config`)
-3. **Environment variables** (`THRASH_PROTECT_*`)
+2. **Environment variables** (`THRASH_PROTECT_*`)
+3. **Config file** (auto-detected or specified with `--config`)
 4. **Built-in defaults** (including dynamic values from `/etc/shells`)
 
 ### Command-Line Options

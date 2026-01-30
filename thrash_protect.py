@@ -339,27 +339,27 @@ def normalize_file_config(file_config):
 
 
 def load_config(args):
-    """Merge config from defaults <- env <- file <- CLI.
+    """Merge config from defaults <- file <- env <- CLI.
 
     Priority order (highest to lowest):
     1. CLI arguments
-    2. Config file
-    3. Environment variables
+    2. Environment variables
+    3. Config file
     4. Defaults
     """
     # 1. Defaults
     final = get_defaults()
 
-    # 2. Environment variables
-    env_config = load_from_env()
-    final.update(env_config)
-
-    # 3. Config file
+    # 2. Config file
     config_path = getattr(args, "config", None)
     file_config = load_from_file(config_path)
     if file_config:
         normalized = normalize_file_config(file_config)
         final.update(normalized)
+
+    # 3. Environment variables
+    env_config = load_from_env()
+    final.update(env_config)
 
     # 4. CLI arguments (non-None values only)
     cli_config = {}
@@ -405,8 +405,8 @@ def create_argument_parser():
         epilog="""
 Configuration priority (highest to lowest):
   1. Command-line arguments
-  2. Config file (--config or auto-detected)
-  3. Environment variables (THRASH_PROTECT_*)
+  2. Environment variables (THRASH_PROTECT_*)
+  3. Config file (--config or auto-detected)
   4. Built-in defaults
 
 Config file search order (first found is used):

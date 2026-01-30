@@ -3,7 +3,7 @@
 	* thrash_protect.py: Add full CLI --long-options for all configuration parameters
 	* thrash_protect.py: Add dynamic defaults: whitelist/jobctrllist read from /etc/shells
 	* thrash_protect.py: Modernize static whitelist with Wayland compositors, modern terminals
-	* thrash_protect.py: Config priority: CLI > config file > environment variables > defaults
+	* thrash_protect.py: Config priority: CLI > environment variables > config file > defaults
 	* thrash-protect.conf.example: New INI format example config file
 	* thrash-protect.yaml.example: New YAML format example config file
 	* pyproject.toml: Add optional dependencies for YAML (PyYAML) and TOML (tomli)

@@ -424,7 +424,7 @@ cmd_whitelist = sshd bash
         assert normalized["cmd_whitelist"] == ["sshd", "bash"]
 
     def test_load_config_priority(self):
-        """Test configuration priority: CLI > file > env > defaults."""
+        """Test configuration priority: CLI > env > file > defaults."""
         # Set up environment
         test_env = {"THRASH_PROTECT_INTERVAL": "1.0"}
 
@@ -436,23 +436,22 @@ cmd_whitelist = sshd bash
             config_file = f.name
 
         try:
-            # Test: env should override default
-            with patch.dict(os.environ, test_env, clear=False):
-                with patch("thrash_protect.get_default_whitelist", return_value=["sshd"]):
-                    with patch("thrash_protect.get_default_jobctrllist", return_value=["bash"]):
-                        args = argparse.Namespace(config=None, interval=None)
-                        final = thrash_protect.load_config(args)
-                        assert final["interval"] == 1.0  # from env
+            # Test: file should override default (no env set)
+            with patch("thrash_protect.get_default_whitelist", return_value=["sshd"]):
+                with patch("thrash_protect.get_default_jobctrllist", return_value=["bash"]):
+                    args = argparse.Namespace(config=config_file, interval=None)
+                    final = thrash_protect.load_config(args)
+                    assert final["interval"] == 2.0  # from file
 
-            # Test: file should override env
+            # Test: env should override file
             with patch.dict(os.environ, test_env, clear=False):
                 with patch("thrash_protect.get_default_whitelist", return_value=["sshd"]):
                     with patch("thrash_protect.get_default_jobctrllist", return_value=["bash"]):
                         args = argparse.Namespace(config=config_file, interval=None)
                         final = thrash_protect.load_config(args)
-                        assert final["interval"] == 2.0  # from file
+                        assert final["interval"] == 1.0  # from env (overrides file)
 
-            # Test: CLI should override file
+            # Test: CLI should override env
             with patch.dict(os.environ, test_env, clear=False):
                 with patch("thrash_protect.get_default_whitelist", return_value=["sshd"]):
                     with patch("thrash_protect.get_default_jobctrllist", return_value=["bash"]):
