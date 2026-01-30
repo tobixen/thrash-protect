@@ -45,6 +45,12 @@ dev = [
     "ruff>=0.1.0",
     "pre-commit>=3.0",
 ]
+yaml = ["PyYAML>=5.0"]
+toml = ["tomli>=1.0; python_version < '3.11'"]
+all-formats = [
+    "PyYAML>=5.0",
+    "tomli>=1.0; python_version < '3.11'",
+]
 
 [tool.setuptools]
 py-modules = ["thrash_protect"]

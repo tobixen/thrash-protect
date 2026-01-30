@@ -1,0 +1,68 @@
+# thrash-protect configuration file (YAML format)
+# Copy to /etc/thrash-protect.yaml and modify as needed
+# Requires PyYAML: pip install PyYAML
+
+thrash-protect:
+  # Sleep interval between checks in seconds (default: 0.5)
+  interval: 0.5
+
+  # Number of swap pages to trigger action (default: 4)
+  swap_page_threshold: 4
+
+  # Major page faults before process scan (default: swap_page_threshold * 4)
+  # pgmajfault_scan_threshold: 16
+
+  # Processes to protect from suspension
+  # By default, includes shells from /etc/shells plus common terminals/WMs
+  # cmd_whitelist:
+  #   - sshd
+  #   - bash
+  #   - zsh
+  #   - xinit
+  #   - X
+  #   - Xorg
+  #   - sway
+  #   - tmux
+  #   - screen
+  #   - foot
+  #   - alacritty
+
+  # Processes to prioritize for suspension
+  # cmd_blacklist: []
+
+  # Processes with job control - suspend parent too
+  # By default, includes shells from /etc/shells plus sudo
+  # cmd_jobctrllist:
+  #   - bash
+  #   - zsh
+  #   - sudo
+
+  # Score multiplier for blacklisted processes (default: 16)
+  blacklist_score_multiplier: 16
+
+  # Score divider for whitelisted processes (default: 64)
+  whitelist_score_divider: 64
+
+  # Ratio of stack pops vs queue pops when unfreezing (default: 5)
+  # Lower = fairer, higher = more efficient
+  unfreeze_pop_ratio: 5
+
+  # Enable debug logging to stderr (default: false)
+  debug_logging: false
+
+  # Log warnings when processes are in unexpected states (default: false)
+  debug_checkstate: false
+
+  # Log detailed process info when freezing (default: false)
+  # This spawns ps, so adds overhead during freeze
+  log_user_data_on_freeze: false
+
+  # Log detailed process info when unfreezing (default: true)
+  log_user_data_on_unfreeze: true
+
+  # Use human-readable date format in logs (default: true)
+  # Set to false for Unix timestamps
+  date_human_readable: true
+
+  # Pretend thrashing every 2^N iterations, for testing (default: 0 = disabled)
+  # test_mode: 0

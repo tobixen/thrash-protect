@@ -1,8 +1,11 @@
 ## TODO: I had to add a symlink from thrash-protect to thrash_protect to get this to work ...
 
+import argparse
+import json
 import logging
 import os
 import signal
+import tempfile
 import time
 from io import BytesIO, StringIO
 from unittest.mock import MagicMock, patch
@@ -252,3 +255,304 @@ class TestRootFuncTest:
         ## Unfreeze
         for i in range(0, 6):
             thrash_protect.unfreeze_something()
+
+
+class TestConfigurationSystem:
+    """Tests for the new configuration system."""
+
+    def test_parse_bool(self):
+        """Test _parse_bool helper function."""
+        # Boolean inputs
+        assert thrash_protect._parse_bool(True) is True
+        assert thrash_protect._parse_bool(False) is False
+
+        # Integer inputs
+        assert thrash_protect._parse_bool(1) is True
+        assert thrash_protect._parse_bool(0) is False
+
+        # String inputs (true values)
+        assert thrash_protect._parse_bool("true") is True
+        assert thrash_protect._parse_bool("True") is True
+        assert thrash_protect._parse_bool("TRUE") is True
+        assert thrash_protect._parse_bool("yes") is True
+        assert thrash_protect._parse_bool("1") is True
+        assert thrash_protect._parse_bool("on") is True
+
+        # String inputs (false values)
+        assert thrash_protect._parse_bool("false") is False
+        assert thrash_protect._parse_bool("no") is False
+        assert thrash_protect._parse_bool("0") is False
+        assert thrash_protect._parse_bool("off") is False
+        assert thrash_protect._parse_bool("anything_else") is False
+
+    def test_parse_list(self):
+        """Test _parse_list helper function."""
+        # List input (pass through)
+        assert thrash_protect._parse_list(["a", "b", "c"]) == ["a", "b", "c"]
+
+        # String input (space-separated)
+        assert thrash_protect._parse_list("sshd bash tmux") == ["sshd", "bash", "tmux"]
+
+        # Empty/None values
+        assert thrash_protect._parse_list("") == []
+        assert thrash_protect._parse_list("   ") == []
+        assert thrash_protect._parse_list(None) == []
+
+    def test_get_shells_from_etc(self):
+        """Test get_shells_from_etc() with mock /etc/shells."""
+        mock_shells = """# /etc/shells
+/bin/bash
+/bin/sh
+/bin/zsh
+/usr/bin/fish
+"""
+        with patch("builtins.open", return_value=StringIO(mock_shells)):
+            shells = thrash_protect.get_shells_from_etc()
+            assert "bash" in shells
+            assert "sh" in shells
+            assert "zsh" in shells
+            assert "fish" in shells
+
+    def test_get_shells_from_etc_fallback(self):
+        """Test fallback when /etc/shells is missing."""
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            shells = thrash_protect.get_shells_from_etc()
+            assert shells == ["bash", "sh", "zsh", "fish"]
+
+    def test_get_default_whitelist(self):
+        """Test get_default_whitelist() includes static whitelist and shells."""
+        with patch("thrash_protect.get_shells_from_etc", return_value=["bash", "zsh"]):
+            whitelist = thrash_protect.get_default_whitelist()
+            # Should include static whitelist entries
+            assert "sshd" in whitelist
+            assert "tmux" in whitelist
+            assert "sway" in whitelist
+            # Should include shells
+            assert "bash" in whitelist
+            assert "zsh" in whitelist
+
+    def test_get_default_jobctrllist(self):
+        """Test get_default_jobctrllist() includes shells and sudo."""
+        with patch("thrash_protect.get_shells_from_etc", return_value=["bash", "zsh"]):
+            jobctrllist = thrash_protect.get_default_jobctrllist()
+            assert "bash" in jobctrllist
+            assert "zsh" in jobctrllist
+            assert "sudo" in jobctrllist
+
+    def test_get_defaults(self):
+        """Test get_defaults() returns expected structure."""
+        with patch("thrash_protect.get_default_whitelist", return_value=["sshd", "bash"]):
+            with patch("thrash_protect.get_default_jobctrllist", return_value=["bash", "sudo"]):
+                defaults = thrash_protect.get_defaults()
+
+                assert defaults["interval"] == 0.5
+                assert defaults["swap_page_threshold"] == 4
+                assert defaults["cmd_whitelist"] == ["sshd", "bash"]
+                assert defaults["cmd_jobctrllist"] == ["bash", "sudo"]
+                assert defaults["blacklist_score_multiplier"] == 16
+                assert defaults["whitelist_score_divider"] == 64
+                assert defaults["debug_logging"] is False
+                assert defaults["log_user_data_on_unfreeze"] is True
+
+    def test_load_from_env(self):
+        """Test loading configuration from environment variables."""
+        test_env = {
+            "THRASH_PROTECT_INTERVAL": "1.5",
+            "THRASH_PROTECT_DEBUG_LOGGING": "true",
+            "THRASH_PROTECT_SWAP_PAGE_THRESHOLD": "8",
+            "THRASH_PROTECT_CMD_WHITELIST": "sshd bash tmux",
+        }
+        with patch.dict(os.environ, test_env, clear=False):
+            env_config = thrash_protect.load_from_env()
+
+            assert env_config["interval"] == 1.5
+            assert env_config["debug_logging"] is True
+            assert env_config["swap_page_threshold"] == 8
+            assert env_config["cmd_whitelist"] == ["sshd", "bash", "tmux"]
+
+    def test_load_ini_config(self):
+        """Test loading INI config file."""
+        ini_content = """[thrash-protect]
+interval = 2.0
+swap_page_threshold = 10
+debug_logging = true
+cmd_whitelist = sshd bash
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False) as f:
+            f.write(ini_content)
+            f.flush()
+            try:
+                config = thrash_protect.load_from_file(f.name)
+                assert config["interval"] == "2.0"  # INI returns strings
+                assert config["swap_page_threshold"] == "10"
+                assert config["debug_logging"] == "true"
+            finally:
+                os.unlink(f.name)
+
+    def test_load_json_config(self):
+        """Test loading JSON config file."""
+        json_config = {
+            "thrash-protect": {
+                "interval": 2.0,
+                "swap_page_threshold": 10,
+                "debug_logging": True,
+                "cmd_whitelist": ["sshd", "bash"],
+            }
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(json_config, f)
+            f.flush()
+            try:
+                config = thrash_protect.load_from_file(f.name)
+                assert config["interval"] == 2.0
+                assert config["swap_page_threshold"] == 10
+                assert config["debug_logging"] is True
+                assert config["cmd_whitelist"] == ["sshd", "bash"]
+            finally:
+                os.unlink(f.name)
+
+    def test_normalize_file_config(self):
+        """Test normalize_file_config() handles key normalization."""
+        file_config = {
+            "swap-page-threshold": "10",
+            "debug-logging": "true",
+            "cmd-whitelist": "sshd bash",
+        }
+        normalized = thrash_protect.normalize_file_config(file_config)
+        assert normalized["swap_page_threshold"] == 10
+        assert normalized["debug_logging"] is True
+        assert normalized["cmd_whitelist"] == ["sshd", "bash"]
+
+    def test_load_config_priority(self):
+        """Test configuration priority: CLI > file > env > defaults."""
+        # Set up environment
+        test_env = {"THRASH_PROTECT_INTERVAL": "1.0"}
+
+        # Create a temporary JSON config file
+        json_config = {"thrash-protect": {"interval": 2.0}}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(json_config, f)
+            f.flush()
+            config_file = f.name
+
+        try:
+            # Test: env should override default
+            with patch.dict(os.environ, test_env, clear=False):
+                with patch("thrash_protect.get_default_whitelist", return_value=["sshd"]):
+                    with patch("thrash_protect.get_default_jobctrllist", return_value=["bash"]):
+                        args = argparse.Namespace(config=None, interval=None)
+                        final = thrash_protect.load_config(args)
+                        assert final["interval"] == 1.0  # from env
+
+            # Test: file should override env
+            with patch.dict(os.environ, test_env, clear=False):
+                with patch("thrash_protect.get_default_whitelist", return_value=["sshd"]):
+                    with patch("thrash_protect.get_default_jobctrllist", return_value=["bash"]):
+                        args = argparse.Namespace(config=config_file, interval=None)
+                        final = thrash_protect.load_config(args)
+                        assert final["interval"] == 2.0  # from file
+
+            # Test: CLI should override file
+            with patch.dict(os.environ, test_env, clear=False):
+                with patch("thrash_protect.get_default_whitelist", return_value=["sshd"]):
+                    with patch("thrash_protect.get_default_jobctrllist", return_value=["bash"]):
+                        args = argparse.Namespace(config=config_file, interval=3.0)
+                        final = thrash_protect.load_config(args)
+                        assert final["interval"] == 3.0  # from CLI
+        finally:
+            os.unlink(config_file)
+
+    def test_init_config(self):
+        """Test init_config() populates config namespace."""
+        with patch("thrash_protect.get_default_whitelist", return_value=["sshd"]):
+            with patch("thrash_protect.get_default_jobctrllist", return_value=["bash"]):
+                args = argparse.Namespace(config=None, interval=1.5, debug_logging=True)
+                # Add all other expected args as None
+                for attr in [
+                    "debug_checkstate",
+                    "swap_page_threshold",
+                    "pgmajfault_scan_threshold",
+                    "cmd_whitelist",
+                    "cmd_blacklist",
+                    "cmd_jobctrllist",
+                    "blacklist_score_multiplier",
+                    "whitelist_score_divider",
+                    "unfreeze_pop_ratio",
+                    "test_mode",
+                    "log_user_data_on_freeze",
+                    "log_user_data_on_unfreeze",
+                    "date_human_readable",
+                ]:
+                    setattr(args, attr, None)
+
+                thrash_protect.init_config(args)
+
+                assert thrash_protect.config.interval == 1.5
+                assert thrash_protect.config.debug_logging is True
+                assert thrash_protect.config.max_acceptable_time_delta == 1.5 / 8.0
+
+    def test_argument_parser(self):
+        """Test create_argument_parser() creates valid parser."""
+        parser = thrash_protect.create_argument_parser()
+
+        # Test parsing valid arguments
+        args = parser.parse_args(["--interval", "2.0", "--debug"])
+        assert args.interval == 2.0
+        assert args.debug_logging is True
+
+        # Test list arguments
+        args = parser.parse_args(["--cmd-whitelist", "sshd", "bash", "tmux"])
+        assert args.cmd_whitelist == ["sshd", "bash", "tmux"]
+
+        # Test config file argument
+        args = parser.parse_args(["--config", "/etc/custom.yaml"])
+        assert args.config == "/etc/custom.yaml"
+
+    def test_load_from_file_missing(self):
+        """Test load_from_file() returns empty dict for missing files."""
+        config = thrash_protect.load_from_file("/nonexistent/path/config.yaml")
+        assert config == {}
+
+    @pytest.mark.skipif(not thrash_protect.HAS_YAML, reason="PyYAML not installed")
+    def test_load_yaml_config(self):
+        """Test loading YAML config file."""
+        yaml_content = """thrash-protect:
+  interval: 2.0
+  swap_page_threshold: 10
+  debug_logging: true
+  cmd_whitelist:
+    - sshd
+    - bash
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            f.flush()
+            try:
+                config = thrash_protect.load_from_file(f.name)
+                assert config["interval"] == 2.0
+                assert config["swap_page_threshold"] == 10
+                assert config["debug_logging"] is True
+                assert config["cmd_whitelist"] == ["sshd", "bash"]
+            finally:
+                os.unlink(f.name)
+
+    @pytest.mark.skipif(not thrash_protect.HAS_TOML, reason="TOML support not available")
+    def test_load_toml_config(self):
+        """Test loading TOML config file."""
+        toml_content = """[thrash-protect]
+interval = 2.0
+swap_page_threshold = 10
+debug_logging = true
+cmd_whitelist = ["sshd", "bash"]
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            f.write(toml_content)
+            f.flush()
+            try:
+                config = thrash_protect.load_from_file(f.name)
+                assert config["interval"] == 2.0
+                assert config["swap_page_threshold"] == 10
+                assert config["debug_logging"] is True
+                assert config["cmd_whitelist"] == ["sshd", "bash"]
+            finally:
+                os.unlink(f.name)

@@ -14,14 +14,18 @@ except Exception:
     __version__ = "0.0.0.dev"  # Fallback for development/editable installs
 
 __author__ = "Tobias Brox"
-__copyright__ = "Copyright 2013-2025, Tobias Brox"
+__copyright__ = "Copyright 2013-2026, Tobias Brox"
 __license__ = "GPL"
 __maintainer__ = "Tobias Brox"
 __email__ = "tobias@redpill-linpro.com"
 __product__ = "thrash-protect"
 
+import argparse
+import configparser
 import glob
+import json
 import logging
+import os
 import random  ## for the test_mode
 import signal
 import time
@@ -30,81 +34,584 @@ from datetime import datetime
 from os import getenv, getpid, getppid, kill, unlink
 from subprocess import check_output
 
+# Optional imports with graceful fallback
+try:
+    import yaml
+
+    HAS_YAML = True
+except ImportError:
+    HAS_YAML = False
+
+try:
+    import tomllib  # Python 3.11+
+
+    HAS_TOML = True
+except ImportError:
+    try:
+        import tomli as tomllib  # Fallback for older Python
+
+        HAS_TOML = True
+    except ImportError:
+        HAS_TOML = False
+
+
 #########################
 ## Configuration section
 #########################
 
+# Default config file search paths (in order of preference)
+CONFIG_SEARCH_PATHS = [
+    "/etc/thrash-protect.yaml",
+    "/etc/thrash-protect.yml",
+    "/etc/thrash-protect.toml",
+    "/etc/thrash-protect.json",
+    "/etc/thrash-protect.conf",
+]
+
+# Static whitelist - processes that should always be protected
+STATIC_WHITELIST = [
+    # SSH/terminals
+    "sshd",
+    "ssh",
+    "xterm",
+    "rxvt",
+    "urxvt",
+    "alacritty",
+    "kitty",
+    "foot",
+    # Multiplexers
+    "screen",
+    "SCREEN",
+    "tmux",
+    # X11
+    "xinit",
+    "X",
+    "Xorg",
+    "Xorg.bin",
+    # Wayland compositors
+    "sway",
+    "wayfire",
+    "hyprland",
+    # Window managers
+    "spectrwm",
+    "i3",
+    "dwm",
+    "openbox",
+    "awesome",
+    "bspwm",
+    # Desktop environments
+    "gnome-shell",
+    "kwin_x11",
+    "kwin_wayland",
+    "plasmashell",
+    "xfce4-session",
+    # System
+    "systemd-journal",
+    "dbus-daemon",
+]
+
+
+def get_shells_from_etc():
+    """Read shell basenames from /etc/shells."""
+    try:
+        shells = set()
+        with open("/etc/shells") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                basename = line.rsplit("/", 1)[-1]
+                if basename:
+                    shells.add(basename)
+        return list(shells) if shells else ["bash", "sh", "zsh", "fish"]
+    except (FileNotFoundError, PermissionError, OSError):
+        return ["bash", "sh", "zsh", "fish"]
+
+
+def get_default_whitelist():
+    """Static whitelist + all shells from /etc/shells."""
+    shells = get_shells_from_etc()
+    return list(set(STATIC_WHITELIST + shells))
+
+
+def get_default_jobctrllist():
+    """Shells from /etc/shells plus sudo."""
+    shells = get_shells_from_etc()
+    if "sudo" not in shells:
+        shells.append("sudo")
+    return shells
+
+
+def _parse_bool(value):
+    """Parse boolean from string."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return bool(value)
+    return str(value).lower() in ("true", "yes", "1", "on")
+
+
+def _parse_list(value):
+    """Parse space-separated list."""
+    if isinstance(value, list):
+        return value
+    if not value or not str(value).strip():
+        return []
+    return str(value).split()
+
+
+def load_from_file(path=None):
+    """Load configuration from file (auto-detect format by extension)."""
+    if path:
+        paths = [path]
+    else:
+        paths = CONFIG_SEARCH_PATHS
+
+    for filepath in paths:
+        if not os.path.exists(filepath):
+            continue
+        ext = os.path.splitext(filepath)[1].lower()
+        try:
+            if ext in (".yaml", ".yml"):
+                return _load_yaml(filepath)
+            elif ext == ".toml":
+                return _load_toml(filepath)
+            elif ext == ".json":
+                return _load_json(filepath)
+            else:  # .conf, .ini, or unknown
+                return _load_ini(filepath)
+        except ImportError as e:
+            logging.warning(f"Config format not supported for {filepath}: {e}")
+            continue
+        except Exception as e:
+            logging.warning(f"Failed to load config from {filepath}: {e}")
+            continue
+    return {}
+
+
+def _load_yaml(path):
+    """Load YAML config file."""
+    if not HAS_YAML:
+        raise ImportError("PyYAML not installed - install with: pip install PyYAML")
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("thrash-protect", data)
+
+
+def _load_toml(path):
+    """Load TOML config file."""
+    if not HAS_TOML:
+        raise ImportError("TOML support not available - install tomli (Python <3.11) or use Python 3.11+")
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+    return data.get("thrash-protect", data)
+
+
+def _load_json(path):
+    """Load JSON config file."""
+    with open(path) as f:
+        data = json.load(f)
+    return data.get("thrash-protect", data)
+
+
+def _load_ini(path):
+    """Load INI config file."""
+    parser = configparser.ConfigParser()
+    parser.read(path)
+    if "thrash-protect" not in parser:
+        return {}
+    return dict(parser["thrash-protect"])
+
+
+def load_from_env():
+    """Load configuration from environment variables."""
+    env_config = {}
+
+    env_mappings = {
+        "THRASH_PROTECT_DEBUG_LOGGING": ("debug_logging", _parse_bool),
+        "THRASH_PROTECT_DEBUG_CHECKSTATE": ("debug_checkstate", _parse_bool),
+        "THRASH_PROTECT_INTERVAL": ("interval", float),
+        "THRASH_PROTECT_SWAP_PAGE_THRESHOLD": ("swap_page_threshold", int),
+        "THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD": ("pgmajfault_scan_threshold", int),
+        "THRASH_PROTECT_CMD_WHITELIST": ("cmd_whitelist", _parse_list),
+        "THRASH_PROTECT_CMD_BLACKLIST": ("cmd_blacklist", _parse_list),
+        "THRASH_PROTECT_CMD_JOBCTRLLIST": ("cmd_jobctrllist", _parse_list),
+        "THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER": ("blacklist_score_multiplier", int),
+        "THRASH_PROTECT_WHITELIST_SCORE_MULTIPLIER": ("whitelist_score_divider", int),
+        "THRASH_PROTECT_UNFREEZE_POP_RATIO": ("unfreeze_pop_ratio", int),
+        "THRASH_PROTECT_TEST_MODE": ("test_mode", int),
+        "THRASH_PROTECT_LOG_USER_DATA_ON_FREEZE": ("log_user_data_on_freeze", _parse_bool),
+        "THRASH_PROTECT_LOG_USER_DATA_ON_UNFREEZE": ("log_user_data_on_unfreeze", _parse_bool),
+        "THRASH_PROTECT_DATE_HUMAN_READABLE": ("date_human_readable", _parse_bool),
+    }
+
+    for env_var, (config_key, converter) in env_mappings.items():
+        value = getenv(env_var)
+        if value is not None:
+            try:
+                env_config[config_key] = converter(value)
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Invalid value for {env_var}: {value} - {e}")
+
+    return env_config
+
+
+def get_defaults():
+    """Get default configuration values."""
+    return {
+        "debug_logging": False,
+        "debug_checkstate": False,
+        "interval": 0.5,
+        "swap_page_threshold": 4,
+        "pgmajfault_scan_threshold": None,  # Computed from swap_page_threshold if not set
+        "cmd_whitelist": get_default_whitelist(),
+        "cmd_jobctrllist": get_default_jobctrllist(),
+        "cmd_blacklist": [],
+        "blacklist_score_multiplier": 16,
+        "whitelist_score_divider": 64,  # 16 * 4
+        "unfreeze_pop_ratio": 5,
+        "test_mode": 0,
+        "log_user_data_on_freeze": False,
+        "log_user_data_on_unfreeze": True,
+        "date_human_readable": True,
+    }
+
+
+def normalize_file_config(file_config):
+    """Normalize config keys and values from file config.
+
+    Handles underscore/hyphen differences and type conversions.
+    """
+    normalized = {}
+
+    # Key mapping (file key -> internal key)
+    key_mapping = {
+        "debug-logging": "debug_logging",
+        "debug-checkstate": "debug_checkstate",
+        "swap-page-threshold": "swap_page_threshold",
+        "pgmajfault-scan-threshold": "pgmajfault_scan_threshold",
+        "cmd-whitelist": "cmd_whitelist",
+        "cmd-blacklist": "cmd_blacklist",
+        "cmd-jobctrllist": "cmd_jobctrllist",
+        "blacklist-score-multiplier": "blacklist_score_multiplier",
+        "whitelist-score-divider": "whitelist_score_divider",
+        "whitelist-score-multiplier": "whitelist_score_divider",  # Alias
+        "unfreeze-pop-ratio": "unfreeze_pop_ratio",
+        "test-mode": "test_mode",
+        "log-user-data-on-freeze": "log_user_data_on_freeze",
+        "log-user-data-on-unfreeze": "log_user_data_on_unfreeze",
+        "date-human-readable": "date_human_readable",
+    }
+
+    # Type converters for each key
+    converters = {
+        "debug_logging": _parse_bool,
+        "debug_checkstate": _parse_bool,
+        "interval": float,
+        "swap_page_threshold": int,
+        "pgmajfault_scan_threshold": int,
+        "cmd_whitelist": _parse_list,
+        "cmd_blacklist": _parse_list,
+        "cmd_jobctrllist": _parse_list,
+        "blacklist_score_multiplier": int,
+        "whitelist_score_divider": int,
+        "unfreeze_pop_ratio": int,
+        "test_mode": int,
+        "log_user_data_on_freeze": _parse_bool,
+        "log_user_data_on_unfreeze": _parse_bool,
+        "date_human_readable": _parse_bool,
+    }
+
+    for key, value in file_config.items():
+        # Normalize key (replace hyphens with underscores, check mapping)
+        norm_key = key_mapping.get(key, key.replace("-", "_"))
+
+        # Apply type converter if available
+        if norm_key in converters:
+            try:
+                normalized[norm_key] = converters[norm_key](value)
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Invalid value for config key {key}: {value} - {e}")
+        else:
+            normalized[norm_key] = value
+
+    return normalized
+
+
+def load_config(args):
+    """Merge config from defaults <- env <- file <- CLI.
+
+    Priority order (highest to lowest):
+    1. CLI arguments
+    2. Config file
+    3. Environment variables
+    4. Defaults
+    """
+    # 1. Defaults
+    final = get_defaults()
+
+    # 2. Environment variables
+    env_config = load_from_env()
+    final.update(env_config)
+
+    # 3. Config file
+    config_path = getattr(args, "config", None)
+    file_config = load_from_file(config_path)
+    if file_config:
+        normalized = normalize_file_config(file_config)
+        final.update(normalized)
+
+    # 4. CLI arguments (non-None values only)
+    cli_config = {}
+    cli_mappings = {
+        "debug_logging": "debug_logging",
+        "debug_checkstate": "debug_checkstate",
+        "interval": "interval",
+        "swap_page_threshold": "swap_page_threshold",
+        "pgmajfault_scan_threshold": "pgmajfault_scan_threshold",
+        "cmd_whitelist": "cmd_whitelist",
+        "cmd_blacklist": "cmd_blacklist",
+        "cmd_jobctrllist": "cmd_jobctrllist",
+        "blacklist_score_multiplier": "blacklist_score_multiplier",
+        "whitelist_score_divider": "whitelist_score_divider",
+        "unfreeze_pop_ratio": "unfreeze_pop_ratio",
+        "test_mode": "test_mode",
+        "log_user_data_on_freeze": "log_user_data_on_freeze",
+        "log_user_data_on_unfreeze": "log_user_data_on_unfreeze",
+        "date_human_readable": "date_human_readable",
+    }
+
+    for arg_name, config_key in cli_mappings.items():
+        value = getattr(args, arg_name, None)
+        if value is not None:
+            cli_config[config_key] = value
+
+    final.update(cli_config)
+
+    # Compute derived values
+    if final.get("pgmajfault_scan_threshold") is None:
+        final["pgmajfault_scan_threshold"] = final["swap_page_threshold"] * 4
+
+    final["max_acceptable_time_delta"] = final["interval"] / 8.0
+
+    return final
+
+
+def create_argument_parser():
+    """Create argument parser with all configuration options."""
+    p = argparse.ArgumentParser(
+        description="Protect a Linux host from thrashing by temporarily suspending processes",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Configuration priority (highest to lowest):
+  1. Command-line arguments
+  2. Config file (--config or auto-detected)
+  3. Environment variables (THRASH_PROTECT_*)
+  4. Built-in defaults
+
+Config file search order (first found is used):
+  /etc/thrash-protect.yaml
+  /etc/thrash-protect.yml
+  /etc/thrash-protect.toml
+  /etc/thrash-protect.json
+  /etc/thrash-protect.conf
+
+Example usage:
+  thrash-protect
+  thrash-protect --interval=1.0 --debug
+  thrash-protect --config=/path/to/config.yaml
+""",
+    )
+
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+
+    # Config file
+    p.add_argument(
+        "--config",
+        "-c",
+        metavar="PATH",
+        help="Configuration file path (auto-detects format by extension)",
+    )
+
+    # Debug options
+    p.add_argument(
+        "--debug",
+        "--debug-logging",
+        dest="debug_logging",
+        action="store_true",
+        default=None,
+        help="Enable debug logging to stderr",
+    )
+    p.add_argument(
+        "--debug-checkstate",
+        dest="debug_checkstate",
+        action="store_true",
+        default=None,
+        help="Log warnings when processes are in unexpected states",
+    )
+
+    # Timing options
+    p.add_argument(
+        "--interval",
+        type=float,
+        metavar="SECONDS",
+        help="Sleep interval between checks (default: 0.5)",
+    )
+    p.add_argument(
+        "--swap-page-threshold",
+        dest="swap_page_threshold",
+        type=int,
+        metavar="N",
+        help="Number of swap pages to trigger action (default: 4)",
+    )
+    p.add_argument(
+        "--pgmajfault-scan-threshold",
+        dest="pgmajfault_scan_threshold",
+        type=int,
+        metavar="N",
+        help="Major page faults before process scan (default: swap_page_threshold * 4)",
+    )
+
+    # Process lists
+    p.add_argument(
+        "--cmd-whitelist",
+        dest="cmd_whitelist",
+        nargs="+",
+        metavar="CMD",
+        help="Processes to protect from suspension (space-separated)",
+    )
+    p.add_argument(
+        "--cmd-blacklist",
+        dest="cmd_blacklist",
+        nargs="+",
+        metavar="CMD",
+        help="Processes to prioritize for suspension (space-separated)",
+    )
+    p.add_argument(
+        "--cmd-jobctrllist",
+        dest="cmd_jobctrllist",
+        nargs="+",
+        metavar="CMD",
+        help="Processes with job control (suspend parent too)",
+    )
+
+    # Scoring options
+    p.add_argument(
+        "--blacklist-score-multiplier",
+        dest="blacklist_score_multiplier",
+        type=int,
+        metavar="N",
+        help="Score multiplier for blacklisted processes (default: 16)",
+    )
+    p.add_argument(
+        "--whitelist-score-divider",
+        dest="whitelist_score_divider",
+        type=int,
+        metavar="N",
+        help="Score divider for whitelisted processes (default: 64)",
+    )
+    p.add_argument(
+        "--unfreeze-pop-ratio",
+        dest="unfreeze_pop_ratio",
+        type=int,
+        metavar="N",
+        help="Ratio of stack pops vs queue pops when unfreezing (default: 5)",
+    )
+
+    # Testing
+    p.add_argument(
+        "--test-mode",
+        dest="test_mode",
+        type=int,
+        metavar="N",
+        help="Pretend thrashing every 2^N iterations (for testing)",
+    )
+
+    # Logging options
+    p.add_argument(
+        "--log-user-data-on-freeze",
+        dest="log_user_data_on_freeze",
+        action="store_true",
+        default=None,
+        help="Log detailed process info when freezing",
+    )
+    p.add_argument(
+        "--log-user-data-on-unfreeze",
+        dest="log_user_data_on_unfreeze",
+        action="store_true",
+        default=None,
+        help="Log detailed process info when unfreezing (default: true)",
+    )
+    p.add_argument(
+        "--no-log-user-data-on-unfreeze",
+        dest="log_user_data_on_unfreeze",
+        action="store_false",
+        help="Disable logging detailed process info when unfreezing",
+    )
+    p.add_argument(
+        "--date-human-readable",
+        dest="date_human_readable",
+        action="store_true",
+        default=None,
+        help="Use human-readable date format in logs (default: true)",
+    )
+    p.add_argument(
+        "--date-unix",
+        dest="date_human_readable",
+        action="store_false",
+        help="Use Unix timestamp in logs",
+    )
+
+    return p
+
 
 class config:
     """
-    Collection of configuration variables.  (Those are still really
-    global variables, but looks a bit neater to access
-    config.bits_per_byte than bits_per_byte.  Perhaps we'll parse some
-    a config file and initiate some object with the name config in
-    some future version)
+    Configuration namespace - populated at startup by init_config().
+
+    Access configuration values as config.interval, config.cmd_whitelist, etc.
     """
 
-    ## debug
-    debug_logging = getenv("THRASH_PROTECT_DEBUG_LOGGING", False)
-    ## will check the state and warn if thrash_protects attempts unfreezing a process that is running or freezing a process that is already suspended
-    debug_checkstate = getenv("THRASH_PROTECT_DEBUG_CHECKSTATE", False)
+    pass
 
-    ## Normal sleep interval, in seconds.
-    interval = float(getenv("THRASH_PROTECT_INTERVAL", "0.5"))
 
-    ## max acceptable time delta in one iteration
-    max_acceptable_time_delta = interval / 8.0
+def init_config(args=None):
+    """Initialize the config namespace from all configuration sources.
 
-    ## Number of acceptable page swaps during the above interval
-    swap_page_threshold = int(getenv("THRASH_PROTECT_SWAP_PAGE_THRESHOLD", "4"))
+    This should be called once at startup, after argument parsing.
+    """
+    if args is None:
+        # Create a minimal args namespace if none provided
+        args = argparse.Namespace()
 
-    ## After X number of major pagefaults, we should initiate a process scanning
-    pgmajfault_scan_threshold = int(getenv("THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD", swap_page_threshold * 4))
+    cfg = load_config(args)
 
-    ## process name whitelist
-    cmd_whitelist = getenv("THRASH_PROTECT_CMD_WHITELIST", "")
-    cmd_whitelist = (
-        cmd_whitelist.split(" ")
-        if cmd_whitelist
-        else [
-            "sshd",
-            "bash",
-            "xinit",
-            "X",
-            "spectrwm",
-            "screen",
-            "SCREEN",
-            "mutt",
-            "ssh",
-            "xterm",
-            "rxvt",
-            "urxvt",
-            "Xorg.bin",
-            "Xorg",
-            "systemd-journal",
-        ]
-    )
-    cmd_blacklist = getenv("THRASH_PROTECT_CMD_BLACKLIST", "").split(" ")
-    cmd_jobctrllist = getenv("THRASH_PROTECT_CMD_JOBCTRLLIST", "bash sudo").split(" ")
-    blacklist_score_multiplier = int(getenv("THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER", "16"))
-    whitelist_score_divider = int(
-        getenv("THRASH_PROTECT_WHITELIST_SCORE_MULTIPLIER", str(blacklist_score_multiplier * 4))
-    )
+    # Set all config values as attributes on the config class
+    for key, value in cfg.items():
+        setattr(config, key, value)
 
-    ## Unfreezing processes: Ratio of POP compared to GET (integer)
-    unfreeze_pop_ratio = int(getenv("THRASH_PROTECT_UNFREEZE_POP_RATIO", "5"))
+    # Set up debug_check_state function based on config
+    global debug_check_state
+    if config.debug_checkstate:
+        debug_check_state = _debug_check_state
+    else:
+        debug_check_state = lambda a, b: None
 
-    ## test_mode - if test_mode and not random.getrandbits(test_mode), then pretend we're thrashed
-    test_mode = int(getenv("THRASH_PROTECT_TEST_MODE", "0"))
 
-    ## ADVANCED LOGGING OPTIONS
-    ## When freezing a process, enables logging of username, CPU usage, memory usage and command string
-    ## (will spawn ps, so some overhead costs)
-    log_user_data_on_freeze = int(getenv("THRASH_PROTECT_LOG_USER_DATA_ON_FREEZE", "0"))
-    ## Log the extra process data on unfreeze (when the extra overhead cost is probably harmless)
-    log_user_data_on_unfreeze = int(getenv("THRASH_PROTECT_LOG_USER_DATA_ON_UNFREEZE", "1"))
-    ## Enable human-readable date format instead of UNIX timestamp
-    date_human_readable = int(getenv("THRASH_PROTECT_DATE_HUMAN_READABLE", "1"))
+# Initialize with defaults immediately so the module can be imported
+# (will be re-initialized in main() with proper args)
+def _init_default_config():
+    """Initialize config with defaults for module import compatibility."""
+    defaults = get_defaults()
+    for key, value in defaults.items():
+        setattr(config, key, value)
+    # Compute derived values
+    if config.pgmajfault_scan_threshold is None:
+        config.pgmajfault_scan_threshold = config.swap_page_threshold * 4
+    config.max_acceptable_time_delta = config.interval / 8.0
+
+
+_init_default_config()
 
 
 class SystemState:
@@ -557,10 +1064,8 @@ def _debug_check_state(pid, should_be_suspended=False):
         logging.warn("Pid %s - state: %s, should_be_suspended: %s - mismatch" % (pid, procstate, should_be_suspended))
 
 
-if config.debug_checkstate:
-    debug_check_state = _debug_check_state
-else:
-    debug_check_state = lambda a, b: None
+# debug_check_state is set up by init_config() based on debug_checkstate setting
+debug_check_state = lambda a, b: None
 
 
 def freeze_something(pids_to_freeze=None):
@@ -709,14 +1214,16 @@ global_process_selector = GlobalProcessSelector()
 
 
 def main():
-    ## Parsing arguments (TODO: none provided as for now.  The
-    ## configuration passed through environment should also be
-    ## possible to pass through parameters)
-    import argparse
-
-    p = argparse.ArgumentParser(description="protect a linux host from thrashing")
-    p.add_argument("--version", action="version", version="%(prog)s " + __version__)
+    """Main entry point for thrash-protect."""
+    p = create_argument_parser()
     args = p.parse_args()
+
+    # Initialize configuration from all sources (CLI > file > env > defaults)
+    init_config(args)
+
+    # Set up debug logging if enabled
+    if config.debug_logging:
+        logging.root.setLevel(logging.DEBUG)
 
     unfreeze_from_tmpfile()
 
@@ -727,6 +1234,4 @@ def main():
 
 
 if __name__ == "__main__":
-    if config.debug_logging:
-        logging.root.setLevel(10)
     main()
