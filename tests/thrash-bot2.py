@@ -22,4 +22,3 @@ try:
         alloc(i, fn)
 finally:
     os.unlink(fn)
-    

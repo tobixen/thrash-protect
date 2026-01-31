@@ -41,7 +41,7 @@ First we should make sure that we can reproduce the thrashing problem:
 
 Next, check that thrash_protect will work out for you:
 
-* Reboot and start up thrash_protect.  
+* Reboot and start up thrash_protect.
 * open a terminal, run sth like "watch -n 0.3 free -m" to see the memory usage again
 * you may want to watch uptime as well
 * open up another terminal, run "tail -F /var/log/thrash-protect.log"

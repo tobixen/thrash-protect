@@ -17,5 +17,3 @@ package() {
   make PREFIX=$pkgdir/usr INSTALL_ROOT=$pkgdir install
   rm "$pkgdir/usr/sbin"
 }
-
-

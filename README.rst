@@ -155,7 +155,7 @@ Drawbacks and problems
   the script (see the job control thing in the configuration), but
   it's not failsafe.  I'm only aware of problems with bash and sudo -
   and possibly the condor job control system.  Problems observed:
-  
+
   * If running a process under sudo (i.e. "sudo sleep 3600") and the subprocess (sleep) is suspended, the parent process (sudo) will automatically also be suspended and has to be manually resumed.
 
   * If running an non-interactive process "in the foreground" in an interactive bash session (i.e. "sleep 3600") and the process is suspended, it's moved "to the background" and will stay "backgrounded" if it's resumed.  In particular, doing "while [ 1 ] ; do heavy_task ; done" may cause heavy_task to be spawned in parallell as the while-loop will continue running when heavy_task gets backgrounded (workaround: throw an ampersand behind and the whole loop will be backgrounded from the beginning).
@@ -166,7 +166,7 @@ Drawbacks and problems
 
 - Make sure to install some swap space.  Thrash-protect is not
   performing very well if no swap space is installed.
-  
+
 - Thrash-protect is optimized for servers, not desktops.  One may
   experience that GUI-sessions (XOrg, Wayland, window managers, etc)
   won't work at all if heavy thrashing is going on.  Keep in mind that
@@ -177,7 +177,7 @@ Drawbacks and problems
   any significant interruptions.  If you know a little bit about
   sysadmin work, you should be able to find and kill the processes
   causing the thrashing.
- 
+
 - On hosts actually using swap, every now and then some process will
   be suspended for a short period of time, so it's probably not a
   good idea to use thrash-protect on "real time"-systems (then again,
@@ -257,7 +257,7 @@ deployed thrash-protect and increased the swap partition
 substantially, that has solved up the problems.  Consider those
 scenarioes:
 
-- No thrash-protect, small amounts of swap installed.  In the very 
+- No thrash-protect, small amounts of swap installed.  In the very
   best case, the OOM-killer will wipe out enough apache processes
   that the remaining will work.  More likely, the whole apache server
   will be taken down by the OOM-killer, triggering full downtime.
@@ -411,13 +411,13 @@ Some things that SHOULD be fixed before 1.0 is released:
 -  Clean up logging and error handling properly - logging should be done
    through the logging module. Separate error log?
 
--  More testing, make sure all the code has been tested.  I.e. is the 
+-  More testing, make sure all the code has been tested.  I.e. is the
    check_delay function useful?
 
 Some things that MAY be considered before 1.0:
 
--  Add more automated unit tests and functional test code.  
-   All parts of the code needs to be exercised, including 
+-  Add more automated unit tests and functional test code.
+   All parts of the code needs to be exercised, including
    parsing configuration variables, etc.
 
 -  More "lab testing", and research on possible situations were

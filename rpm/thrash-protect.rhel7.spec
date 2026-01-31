@@ -5,7 +5,7 @@ Summary:        Simple-Stupid user-space program protecting a linux host from th
 BuildArch:      noarch
 Group:          System Environment/Daemons
 License:        GPLv3
-URL:            https://github.com/tobixen/thrash-protect  
+URL:            https://github.com/tobixen/thrash-protect
 Source0:        https://github.com/tobixen/%{name}/archive/v%{version}.tar.gz
 Requires:       python
 

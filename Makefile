@@ -106,4 +106,3 @@ ifndef version
 	$(error debian/changelog requires version=X.Y.Z)
 endif
 	dch --distribution=UNRELEASED -v ${version} "version bump"
-
