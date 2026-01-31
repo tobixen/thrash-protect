@@ -12,16 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Needed for setuptools-scm
+          fetch-depth: 0  # Needed for hatch-vcs
           fetch-tags: true
-
-      - name: Extract version from tag
-        id: version
-        run: |
-          # Remove 'v' prefix if present
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Extracted version: $VERSION"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -29,12 +21,16 @@ jobs:
           python-version: "3.12"
 
       - name: Install build dependencies
-        run: pip install build setuptools setuptools-scm
+        run: pip install build hatch-vcs
 
       - name: Build package
-        env:
-          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ steps.version.outputs.version }}
-        run: python -m build --no-isolation
+        run: python -m build
+
+      - name: Display built packages
+        run: |
+          ls -lh dist/
+          echo "Verifying version in wheel metadata:"
+          unzip -p dist/*.whl */METADATA | grep "^Version:"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
