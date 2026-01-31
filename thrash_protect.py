@@ -977,7 +977,8 @@ class GlobalProcessSelector(ProcessSelector):
 
 def get_date_string():
     if config.date_human_readable:
-        return datetime.strftime(datetime.now(), "%Y-%m-%d %H:%M:%S")
+        now = datetime.now()
+        return now.strftime("%Y-%m-%d %H:%M:%S") + f".{now.microsecond // 1000:03d}"
     else:
         return str(time.time())
 
