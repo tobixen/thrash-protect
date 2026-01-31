@@ -1,4 +1,5 @@
 2026-01-31  Tobias Brox  <tobias@redpill-linpro.com>
+	* thrash_protect.py: Fix job control detection for login shells with '-' prefix
 	* pyproject.toml: Migrate from setuptools-scm to Hatch with hatch-vcs
 	* thrash_protect.py: Import version from generated _version.py
 	* pyproject.toml: Add Python 3.14 to classifiers

@@ -141,6 +141,18 @@ class TestUnitTest:
         assert thrash_protect.ProcessSelector().checkParents(10) == (9, 10)
         assert thrash_protect.ProcessSelector().checkParents(10, 9) == (9, 10)
 
+    def test_check_parents_login_shell(self):
+        """Test that login shells with '-' prefix are detected correctly."""
+        # Login shells have a '-' prefix (e.g., '-bash' instead of 'bash')
+        login_shell_files = {
+            "/proc/100/stat": b"100 (claude) S 99 100 100 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/99/stat": b"99 (-bash) S 1 99 99 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+        }
+        with patch("thrash_protect.open", new=FileMockup(login_shell_files).open):
+            # The parent shell is '-bash' (login shell), should still be detected
+            result = thrash_protect.ProcessSelector().checkParents(100)
+            assert result == (99, 100), f"Expected (99, 100), got {result}"
+
     @patch("thrash_protect.kill")
     @patch("thrash_protect.unlink")
     def test_cleanup(self, unlink, kill):

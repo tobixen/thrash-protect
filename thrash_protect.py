@@ -789,7 +789,9 @@ class ProcessSelector:
         if ppid <= 1:
             return (pid,)
         pstats = self.readStat(ppid)
-        if pstats and pstats.cmd in config.cmd_jobctrllist:
+        # Strip leading '-' from login shells (e.g., '-bash' -> 'bash')
+        cmd_to_check = pstats.cmd.lstrip("-") if pstats else None
+        if pstats and cmd_to_check in config.cmd_jobctrllist:
             return self.checkParents(ppid, pstats.ppid) + (pid,)
         else:
             return (pid,)
