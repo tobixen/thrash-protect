@@ -1,3 +1,8 @@
+2026-01-31  Tobias Brox  <tobias@redpill-linpro.com>
+	* pyproject.toml: Migrate from setuptools-scm to Hatch with hatch-vcs
+	* thrash_protect.py: Import version from generated _version.py
+	* pyproject.toml: Add Python 3.14 to classifiers
+
 2026-01-30  Tobias Brox  <tobias@redpill-linpro.com>
 	* thrash_protect.py: Add multi-format config file support (INI, JSON, YAML, TOML)
 	* thrash_protect.py: Add full CLI --long-options for all configuration parameters

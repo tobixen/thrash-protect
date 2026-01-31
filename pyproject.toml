@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=61.0", "setuptools-scm>=8.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
 
 [project]
 name = "thrash-protect"
@@ -24,6 +24,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: System :: Monitoring",
     "Topic :: System :: Systems Administration",
     "Topic :: Utilities",
@@ -52,12 +53,14 @@ all-formats = [
     "tomli>=1.0; python_version < '3.11'",
 ]
 
-[tool.setuptools]
-py-modules = ["thrash_protect"]
+[tool.hatch.version]
+source = "vcs"
 
-[tool.setuptools_scm]
-# Fallback version if not in a git repo or no tags
-fallback_version = "0.15.0"
+[tool.hatch.build.hooks.vcs]
+version-file = "_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["thrash_protect.py"]
 
 [tool.ruff]
 target-version = "py39"

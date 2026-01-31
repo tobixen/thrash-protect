@@ -7,11 +7,9 @@
 ### This is a rapid prototype implementation.  I'm considering to implement in C.
 
 try:
-    from importlib.metadata import version as get_version
-
-    __version__ = get_version("thrash-protect")
-except Exception:
-    __version__ = "0.0.0.dev"  # Fallback for development/editable installs
+    from _version import __version__
+except ImportError:
+    __version__ = "0.0.0.dev"  # Fallback if _version.py not generated yet
 
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013-2026, Tobias Brox"

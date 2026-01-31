@@ -6,6 +6,7 @@ __pycache__/
 *.egg-info/
 /build/
 /dist/
+_version.py
 
 # Make-generated files
 ChangeLog.recent
