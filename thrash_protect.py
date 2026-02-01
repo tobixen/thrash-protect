@@ -159,6 +159,37 @@ def _parse_list(value):
     return str(value).split()
 
 
+# Unified configuration schema
+# Each entry: config_key -> (type_converter, env_var_name, file_key_aliases)
+CONFIG_SCHEMA = {
+    "debug_logging": (_parse_bool, "THRASH_PROTECT_DEBUG_LOGGING", ["debug-logging"]),
+    "debug_checkstate": (_parse_bool, "THRASH_PROTECT_DEBUG_CHECKSTATE", ["debug-checkstate"]),
+    "interval": (float, "THRASH_PROTECT_INTERVAL", []),
+    "swap_page_threshold": (int, "THRASH_PROTECT_SWAP_PAGE_THRESHOLD", ["swap-page-threshold"]),
+    "pgmajfault_scan_threshold": (int, "THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD", ["pgmajfault-scan-threshold"]),
+    "use_psi": (_parse_bool, "THRASH_PROTECT_USE_PSI", ["use-psi"]),
+    "psi_threshold": (float, "THRASH_PROTECT_PSI_THRESHOLD", ["psi-threshold"]),
+    "cmd_whitelist": (_parse_list, "THRASH_PROTECT_CMD_WHITELIST", ["cmd-whitelist"]),
+    "cmd_blacklist": (_parse_list, "THRASH_PROTECT_CMD_BLACKLIST", ["cmd-blacklist"]),
+    "cmd_jobctrllist": (_parse_list, "THRASH_PROTECT_CMD_JOBCTRLLIST", ["cmd-jobctrllist"]),
+    "blacklist_score_multiplier": (int, "THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER", ["blacklist-score-multiplier"]),
+    "whitelist_score_divider": (
+        int,
+        "THRASH_PROTECT_WHITELIST_SCORE_MULTIPLIER",
+        ["whitelist-score-divider", "whitelist-score-multiplier"],
+    ),
+    "unfreeze_pop_ratio": (int, "THRASH_PROTECT_UNFREEZE_POP_RATIO", ["unfreeze-pop-ratio"]),
+    "test_mode": (int, "THRASH_PROTECT_TEST_MODE", ["test-mode"]),
+    "log_user_data_on_freeze": (_parse_bool, "THRASH_PROTECT_LOG_USER_DATA_ON_FREEZE", ["log-user-data-on-freeze"]),
+    "log_user_data_on_unfreeze": (
+        _parse_bool,
+        "THRASH_PROTECT_LOG_USER_DATA_ON_UNFREEZE",
+        ["log-user-data-on-unfreeze"],
+    ),
+    "date_human_readable": (_parse_bool, "THRASH_PROTECT_DATE_HUMAN_READABLE", ["date-human-readable"]),
+}
+
+
 def load_from_file(path=None):
     """Load configuration from file (auto-detect format by extension)."""
     if path:
@@ -226,27 +257,7 @@ def load_from_env():
     """Load configuration from environment variables."""
     env_config = {}
 
-    env_mappings = {
-        "THRASH_PROTECT_DEBUG_LOGGING": ("debug_logging", _parse_bool),
-        "THRASH_PROTECT_DEBUG_CHECKSTATE": ("debug_checkstate", _parse_bool),
-        "THRASH_PROTECT_INTERVAL": ("interval", float),
-        "THRASH_PROTECT_SWAP_PAGE_THRESHOLD": ("swap_page_threshold", int),
-        "THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD": ("pgmajfault_scan_threshold", int),
-        "THRASH_PROTECT_USE_PSI": ("use_psi", _parse_bool),
-        "THRASH_PROTECT_PSI_THRESHOLD": ("psi_threshold", float),
-        "THRASH_PROTECT_CMD_WHITELIST": ("cmd_whitelist", _parse_list),
-        "THRASH_PROTECT_CMD_BLACKLIST": ("cmd_blacklist", _parse_list),
-        "THRASH_PROTECT_CMD_JOBCTRLLIST": ("cmd_jobctrllist", _parse_list),
-        "THRASH_PROTECT_BLACKLIST_SCORE_MULTIPLIER": ("blacklist_score_multiplier", int),
-        "THRASH_PROTECT_WHITELIST_SCORE_MULTIPLIER": ("whitelist_score_divider", int),
-        "THRASH_PROTECT_UNFREEZE_POP_RATIO": ("unfreeze_pop_ratio", int),
-        "THRASH_PROTECT_TEST_MODE": ("test_mode", int),
-        "THRASH_PROTECT_LOG_USER_DATA_ON_FREEZE": ("log_user_data_on_freeze", _parse_bool),
-        "THRASH_PROTECT_LOG_USER_DATA_ON_UNFREEZE": ("log_user_data_on_unfreeze", _parse_bool),
-        "THRASH_PROTECT_DATE_HUMAN_READABLE": ("date_human_readable", _parse_bool),
-    }
-
-    for env_var, (config_key, converter) in env_mappings.items():
+    for config_key, (converter, env_var, _) in CONFIG_SCHEMA.items():
         value = getenv(env_var)
         if value is not None:
             try:
@@ -287,56 +298,21 @@ def normalize_file_config(file_config):
     """
     normalized = {}
 
-    # Key mapping (file key -> internal key)
-    key_mapping = {
-        "debug-logging": "debug_logging",
-        "debug-checkstate": "debug_checkstate",
-        "swap-page-threshold": "swap_page_threshold",
-        "pgmajfault-scan-threshold": "pgmajfault_scan_threshold",
-        "use-psi": "use_psi",
-        "psi-threshold": "psi_threshold",
-        "cmd-whitelist": "cmd_whitelist",
-        "cmd-blacklist": "cmd_blacklist",
-        "cmd-jobctrllist": "cmd_jobctrllist",
-        "blacklist-score-multiplier": "blacklist_score_multiplier",
-        "whitelist-score-divider": "whitelist_score_divider",
-        "whitelist-score-multiplier": "whitelist_score_divider",  # Alias
-        "unfreeze-pop-ratio": "unfreeze_pop_ratio",
-        "test-mode": "test_mode",
-        "log-user-data-on-freeze": "log_user_data_on_freeze",
-        "log-user-data-on-unfreeze": "log_user_data_on_unfreeze",
-        "date-human-readable": "date_human_readable",
-    }
-
-    # Type converters for each key
-    converters = {
-        "debug_logging": _parse_bool,
-        "debug_checkstate": _parse_bool,
-        "interval": float,
-        "swap_page_threshold": int,
-        "pgmajfault_scan_threshold": int,
-        "use_psi": _parse_bool,
-        "psi_threshold": float,
-        "cmd_whitelist": _parse_list,
-        "cmd_blacklist": _parse_list,
-        "cmd_jobctrllist": _parse_list,
-        "blacklist_score_multiplier": int,
-        "whitelist_score_divider": int,
-        "unfreeze_pop_ratio": int,
-        "test_mode": int,
-        "log_user_data_on_freeze": _parse_bool,
-        "log_user_data_on_unfreeze": _parse_bool,
-        "date_human_readable": _parse_bool,
-    }
+    # Build reverse mapping from file key aliases to config keys
+    file_key_to_config = {}
+    for config_key, (_, _, aliases) in CONFIG_SCHEMA.items():
+        for alias in aliases:
+            file_key_to_config[alias] = config_key
 
     for key, value in file_config.items():
-        # Normalize key (replace hyphens with underscores, check mapping)
-        norm_key = key_mapping.get(key, key.replace("-", "_"))
+        # Normalize key (check alias mapping, then replace hyphens with underscores)
+        norm_key = file_key_to_config.get(key, key.replace("-", "_"))
 
         # Apply type converter if available
-        if norm_key in converters:
+        if norm_key in CONFIG_SCHEMA:
+            converter = CONFIG_SCHEMA[norm_key][0]
             try:
-                normalized[norm_key] = converters[norm_key](value)
+                normalized[norm_key] = converter(value)
             except (ValueError, TypeError) as e:
                 logging.warning(f"Invalid value for config key {key}: {value} - {e}")
         else:
@@ -369,31 +345,10 @@ def load_config(args):
     final.update(env_config)
 
     # 4. CLI arguments (non-None values only)
-    cli_config = {}
-    cli_mappings = {
-        "debug_logging": "debug_logging",
-        "debug_checkstate": "debug_checkstate",
-        "interval": "interval",
-        "swap_page_threshold": "swap_page_threshold",
-        "pgmajfault_scan_threshold": "pgmajfault_scan_threshold",
-        "cmd_whitelist": "cmd_whitelist",
-        "cmd_blacklist": "cmd_blacklist",
-        "cmd_jobctrllist": "cmd_jobctrllist",
-        "blacklist_score_multiplier": "blacklist_score_multiplier",
-        "whitelist_score_divider": "whitelist_score_divider",
-        "unfreeze_pop_ratio": "unfreeze_pop_ratio",
-        "test_mode": "test_mode",
-        "log_user_data_on_freeze": "log_user_data_on_freeze",
-        "log_user_data_on_unfreeze": "log_user_data_on_unfreeze",
-        "date_human_readable": "date_human_readable",
-    }
-
-    for arg_name, config_key in cli_mappings.items():
-        value = getattr(args, arg_name, None)
+    for config_key in CONFIG_SCHEMA:
+        value = getattr(args, config_key, None)
         if value is not None:
-            cli_config[config_key] = value
-
-    final.update(cli_config)
+            final[config_key] = value
 
     # Compute derived values
     if final.get("pgmajfault_scan_threshold") is None:
@@ -668,6 +623,48 @@ def should_use_cgroup_freeze(pid):
     if cgroup_path.endswith(".scope"):
         return cgroup_path
     return None
+
+
+#########################
+## Helper Functions
+#########################
+
+
+def normalize_pids(pids):
+    """Normalize pids to a tuple.
+
+    Handles single pids, tuples, lists, and other iterables consistently.
+    """
+    if pids is None:
+        return ()
+    if not hasattr(pids, "__iter__") or isinstance(pids, str):
+        return (pids,)
+    return tuple(pids)
+
+
+def apply_score_adjustments(score, cmd):
+    """Apply whitelist/blacklist score adjustments.
+
+    Divides score for whitelisted commands, multiplies for blacklisted.
+    Returns the adjusted score.
+    """
+    if cmd in config.cmd_whitelist:
+        score /= config.whitelist_score_divider
+    if cmd in config.cmd_blacklist:
+        score *= config.blacklist_score_multiplier
+    return score
+
+
+def unpack_frozen_item(item):
+    """Unpack a frozen_items entry into (item_type, cgroup_path, pids).
+
+    For cgroup items: returns ('cgroup', cgroup_path, pids)
+    For sigstop items: returns ('sigstop', None, pids)
+    """
+    if item[0] == "cgroup":
+        return item[0], item[1], item[2]
+    else:  # sigstop
+        return item[0], None, item[1]
 
 
 #########################
@@ -1032,11 +1029,7 @@ class OOMScoreProcessSelector(ProcessSelector):
                 continue
             if oom_score > 0:
                 logging.debug("oom_score: %s, cmd: %s, pid: %s" % (oom_score, stats.cmd, pid))
-                if stats.cmd in config.cmd_whitelist:
-                    logging.debug("whitelisted process %s %s %s" % (pid, stats.cmd, oom_score))
-                    oom_score /= config.whitelist_score_divider
-                if stats.cmd in config.cmd_blacklist:
-                    oom_score *= config.blacklist_score_multiplier
+                oom_score = apply_score_adjustments(oom_score, stats.cmd)
                 if oom_score > max:
                     ## ignore self
                     if pid in (getpid(), getppid()):
@@ -1159,10 +1152,6 @@ class CgroupPressureProcessSelector(ProcessSelector):
             if "T" in stats.state:
                 continue
 
-            # Skip whitelisted
-            if stats.cmd in config.cmd_whitelist:
-                continue
-
             # Get cgroup path
             cgroup_path = get_cgroup_path(pid)
             if not cgroup_path:
@@ -1173,9 +1162,8 @@ class CgroupPressureProcessSelector(ProcessSelector):
             if pressure is None:
                 continue
 
-            # Apply blacklist multiplier
-            if stats.cmd in config.cmd_blacklist:
-                pressure *= config.blacklist_score_multiplier
+            # Apply whitelist/blacklist score adjustments
+            pressure = apply_score_adjustments(pressure, stats.cmd)
 
             if pressure > max_pressure:
                 max_pressure = pressure
@@ -1236,11 +1224,7 @@ class PageFaultingProcessSelector(ProcessSelector):
                     diff += random.getrandbits(3)
                 if not diff:
                     continue
-                if stats.cmd in config.cmd_blacklist:
-                    diff *= config.blacklist_score_multiplier
-                if stats.cmd in config.cmd_whitelist:
-                    logging.debug("whitelisted process %s %s %s" % (pid, stats.cmd, diff))
-                    diff /= config.whitelist_score_divider
+                diff = apply_score_adjustments(diff, stats.cmd)
                 if diff > max:
                     ## ignore self
                     if pid == getpid():
@@ -1261,8 +1245,19 @@ class GlobalProcessSelector(ProcessSelector):
     """
 
     def __init__(self):
-        ## sorted from cheap to expensive.  Also, it is surely smart to be quick on refreezing a recently unfrozen process if host starts thrashing again.
-        ## CgroupPressureProcessSelector is after LastFrozen because it's more targeted but slightly more expensive
+        ## Sets up a prioritized list of selectors:
+        ## * LastFrozenProcessSelector is the cheapest and it's surely
+        ##   smart to be quick on refreezing a recently unfrozen process
+        ##   if unfreezing it causes immediate swap problems.  So it's
+        ##   the first method.
+        ## * CgroupPressureProcessSelector is the best at targeting but
+        ##   slightly more expensive
+        ## * OOMScoreProcessSelector is cheaper than
+        ##   PageFaultingProcessSelector()
+        ## * PageFaultingProcessSelector() is expensive and gives many false
+        ##   positives, so it's last.
+        ## I'm not sure if we need all of those.  Perhaps it would make sense
+        ## to shed some of the older obsoleted selecting methods (TODO).
         self.collection = [
             LastFrozenProcessSelector(),
             CgroupPressureProcessSelector(),
@@ -1331,56 +1326,55 @@ def ignore_failure(method):
 
 def get_all_frozen_pids():
     """Get combined list of all frozen pids (both SIGSTOP and cgroup frozen)."""
-    all_frozen = []
-    for item in frozen_items:
-        if item[0] == "cgroup":
-            all_frozen.append(item[2])  # pids
-        else:  # sigstop
-            all_frozen.append(item[1])  # pids
-    return all_frozen
+    return [unpack_frozen_item(item)[2] for item in frozen_items]
+
+
+FROZEN_PID_FILE = "/tmp/thrash-protect-frozen-pid-list"
+LOG_FILE = "/var/log/thrash-protect.log"
+
+
+def _write_log_entry(action, pid, log_user_data, all_frozen):
+    """Write a log entry to the thrash-protect log file."""
+    with open(LOG_FILE, "ab") as logfile:
+        if log_user_data:
+            logfile.write(
+                (
+                    "%s - %s   pid %5s - %s - list: %s\n"
+                    % (get_date_string(), action, str(pid), get_process_info(pid), all_frozen)
+                ).encode("utf-8")
+            )
+        else:
+            if all_frozen:
+                logfile.write(
+                    ("%s - %s pid %s - frozen list: %s\n" % (get_date_string(), action, pid, all_frozen)).encode("utf-8")
+                )
+            else:
+                logfile.write(("%s - %s pid %s\n" % (get_date_string(), action, pid)).encode("utf-8"))
+
+
+def _update_frozen_pid_file(all_frozen):
+    """Update or remove the frozen PID list file."""
+    if all_frozen:
+        with open(FROZEN_PID_FILE, "w") as f:
+            f.write(" ".join([" ".join([str(pid) for pid in pid_group]) for pid_group in all_frozen]) + "\n")
+    else:
+        try:
+            unlink(FROZEN_PID_FILE)
+        except (FileNotFoundError, OSError):
+            pass
 
 
 def log_frozen(pid):
     all_frozen = get_all_frozen_pids()
-    with open("/var/log/thrash-protect.log", "ab") as logfile:
-        if config.log_user_data_on_freeze:
-            logfile.write(
-                (
-                    "%s - frozen   pid %5s - %s - list: %s\n"
-                    % (get_date_string(), str(pid), get_process_info(pid), all_frozen)
-                ).encode("utf-8")
-            )
-        else:
-            logfile.write(
-                ("%s - frozen pid %s - frozen list: %s\n" % (get_date_string(), pid, all_frozen)).encode("utf-8")
-            )
-
-    with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
-        logfile.write(" ".join([" ".join([str(pid) for pid in pid_group]) for pid_group in all_frozen]) + "\n")
+    _write_log_entry("frozen", pid, config.log_user_data_on_freeze, all_frozen)
+    _update_frozen_pid_file(all_frozen)
 
 
 @ignore_failure
 def log_unfrozen(pid):
     all_frozen = get_all_frozen_pids()
-    with open("/var/log/thrash-protect.log", "ab") as logfile:
-        if config.log_user_data_on_unfreeze:
-            logfile.write(
-                (
-                    "%s - unfrozen   pid %5s - %s - list: %s\n"
-                    % (get_date_string(), str(pid), get_process_info(pid), all_frozen)
-                ).encode("utf-8")
-            )
-        else:
-            logfile.write(("%s - unfrozen pid %s\n" % (get_date_string(), pid)).encode("utf-8"))
-
-    if all_frozen:
-        with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
-            logfile.write(" ".join([" ".join([str(pid) for pid in pid_group]) for pid_group in all_frozen]) + "\n")
-    else:
-        try:
-            unlink("/tmp/thrash-protect-frozen-pid-list")
-        except (FileNotFoundError, OSError):
-            pass
+    _write_log_entry("unfrozen", pid, config.log_user_data_on_unfreeze, all_frozen)
+    _update_frozen_pid_file(all_frozen)
 
 
 def _debug_check_state(pid, should_be_suspended=False):
@@ -1402,13 +1396,11 @@ debug_check_state = lambda a, b: None
 def freeze_something(pids_to_freeze=None):
     global frozen_items
     global global_process_selector
-    pids_to_freeze = pids_to_freeze or global_process_selector.scan()
+    pids_to_freeze = normalize_pids(pids_to_freeze or global_process_selector.scan())
     if not pids_to_freeze:
         ## process disappeared. ignore failure
         logging.info("nothing to freeze found, or the process we were going to suspend has already exited")
         return ()
-    if not hasattr(pids_to_freeze, "__iter__"):
-        pids_to_freeze = (pids_to_freeze,)
     if getpid() in pids_to_freeze:
         logging.error("Oups.  Own pid is next on the list of processes to freeze.  This is very bad.  Skipping.")
         return ()
@@ -1465,18 +1457,8 @@ def unfreeze_something():
     else:
         item = frozen_items.pop(0)
 
-    # Extract pids based on item type
-    if item[0] == "cgroup":
-        _, cgroup_path, pids_to_unfreeze = item
-    else:  # sigstop
-        _, pids_to_unfreeze = item
-        cgroup_path = None
-
-    # Normalize pids to a list
-    if not hasattr(pids_to_unfreeze, "__iter__"):
-        pids_to_unfreeze = [pids_to_unfreeze]
-    else:
-        pids_to_unfreeze = list(pids_to_unfreeze)
+    item_type, cgroup_path, pids_to_unfreeze = unpack_frozen_item(item)
+    pids_to_unfreeze = list(normalize_pids(pids_to_unfreeze))
 
     if cgroup_path:
         # Unfreeze via cgroup
@@ -1569,13 +1551,11 @@ def cleanup():
     global frozen_items
 
     for item in frozen_items:
-        if item[0] == "cgroup":
-            unfreeze_cgroup(item[1])  # cgroup_path
+        item_type, cgroup_path, pids = unpack_frozen_item(item)
+        if item_type == "cgroup":
+            unfreeze_cgroup(cgroup_path)
         else:  # sigstop
-            pids_to_unfreeze = item[1]
-            if not hasattr(pids_to_unfreeze, "__iter__"):
-                pids_to_unfreeze = [pids_to_unfreeze]
-            for pid_to_unfreeze in reversed(pids_to_unfreeze):
+            for pid_to_unfreeze in reversed(normalize_pids(pids)):
                 try:
                     kill(pid_to_unfreeze, signal.SIGCONT)
                 except ProcessLookupError:

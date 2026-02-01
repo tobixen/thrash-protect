@@ -679,10 +679,12 @@ class TestPSI:
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 0
         prev.swapcount = (0, 0)
+        prev.timer_alert = False
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         current.psi = {"full": {"avg10": 10.0}}  # High PSI
         current.swapcount = (100, 100)  # High swap activity
+        current.cooldown_counter = 0
 
         # With PSI disabled, should use swap counting
         result = current.check_thrashing(prev)

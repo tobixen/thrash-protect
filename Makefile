@@ -14,14 +14,11 @@ clean:
 
 distclean: clean
 
-dist: ChangeLog.recent
+dist:
 ifndef version
 	$(error dist requires version=X.Y.Z)
 endif
 	tar czf ${pkgname}-${version}.tar.gz --transform='s,^,${pkgname}-${version}/,' *
-
-ChangeLog.recent: ChangeLog
-	perl -pe 'if (/^\d\d\d\d-\d\d-\d\d/) { $$q++; exit if $$q>1; }' ChangeLog > ChangeLog.recent
 
 install: thrash-protect.py
 	install "thrash-protect.py" "$(PREFIX)/sbin/thrash-protect"
@@ -32,9 +29,11 @@ install: thrash-protect.py
 	[ -d "$(PREFIX)/lib/systemd/system" ] || [ -d "$(INSTALL_ROOT)/etc/init" ] || [ -d "$(INSTALL_ROOT)/lib/systemd/system" ] || [ -x "$(INSTALL_ROOT)/sbin/openrc-run" ] || install systemv/thrash-protect "$(INSTALL_ROOT)/etc/init.d/thrash-protect"
 
 ## Interactive release: prompts for version, shows changelog, creates signed tag
-release: ChangeLog.recent
+release:
 	git push
-	@echo "=== Recent ChangeLog entries ===" && cat ChangeLog.recent && echo "================================"
+	@echo "=== Unreleased changes (from CHANGELOG.md) ===" && \
+	sed -n '/^## \[Unreleased\]/,/^## \[/p' CHANGELOG.md | head -n -1 && \
+	echo "=============================================="
 	@latest=$$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1) && \
 	latest=$${latest#v} && \
 	if [ -n "$$latest" ]; then \
@@ -55,7 +54,7 @@ release: ChangeLog.recent
 		git status && \
 		read -p "Create and push tag v$$ver? [y/N] " confirm && \
 		if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
-			git tag -s "v$$ver" -F ChangeLog.recent && \
+			git tag -s "v$$ver" -m "Release v$$ver - see CHANGELOG.md for details" && \
 			git push origin "v$$ver" && \
 			touch ".tag.$$ver" && \
 			echo "Released v$$ver"; \

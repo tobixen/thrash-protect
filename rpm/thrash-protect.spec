@@ -34,7 +34,7 @@ make install INSTALL_ROOT=$RPM_BUILD_ROOT/
 /usr/sbin/thrash-protect
 /usr/lib/systemd/system/thrash-protect.service
 
-%doc README.rst ChangeLog
+%doc README.rst CHANGELOG.md
 
 
 %changelog
