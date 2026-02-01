@@ -563,6 +563,82 @@ Example usage:
     return p
 
 
+#########################
+## Cgroup Freezing Support
+#########################
+
+
+def get_cgroup_path(pid):
+    """Get the cgroup v2 path for a process, returns None if not available."""
+    try:
+        with open(f"/proc/{pid}/cgroup") as f:
+            for line in f:
+                # Format: hierarchy-ID:controller-list:cgroup-path
+                # For cgroup v2: 0::/<path>
+                parts = line.strip().split(":", 2)
+                if len(parts) == 3 and parts[0] == "0":
+                    cgroup_rel_path = parts[2]
+                    if cgroup_rel_path.startswith("/"):
+                        cgroup_rel_path = cgroup_rel_path[1:]
+                    return f"/sys/fs/cgroup/{cgroup_rel_path}"
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    return None
+
+
+def is_cgroup_freezable(cgroup_path):
+    """Check if cgroup supports freezing."""
+    if not cgroup_path:
+        return False
+    freeze_file = os.path.join(cgroup_path, "cgroup.freeze")
+    return os.path.exists(freeze_file)
+
+
+def freeze_cgroup(cgroup_path):
+    """Freeze all processes in a cgroup. Returns True on success."""
+    try:
+        freeze_file = os.path.join(cgroup_path, "cgroup.freeze")
+        with open(freeze_file, "w") as f:
+            f.write("1")
+        logging.debug(f"Froze cgroup {cgroup_path}")
+        return True
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        logging.warning(f"Failed to freeze cgroup {cgroup_path}: {e}")
+        return False
+
+
+def unfreeze_cgroup(cgroup_path):
+    """Unfreeze all processes in a cgroup. Returns True on success."""
+    try:
+        freeze_file = os.path.join(cgroup_path, "cgroup.freeze")
+        with open(freeze_file, "w") as f:
+            f.write("0")
+        logging.debug(f"Unfroze cgroup {cgroup_path}")
+        return True
+    except (FileNotFoundError, PermissionError, OSError) as e:
+        logging.warning(f"Failed to unfreeze cgroup {cgroup_path}: {e}")
+        return False
+
+
+def should_use_cgroup_freeze(pid):
+    """Check if we should use cgroup freezing for this process.
+
+    Returns cgroup_path if cgroup freezing should be used, None otherwise.
+    Uses cgroup freezing for any .scope cgroup, which are typically created
+    for specific process trees (e.g., by systemd-run, tmux, screen, etc.).
+    Scopes are isolated and safe to freeze without affecting unrelated processes.
+    """
+    cgroup_path = get_cgroup_path(pid)
+    if not cgroup_path or not is_cgroup_freezable(cgroup_path):
+        return None
+    # Use cgroup freezing for any .scope cgroup
+    # Scopes are process-specific (unlike slices which are shared)
+    # Examples: tmux-spawn-<uuid>.scope, screen-<pid>.scope, run-<id>.scope
+    if cgroup_path.endswith(".scope"):
+        return cgroup_path
+    return None
+
+
 class config:
     """
     Configuration namespace - populated at startup by init_config().
@@ -1011,41 +1087,52 @@ def ignore_failure(method):
 
 ## hard coded logic as for now.  One state file and one log file.
 ## state file can be monitored, i.e. through nagios.  todo: advanced logging
-@ignore_failure
+
+
+def get_all_frozen_pids():
+    """Get combined list of all frozen pids (both SIGSTOP and cgroup frozen)."""
+    all_frozen = list(frozen_pids)
+    for cgroup_path, pids in frozen_cgroups:
+        all_frozen.append(pids)
+    return all_frozen
+
+
 def log_frozen(pid):
+    all_frozen = get_all_frozen_pids()
     with open("/var/log/thrash-protect.log", "ab") as logfile:
         if config.log_user_data_on_freeze:
             logfile.write(
                 (
                     "%s - frozen   pid %5s - %s - list: %s\n"
-                    % (get_date_string(), str(pid), get_process_info(pid), frozen_pids)
+                    % (get_date_string(), str(pid), get_process_info(pid), all_frozen)
                 ).encode("utf-8")
             )
         else:
             logfile.write(
-                ("%s - frozen pid %s - frozen list: %s\n" % (get_date_string(), pid, frozen_pids)).encode("utf-8")
+                ("%s - frozen pid %s - frozen list: %s\n" % (get_date_string(), pid, all_frozen)).encode("utf-8")
             )
 
     with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
-        logfile.write(" ".join([" ".join([str(pid) for pid in pid_group]) for pid_group in frozen_pids]) + "\n")
+        logfile.write(" ".join([" ".join([str(pid) for pid in pid_group]) for pid_group in all_frozen]) + "\n")
 
 
 @ignore_failure
 def log_unfrozen(pid):
+    all_frozen = get_all_frozen_pids()
     with open("/var/log/thrash-protect.log", "ab") as logfile:
         if config.log_user_data_on_unfreeze:
             logfile.write(
                 (
                     "%s - unfrozen   pid %5s - %s - list: %s\n"
-                    % (get_date_string(), str(pid), get_process_info(pid), frozen_pids)
+                    % (get_date_string(), str(pid), get_process_info(pid), all_frozen)
                 ).encode("utf-8")
             )
         else:
             logfile.write(("%s - unfrozen pid %s\n" % (get_date_string(), pid)).encode("utf-8"))
 
-    if frozen_pids:
+    if all_frozen:
         with open("/tmp/thrash-protect-frozen-pid-list", "w") as logfile:
-            logfile.write(" ".join([" ".join([str(pid) for pid in pid_group]) for pid_group in frozen_pids]) + "\n")
+            logfile.write(" ".join([" ".join([str(pid) for pid in pid_group]) for pid_group in all_frozen]) + "\n")
     else:
         try:
             unlink("/tmp/thrash-protect-frozen-pid-list")
@@ -1071,6 +1158,7 @@ debug_check_state = lambda a, b: None
 
 def freeze_something(pids_to_freeze=None):
     global frozen_pids
+    global frozen_cgroups
     global global_process_selector
     pids_to_freeze = pids_to_freeze or global_process_selector.scan()
     if not pids_to_freeze:
@@ -1082,6 +1170,26 @@ def freeze_something(pids_to_freeze=None):
     if getpid() in pids_to_freeze:
         logging.error("Oups.  Own pid is next on the list of processes to freeze.  This is very bad.  Skipping.")
         return ()
+
+    # Check if any process in the chain should use cgroup freezing
+    # (for tmux/screen sessions where SIGSTOP doesn't work properly)
+    cgroup_path = None
+    for pid in pids_to_freeze:
+        cgroup_path = should_use_cgroup_freeze(pid)
+        if cgroup_path:
+            break
+
+    if cgroup_path:
+        # Use cgroup freezing - freezes all processes in the cgroup atomically
+        if freeze_cgroup(cgroup_path):
+            frozen_cgroups.append((cgroup_path, pids_to_freeze))
+            for pid_to_freeze in pids_to_freeze:
+                logging.debug("froze pid %s (via cgroup)" % str(pid_to_freeze))
+                log_frozen(pid_to_freeze)
+            return pids_to_freeze
+        # Fall through to SIGSTOP if cgroup freezing failed
+
+    # Use SIGSTOP (original behavior)
     for pid_to_freeze in pids_to_freeze:
         try:
             debug_check_state(pid_to_freeze, 0)
@@ -1103,7 +1211,30 @@ def freeze_something(pids_to_freeze=None):
 
 def unfreeze_something():
     global frozen_pids
+    global frozen_cgroups
     global num_unfreezes
+
+    # First check for cgroup-frozen processes
+    if frozen_cgroups:
+        ## queue or stack?  Seems like both approaches are problematic
+        if num_unfreezes % config.unfreeze_pop_ratio:
+            cgroup_path, pids_to_unfreeze = frozen_cgroups.pop()
+        else:
+            cgroup_path, pids_to_unfreeze = frozen_cgroups.pop(0)
+
+        if not hasattr(pids_to_unfreeze, "__iter__"):
+            pids_to_unfreeze = [pids_to_unfreeze]
+        else:
+            pids_to_unfreeze = list(pids_to_unfreeze)
+
+        logging.debug("pids to unfreeze (via cgroup): %s" % pids_to_unfreeze)
+        unfreeze_cgroup(cgroup_path)
+        for pid_to_unfreeze in pids_to_unfreeze:
+            log_unfrozen(pid_to_unfreeze)
+        num_unfreezes += 1
+        return pids_to_unfreeze
+
+    # Fall back to SIGCONT for regular frozen processes
     if frozen_pids:
         ## queue or stack?  Seems like both approaches are problematic
         if num_unfreezes % config.unfreeze_pop_ratio:
@@ -1195,6 +1326,13 @@ def unfreeze_from_tmpfile():
 def cleanup():
     ## Clean up if exiting due to an exception.
     global frozen_pids
+    global frozen_cgroups
+
+    # Unfreeze cgroup-frozen processes first
+    for cgroup_path, pids in frozen_cgroups:
+        unfreeze_cgroup(cgroup_path)
+
+    # Unfreeze SIGSTOP-frozen processes
     for pids_to_unfreeze in frozen_pids:
         for pid_to_unfreeze in reversed(pids_to_unfreeze):
             try:
@@ -1209,6 +1347,7 @@ def cleanup():
 
 ## Globals ... we've refactored most of them away, but some still remains ...
 frozen_pids = []
+frozen_cgroups = []  # List of (cgroup_path, pids) tuples for cgroup-frozen processes
 num_unfreezes = 0
 ## A singleton ...
 global_process_selector = GlobalProcessSelector()

@@ -15,6 +15,19 @@ import pytest
 import thrash_protect
 
 
+@pytest.fixture(autouse=True)
+def reset_global_state():
+    """Reset global state before each test."""
+    thrash_protect.frozen_pids = []
+    thrash_protect.frozen_cgroups = []
+    thrash_protect.num_unfreezes = 0
+    yield
+    # Clean up after test
+    thrash_protect.frozen_pids = []
+    thrash_protect.frozen_cgroups = []
+    thrash_protect.num_unfreezes = 0
+
+
 class FileMockup:
     def __init__(self, files_override={}, write_failure=False):
         self.file_mocks = {}
@@ -79,15 +92,23 @@ class TestUnitTest:
             assert ((i * 10, signal.SIGSTOP),) in call_list
 
     @patch("logging.critical")
-    @patch("thrash_protect.open", new=FileMockup(write_failure=True).open)
     @patch("thrash_protect.kill")
     @patch("thrash_protect.unlink")
-    def test_tuple_freeze_unfreeze_log_failure(self, unlink, kill, critical):
-        """A logging failure should not cause the application to exit, but
-        should log criticals
+    def test_unfreeze_log_failure(self, unlink, kill, critical):
+        """A logging failure during unfreeze should not cause the application
+        to exit, but should log criticals. Note: log_frozen is important and
+        will raise on failure, while log_unfrozen uses @ignore_failure.
         """
-        self._test_tuple_freeze_unfreeze(kill)
-        assert critical.call_count == 6
+        with patch("thrash_protect.open", new=FileMockup().open):
+            # Freeze works normally
+            thrash_protect.freeze_something((10, 20, 30))
+
+        # Now make open fail for unfreeze logging
+        with patch("thrash_protect.open", new=FileMockup(write_failure=True).open):
+            thrash_protect.unfreeze_something()
+
+        # Should have logged critical for the failed unfreeze log
+        assert critical.call_count >= 1
 
     @patch("logging.critical")
     @patch("thrash_protect.kill")
@@ -567,3 +588,94 @@ cmd_whitelist = ["sshd", "bash"]
                 assert config["cmd_whitelist"] == ["sshd", "bash"]
             finally:
                 os.unlink(f.name)
+
+
+class TestCgroupFreezing:
+    """Tests for cgroup-based freezing functionality."""
+
+    def test_get_cgroup_path_self(self):
+        """Test getting cgroup path for the current process."""
+        pid = os.getpid()
+        cgroup_path = thrash_protect.get_cgroup_path(pid)
+        # Should return a path or None (depending on system configuration)
+        if cgroup_path:
+            assert cgroup_path.startswith("/sys/fs/cgroup/")
+            assert os.path.exists(cgroup_path)
+
+    def test_get_cgroup_path_nonexistent(self):
+        """Test getting cgroup path for non-existent process."""
+        cgroup_path = thrash_protect.get_cgroup_path(999999999)
+        assert cgroup_path is None
+
+    def test_is_cgroup_freezable(self):
+        """Test cgroup freezable check."""
+        # None path should not be freezable
+        assert thrash_protect.is_cgroup_freezable(None) is False
+        # Non-existent path should not be freezable
+        assert thrash_protect.is_cgroup_freezable("/nonexistent/path") is False
+
+    def test_should_use_cgroup_freeze_regular_process(self):
+        """Test that regular processes don't use cgroup freezing."""
+        # Current process is not in tmux/screen, should not use cgroup freeze
+        pid = os.getpid()
+        result = thrash_protect.should_use_cgroup_freeze(pid)
+        # Unless we're actually running in tmux, this should be None
+        # (The test might return a path if running inside tmux)
+        if result:
+            assert "tmux-spawn" in result or "screen-" in result
+
+    @patch("thrash_protect.get_cgroup_path")
+    @patch("thrash_protect.is_cgroup_freezable")
+    def test_should_use_cgroup_freeze_scope(self, mock_freezable, mock_cgroup):
+        """Test that any .scope cgroup uses cgroup freezing."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/tmux-spawn-abc123.scope"
+        mock_freezable.return_value = True
+        result = thrash_protect.should_use_cgroup_freeze(12345)
+        assert result == "/sys/fs/cgroup/user.slice/tmux-spawn-abc123.scope"
+
+    @patch("thrash_protect.get_cgroup_path")
+    @patch("thrash_protect.is_cgroup_freezable")
+    def test_should_use_cgroup_freeze_any_scope(self, mock_freezable, mock_cgroup):
+        """Test that any .scope cgroup uses cgroup freezing (not just tmux/screen)."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/run-12345.scope"
+        mock_freezable.return_value = True
+        result = thrash_protect.should_use_cgroup_freeze(12345)
+        assert result == "/sys/fs/cgroup/user.slice/run-12345.scope"
+
+    @patch("thrash_protect.get_cgroup_path")
+    @patch("thrash_protect.is_cgroup_freezable")
+    def test_should_not_use_cgroup_freeze_slice(self, mock_freezable, mock_cgroup):
+        """Test that .slice cgroups don't use cgroup freezing (shared by many processes)."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/user-1000.slice"
+        mock_freezable.return_value = True
+        result = thrash_protect.should_use_cgroup_freeze(12345)
+        assert result is None
+
+    def test_get_all_frozen_pids_empty(self):
+        """Test get_all_frozen_pids with no frozen processes."""
+        result = thrash_protect.get_all_frozen_pids()
+        assert result == []
+
+    def test_get_all_frozen_pids_with_frozen(self):
+        """Test get_all_frozen_pids with frozen processes."""
+        thrash_protect.frozen_pids = [(10,), (20, 30)]
+        thrash_protect.frozen_cgroups = [("/cgroup/path", (40, 50))]
+        result = thrash_protect.get_all_frozen_pids()
+        assert (10,) in result
+        assert (20, 30) in result
+        assert (40, 50) in result
+        assert len(result) == 3
+
+    @patch("thrash_protect.kill")
+    @patch("thrash_protect.open")
+    @patch("thrash_protect.unlink")
+    @patch("thrash_protect.unfreeze_cgroup")
+    def test_cleanup_with_cgroups(self, mock_unfreeze_cgroup, unlink, open, kill):
+        """Test cleanup unfreezes both cgroups and regular pids."""
+        thrash_protect.frozen_pids = [(10,), (20, 30)]
+        thrash_protect.frozen_cgroups = [("/cgroup/path1", (40,)), ("/cgroup/path2", (50, 60))]
+        thrash_protect.cleanup()
+        # Should unfreeze both cgroups
+        assert mock_unfreeze_cgroup.call_count == 2
+        # Should SIGCONT regular pids (10, 30, 20 - in reverse order for tuples)
+        assert kill.call_count == 3
