@@ -590,6 +590,102 @@ cmd_whitelist = ["sshd", "bash"]
                 os.unlink(f.name)
 
 
+class TestPSI:
+    """Tests for PSI (Pressure Stall Information) functionality."""
+
+    def test_is_psi_available(self):
+        """Test PSI availability check."""
+        # Reset the cache
+        thrash_protect._psi_available = None
+        result = thrash_protect.is_psi_available()
+        # Should return True on modern Linux systems (4.20+)
+        assert isinstance(result, bool)
+
+    def test_get_memory_pressure(self):
+        """Test reading memory pressure."""
+        if not thrash_protect.is_psi_available():
+            pytest.skip("PSI not available on this system")
+        pressure = thrash_protect.get_memory_pressure()
+        assert pressure is not None
+        assert "some" in pressure
+        assert "full" in pressure
+        assert "avg10" in pressure["full"]
+        assert "avg60" in pressure["full"]
+        assert "avg300" in pressure["full"]
+        assert "total" in pressure["full"]
+
+    @patch("thrash_protect.is_psi_available")
+    def test_get_memory_pressure_unavailable(self, mock_available):
+        """Test get_memory_pressure when PSI not available."""
+        mock_available.return_value = False
+        result = thrash_protect.get_memory_pressure()
+        assert result is None
+
+    def test_check_psi_threshold(self):
+        """Test PSI threshold checking."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        # Create mock states with PSI data
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current.psi = {"full": {"avg10": 10.0, "avg60": 5.0, "avg300": 2.0, "total": 1000000}}
+
+        # With default threshold of 5.0, avg10=10.0 should trigger
+        result = current.check_psi_threshold(prev)
+        assert result is True
+        assert current.cooldown_counter == 1
+
+    def test_check_psi_threshold_below(self):
+        """Test PSI threshold not triggered when below threshold."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current.psi = {"full": {"avg10": 2.0, "avg60": 1.0, "avg300": 0.5, "total": 100000}}
+
+        # With default threshold of 5.0, avg10=2.0 should not trigger
+        result = current.check_psi_threshold(prev)
+        assert result is False
+
+    def test_check_thrashing_uses_psi(self):
+        """Test that check_thrashing uses PSI when available."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (100, 100)
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current.psi = {"full": {"avg10": 10.0, "avg60": 5.0, "avg300": 2.0, "total": 1000000}}
+        current.swapcount = (100, 100)  # No swap activity
+
+        with patch("thrash_protect.is_psi_available", return_value=True):
+            # PSI indicates pressure, swap doesn't - should use PSI
+            result = current.check_thrashing(prev)
+            assert result is True
+
+    def test_check_thrashing_fallback_to_swap(self):
+        """Test that check_thrashing falls back to swap when PSI disabled."""
+        args = argparse.Namespace(config=None, use_psi=False)
+        thrash_protect.init_config(args)
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (0, 0)
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current.psi = {"full": {"avg10": 10.0}}  # High PSI
+        current.swapcount = (100, 100)  # High swap activity
+
+        # With PSI disabled, should use swap counting
+        result = current.check_thrashing(prev)
+        assert result is True  # Swap activity should trigger
+
+
 class TestCgroupFreezing:
     """Tests for cgroup-based freezing functionality."""
 

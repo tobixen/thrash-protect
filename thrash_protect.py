@@ -231,6 +231,8 @@ def load_from_env():
         "THRASH_PROTECT_INTERVAL": ("interval", float),
         "THRASH_PROTECT_SWAP_PAGE_THRESHOLD": ("swap_page_threshold", int),
         "THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD": ("pgmajfault_scan_threshold", int),
+        "THRASH_PROTECT_USE_PSI": ("use_psi", _parse_bool),
+        "THRASH_PROTECT_PSI_THRESHOLD": ("psi_threshold", float),
         "THRASH_PROTECT_CMD_WHITELIST": ("cmd_whitelist", _parse_list),
         "THRASH_PROTECT_CMD_BLACKLIST": ("cmd_blacklist", _parse_list),
         "THRASH_PROTECT_CMD_JOBCTRLLIST": ("cmd_jobctrllist", _parse_list),
@@ -262,6 +264,8 @@ def get_defaults():
         "interval": 0.5,
         "swap_page_threshold": 4,
         "pgmajfault_scan_threshold": None,  # Computed from swap_page_threshold if not set
+        "use_psi": True,  # Use PSI for thrash detection if available
+        "psi_threshold": 5.0,  # Trigger when full avg10 exceeds this percentage
         "cmd_whitelist": get_default_whitelist(),
         "cmd_jobctrllist": get_default_jobctrllist(),
         "cmd_blacklist": [],
@@ -288,6 +292,8 @@ def normalize_file_config(file_config):
         "debug-checkstate": "debug_checkstate",
         "swap-page-threshold": "swap_page_threshold",
         "pgmajfault-scan-threshold": "pgmajfault_scan_threshold",
+        "use-psi": "use_psi",
+        "psi-threshold": "psi_threshold",
         "cmd-whitelist": "cmd_whitelist",
         "cmd-blacklist": "cmd_blacklist",
         "cmd-jobctrllist": "cmd_jobctrllist",
@@ -308,6 +314,8 @@ def normalize_file_config(file_config):
         "interval": float,
         "swap_page_threshold": int,
         "pgmajfault_scan_threshold": int,
+        "use_psi": _parse_bool,
+        "psi_threshold": float,
         "cmd_whitelist": _parse_list,
         "cmd_blacklist": _parse_list,
         "cmd_jobctrllist": _parse_list,
@@ -468,6 +476,28 @@ Example usage:
         type=int,
         metavar="N",
         help="Major page faults before process scan (default: swap_page_threshold * 4)",
+    )
+
+    # PSI (Pressure Stall Information) options
+    p.add_argument(
+        "--use-psi",
+        dest="use_psi",
+        action="store_true",
+        default=None,
+        help="Use PSI for thrash detection (default: true if available)",
+    )
+    p.add_argument(
+        "--no-psi",
+        dest="use_psi",
+        action="store_false",
+        help="Disable PSI, use swap page counting instead",
+    )
+    p.add_argument(
+        "--psi-threshold",
+        dest="psi_threshold",
+        type=float,
+        metavar="PCT",
+        help="PSI full avg10 percentage to trigger action (default: 5.0)",
     )
 
     # Process lists
@@ -639,6 +669,57 @@ def should_use_cgroup_freeze(pid):
     return None
 
 
+#########################
+## PSI (Pressure Stall Information) Support
+#########################
+
+# Cache for PSI availability check
+_psi_available = None
+
+
+def is_psi_available():
+    """Check if PSI is available on this system (Linux 4.20+)."""
+    global _psi_available
+    if _psi_available is None:
+        _psi_available = os.path.exists("/proc/pressure/memory")
+    return _psi_available
+
+
+def get_memory_pressure():
+    """Read memory pressure from /proc/pressure/memory.
+
+    Returns a dict with 'some' and 'full' pressure metrics, each containing
+    avg10, avg60, avg300 (percentages) and total (microseconds).
+    Returns None if PSI is not available.
+
+    Example output:
+        {'some': {'avg10': 0.0, 'avg60': 0.0, 'avg300': 0.0, 'total': 0},
+         'full': {'avg10': 5.23, 'avg60': 2.10, 'avg300': 0.50, 'total': 123456}}
+    """
+    if not is_psi_available():
+        return None
+    try:
+        pressure = {}
+        with open("/proc/pressure/memory") as f:
+            for line in f:
+                parts = line.strip().split()
+                if not parts:
+                    continue
+                ptype = parts[0]  # 'some' or 'full'
+                metrics = {}
+                for part in parts[1:]:
+                    if "=" in part:
+                        key, value = part.split("=", 1)
+                        if key == "total":
+                            metrics[key] = int(value)
+                        else:
+                            metrics[key] = float(value)
+                pressure[ptype] = metrics
+        return pressure
+    except (FileNotFoundError, PermissionError, OSError, ValueError):
+        return None
+
+
 class config:
     """
     Configuration namespace - populated at startup by init_config().
@@ -701,6 +782,7 @@ class SystemState:
         self.timestamp = time.time()
         self.pagefaults = self.get_pagefaults()
         self.swapcount = self.get_swapcount()
+        self.psi = get_memory_pressure()  # None if PSI not available
         self.cooldown_counter = 0
         self.unfrozen_pid = None
         self.timer_alert = False
@@ -777,6 +859,52 @@ class SystemState:
             ## some swapin or swapout has been observed, or we haven't slept since previous run.  Keep the cooldown counter steady.
             ## (Hm - we risk that process A gets frozen but never unfrozen due to process B generating swap activity?)
         return ret
+
+    def check_psi_threshold(self, prev):
+        """Check if memory pressure (PSI) indicates thrashing.
+
+        Uses the 'full' metric which indicates time when ALL tasks are
+        stalled on memory - a more direct measure of thrashing than swap counts.
+        """
+        self.cooldown_counter = prev.cooldown_counter
+
+        if config.test_mode and not random.getrandbits(config.test_mode):
+            self.cooldown_counter = prev.cooldown_counter + 1
+            return True
+
+        if not self.psi or "full" not in self.psi:
+            # PSI not available, can't check
+            return None
+
+        # Use avg10 (10-second average) for responsiveness
+        psi_full = self.psi["full"].get("avg10", 0)
+        ret = psi_full >= config.psi_threshold
+
+        if ret:
+            self.cooldown_counter = prev.cooldown_counter + 1
+            logging.debug(f"PSI thrashing detected: full avg10={psi_full}% >= threshold {config.psi_threshold}%")
+        elif prev.cooldown_counter and psi_full < config.psi_threshold / 2:
+            # System is significantly below threshold, decrease cooldown
+            self.cooldown_counter = prev.cooldown_counter - 1
+            logging.debug(f"PSI pressure low: full avg10={psi_full}%, decreasing cooldown")
+
+        return ret
+
+    def check_thrashing(self, prev):
+        """Check if the system is thrashing using PSI or swap page counting.
+
+        Returns True if thrashing is detected, False otherwise.
+        Uses PSI if available and enabled, falls back to swap page counting.
+        """
+        # Try PSI first if enabled
+        if config.use_psi and is_psi_available():
+            result = self.check_psi_threshold(prev)
+            if result is not None:
+                return result
+            # PSI check failed, fall back to swap counting
+
+        # Fall back to swap page counting
+        return self.check_swap_threshold(prev)
 
     def get_sleep_interval(self):
         return config.interval / (self.cooldown_counter + 1.0)
@@ -1284,7 +1412,7 @@ def thrash_protect(args=None):
     while True:
         prev = current
         current = SystemState()
-        busy = current.check_swap_threshold(prev)
+        busy = current.check_thrashing(prev)
 
         ## If we're thrashing, then freeze something.
         if busy:
