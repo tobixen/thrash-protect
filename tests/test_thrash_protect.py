@@ -686,6 +686,51 @@ class TestPSI:
         assert result is True  # Swap activity should trigger
 
 
+class TestCgroupPressureSelector:
+    """Tests for CgroupPressureProcessSelector."""
+
+    def test_get_cgroup_pressure(self):
+        """Test reading cgroup pressure."""
+        selector = thrash_protect.CgroupPressureProcessSelector()
+        # Get our own cgroup
+        pid = os.getpid()
+        cgroup_path = thrash_protect.get_cgroup_path(pid)
+        if cgroup_path:
+            pressure = selector.get_cgroup_pressure(cgroup_path)
+            # May be None if memory.pressure doesn't exist
+            if pressure is not None:
+                assert isinstance(pressure, float)
+                assert pressure >= 0
+
+    def test_cgroup_pressure_caching(self):
+        """Test that cgroup pressure readings are cached."""
+        selector = thrash_protect.CgroupPressureProcessSelector()
+        pid = os.getpid()
+        cgroup_path = thrash_protect.get_cgroup_path(pid)
+        if not cgroup_path:
+            pytest.skip("No cgroup path available")
+
+        # First call
+        pressure1 = selector.get_cgroup_pressure(cgroup_path)
+        # Second call should use cache
+        pressure2 = selector.get_cgroup_pressure(cgroup_path)
+
+        # Both should be the same (cached)
+        assert pressure1 == pressure2
+        # Cache should have one entry
+        assert cgroup_path in selector.cgroup_pressure_cache
+
+    def test_selector_in_global_collection(self):
+        """Test that CgroupPressureProcessSelector is in the global collection."""
+        global_selector = thrash_protect.GlobalProcessSelector()
+        selector_types = [type(s).__name__ for s in global_selector.collection]
+        assert "CgroupPressureProcessSelector" in selector_types
+        # Should be after LastFrozenProcessSelector
+        last_frozen_idx = selector_types.index("LastFrozenProcessSelector")
+        cgroup_idx = selector_types.index("CgroupPressureProcessSelector")
+        assert cgroup_idx == last_frozen_idx + 1
+
+
 class TestCgroupFreezing:
     """Tests for cgroup-based freezing functionality."""
 

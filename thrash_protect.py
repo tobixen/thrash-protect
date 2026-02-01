@@ -1086,6 +1086,112 @@ class LastFrozenProcessSelector(ProcessSelector):
         return self.last_unfrozen_pid
 
 
+class CgroupPressureProcessSelector(ProcessSelector):
+    """
+    Selects a process from the cgroup with highest memory pressure.
+
+    Uses per-cgroup memory.pressure PSI metrics to find which cgroup
+    is causing the most memory stalls, then selects a process from
+    that cgroup to freeze.
+
+    This is more targeted than OOM scores because it identifies the
+    actual source of memory pressure rather than just memory usage.
+    """
+
+    def __init__(self):
+        self.cgroup_pressure_cache = {}  # cgroup_path -> (timestamp, pressure)
+        self.cache_ttl = 1.0  # Cache PSI readings for 1 second
+
+    def get_cgroup_pressure(self, cgroup_path):
+        """Get memory pressure for a cgroup, with caching."""
+        now = time.time()
+
+        # Check cache
+        if cgroup_path in self.cgroup_pressure_cache:
+            cached_time, cached_pressure = self.cgroup_pressure_cache[cgroup_path]
+            if now - cached_time < self.cache_ttl:
+                return cached_pressure
+
+        # Read pressure from cgroup
+        pressure_file = os.path.join(cgroup_path, "memory.pressure")
+        try:
+            with open(pressure_file) as f:
+                for line in f:
+                    if line.startswith("full "):
+                        # Parse: full avg10=X.XX avg60=X.XX avg300=X.XX total=XXX
+                        parts = line.strip().split()
+                        for part in parts[1:]:
+                            if part.startswith("avg10="):
+                                pressure = float(part[6:])
+                                self.cgroup_pressure_cache[cgroup_path] = (now, pressure)
+                                return pressure
+        except (FileNotFoundError, PermissionError, OSError, ValueError):
+            pass
+
+        return None
+
+    def scan(self):
+        """Find process in cgroup with highest memory pressure."""
+        if not is_psi_available():
+            return None
+
+        max_pressure = 0
+        worst_pid = None
+        worst_cgroup = None
+
+        # Scan all processes
+        for stat_file in glob.glob("/proc/*/stat"):
+            try:
+                pid = int(stat_file.split("/")[2])
+            except ValueError:
+                continue
+
+            # Skip self
+            if pid in (getpid(), getppid()):
+                continue
+
+            # Get process stats
+            stats = self.readStat(pid)
+            if not stats:
+                continue
+
+            # Skip already frozen
+            if "T" in stats.state:
+                continue
+
+            # Skip whitelisted
+            if stats.cmd in config.cmd_whitelist:
+                continue
+
+            # Get cgroup path
+            cgroup_path = get_cgroup_path(pid)
+            if not cgroup_path:
+                continue
+
+            # Get cgroup pressure
+            pressure = self.get_cgroup_pressure(cgroup_path)
+            if pressure is None:
+                continue
+
+            # Apply blacklist multiplier
+            if stats.cmd in config.cmd_blacklist:
+                pressure *= config.blacklist_score_multiplier
+
+            if pressure > max_pressure:
+                max_pressure = pressure
+                worst_pid = (pid, stats.ppid)
+                worst_cgroup = cgroup_path
+
+        if worst_pid and max_pressure > 0:
+            logging.debug(
+                f"cgroup pressure scan - selected pid: {worst_pid[0]}, "
+                f"cgroup: {worst_cgroup}, pressure: {max_pressure}%"
+            )
+            return self.checkParents(*worst_pid)
+
+        return None
+
+
 class PageFaultingProcessSelector(ProcessSelector):
     """
     Selects the process that have had most page faults since previous
@@ -1156,7 +1262,13 @@ class GlobalProcessSelector(ProcessSelector):
 
     def __init__(self):
         ## sorted from cheap to expensive.  Also, it is surely smart to be quick on refreezing a recently unfrozen process if host starts thrashing again.
-        self.collection = [LastFrozenProcessSelector(), OOMScoreProcessSelector(), PageFaultingProcessSelector()]
+        ## CgroupPressureProcessSelector is after LastFrozen because it's more targeted but slightly more expensive
+        self.collection = [
+            LastFrozenProcessSelector(),
+            CgroupPressureProcessSelector(),
+            OOMScoreProcessSelector(),
+            PageFaultingProcessSelector(),
+        ]
         self.scan_method_count = 0
 
     def update(self, prev, cur):

@@ -33,14 +33,22 @@ THRASH_PROTECT_USE_PSI=true
 THRASH_PROTECT_PSI_THRESHOLD=5.0
 ```
 
-## Future Ideas
+### CgroupPressureProcessSelector (v0.x.x)
+Process selector that uses per-cgroup memory pressure to identify
+which cgroup is causing memory stalls:
+- Reads `/sys/fs/cgroup/.../memory.pressure` for each process's cgroup
+- Selects process from cgroup with highest `full avg10` pressure
+- More targeted than OOM scores (identifies pressure source, not just usage)
+- Caches pressure readings (1 second TTL) to reduce overhead
+- Respects whitelist/blacklist settings
 
-### 1. Per-cgroup Memory Pressure
-Instead of system-wide PSI, monitor per-cgroup pressure:
-```bash
-cat /sys/fs/cgroup/.../memory.pressure
-```
-Could select which cgroup to freeze based on which one is causing the most pressure.
+Order in selector chain:
+1. LastFrozenProcessSelector (cheapest - refreeze recently unfrozen)
+2. **CgroupPressureProcessSelector** (targeted - highest pressure cgroup)
+3. OOMScoreProcessSelector (memory usage based)
+4. PageFaultingProcessSelector (most expensive - tracks faults per process)
+
+## Future Ideas
 
 ### 2. Memory Throttling (Soft Limits)
 Instead of hard-freezing, use memory.high to throttle:
