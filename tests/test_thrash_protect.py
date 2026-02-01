@@ -18,13 +18,11 @@ import thrash_protect
 @pytest.fixture(autouse=True)
 def reset_global_state():
     """Reset global state before each test."""
-    thrash_protect.frozen_pids = []
-    thrash_protect.frozen_cgroups = []
+    thrash_protect.frozen_items = []
     thrash_protect.num_unfreezes = 0
     yield
     # Clean up after test
-    thrash_protect.frozen_pids = []
-    thrash_protect.frozen_cgroups = []
+    thrash_protect.frozen_items = []
     thrash_protect.num_unfreezes = 0
 
 
@@ -177,7 +175,12 @@ class TestUnitTest:
     @patch("thrash_protect.kill")
     @patch("thrash_protect.unlink")
     def test_cleanup(self, unlink, kill):
-        thrash_protect.frozen_pids = [(10,), (20, 30), (40,)]
+        # Use the unified frozen_items format: ('sigstop', pids) tuples
+        thrash_protect.frozen_items = [
+            ("sigstop", (10,)),
+            ("sigstop", (20, 30)),
+            ("sigstop", (40,)),
+        ]
         thrash_protect.cleanup()
         assert len(kill.call_args_list) == 4
         assert len(unlink.call_args_list) == 1
@@ -799,8 +802,12 @@ class TestCgroupFreezing:
 
     def test_get_all_frozen_pids_with_frozen(self):
         """Test get_all_frozen_pids with frozen processes."""
-        thrash_protect.frozen_pids = [(10,), (20, 30)]
-        thrash_protect.frozen_cgroups = [("/cgroup/path", (40, 50))]
+        # Use unified frozen_items format
+        thrash_protect.frozen_items = [
+            ("sigstop", (10,)),
+            ("sigstop", (20, 30)),
+            ("cgroup", "/cgroup/path", (40, 50)),
+        ]
         result = thrash_protect.get_all_frozen_pids()
         assert (10,) in result
         assert (20, 30) in result
@@ -813,8 +820,13 @@ class TestCgroupFreezing:
     @patch("thrash_protect.unfreeze_cgroup")
     def test_cleanup_with_cgroups(self, mock_unfreeze_cgroup, unlink, open, kill):
         """Test cleanup unfreezes both cgroups and regular pids."""
-        thrash_protect.frozen_pids = [(10,), (20, 30)]
-        thrash_protect.frozen_cgroups = [("/cgroup/path1", (40,)), ("/cgroup/path2", (50, 60))]
+        # Use unified frozen_items format
+        thrash_protect.frozen_items = [
+            ("sigstop", (10,)),
+            ("sigstop", (20, 30)),
+            ("cgroup", "/cgroup/path1", (40,)),
+            ("cgroup", "/cgroup/path2", (50, 60)),
+        ]
         thrash_protect.cleanup()
         # Should unfreeze both cgroups
         assert mock_unfreeze_cgroup.call_count == 2

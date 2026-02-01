@@ -57,7 +57,10 @@ echo 0 > /sys/fs/cgroup/.../cgroup.freeze
 ### New Global State
 
 ```python
-frozen_cgroups = []  # List of (cgroup_path, pids) tuples
+# Unified list of frozen items - each entry is one of:
+#   ('cgroup', cgroup_path, pids) - frozen via cgroup freezer
+#   ('sigstop', pids)             - frozen via SIGSTOP
+frozen_items = []
 ```
 
 ## Tests Added

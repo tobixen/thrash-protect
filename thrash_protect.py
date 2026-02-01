@@ -4,7 +4,8 @@
 ### See the README for details.
 ### Project home: https://github.com/tobixen/thrash-protect
 
-### This is a rapid prototype implementation.  I'm considering to implement in C.
+### This was a rapid prototype implementation.  I was considering to implement in C.
+### While I have been considering this, Moore's Law has made it pretty moot.
 
 try:
     from _version import __version__
@@ -914,7 +915,6 @@ class SystemState:
         If the code execution takes a too long time it may be that we're thrashing and this process has been swapped out.
         (TODO: detect possible problem: wrong tuning of max_acceptable_time_delta causes this to always trigger)
         """
-        global frozen_pids
         delta = time.time() - self.timestamp - expected_delay
         if delta > config.max_acceptable_time_delta:
             logging.info(
@@ -926,7 +926,7 @@ class SystemState:
                     config.max_acceptable_time_delta,
                     delta,
                     time.time(),
-                    frozen_pids,
+                    get_all_frozen_pids(),
                 )
             )
             self.cooldown_counter += 2
@@ -1074,7 +1074,7 @@ class LastFrozenProcessSelector(ProcessSelector):
         If a process was just resumed and the system start thrashing again, it would probably be smart to freeze that process again.  This is also a very cheap operation
         """
         logging.debug("last unfrozen_pid is %s" % self.last_unfrozen_pid)
-        if self.last_unfrozen_pid in frozen_pids:
+        if self.last_unfrozen_pid in get_all_frozen_pids():
             logging.debug("last unfrozen_pid is already frozen")
             return None
         logging.debug("last unfrozen process return - selected pid: %s" % self.last_unfrozen_pid)
@@ -1331,9 +1331,12 @@ def ignore_failure(method):
 
 def get_all_frozen_pids():
     """Get combined list of all frozen pids (both SIGSTOP and cgroup frozen)."""
-    all_frozen = list(frozen_pids)
-    for cgroup_path, pids in frozen_cgroups:
-        all_frozen.append(pids)
+    all_frozen = []
+    for item in frozen_items:
+        if item[0] == "cgroup":
+            all_frozen.append(item[2])  # pids
+        else:  # sigstop
+            all_frozen.append(item[1])  # pids
     return all_frozen
 
 
@@ -1397,8 +1400,7 @@ debug_check_state = lambda a, b: None
 
 
 def freeze_something(pids_to_freeze=None):
-    global frozen_pids
-    global frozen_cgroups
+    global frozen_items
     global global_process_selector
     pids_to_freeze = pids_to_freeze or global_process_selector.scan()
     if not pids_to_freeze:
@@ -1422,7 +1424,7 @@ def freeze_something(pids_to_freeze=None):
     if cgroup_path:
         # Use cgroup freezing - freezes all processes in the cgroup atomically
         if freeze_cgroup(cgroup_path):
-            frozen_cgroups.append((cgroup_path, pids_to_freeze))
+            frozen_items.append(("cgroup", cgroup_path, pids_to_freeze))
             for pid_to_freeze in pids_to_freeze:
                 logging.debug("froze pid %s (via cgroup)" % str(pid_to_freeze))
                 log_frozen(pid_to_freeze)
@@ -1438,8 +1440,9 @@ def freeze_something(pids_to_freeze=None):
                 time.sleep(config.max_acceptable_time_delta / 3)
         except ProcessLookupError:
             continue
-    if pids_to_freeze not in frozen_pids:
-        frozen_pids.append(pids_to_freeze)
+    # Check if already frozen (avoid duplicates)
+    if not any(item[0] == "sigstop" and item[1] == pids_to_freeze for item in frozen_items):
+        frozen_items.append(("sigstop", pids_to_freeze))
 
     for pid_to_freeze in pids_to_freeze:
         ## Logging after freezing - as logging itself may be resource- and timeconsuming.
@@ -1450,42 +1453,37 @@ def freeze_something(pids_to_freeze=None):
 
 
 def unfreeze_something():
-    global frozen_pids
-    global frozen_cgroups
+    global frozen_items
     global num_unfreezes
 
-    # First check for cgroup-frozen processes
-    if frozen_cgroups:
-        ## queue or stack?  Seems like both approaches are problematic
-        if num_unfreezes % config.unfreeze_pop_ratio:
-            cgroup_path, pids_to_unfreeze = frozen_cgroups.pop()
-        else:
-            cgroup_path, pids_to_unfreeze = frozen_cgroups.pop(0)
+    if not frozen_items:
+        return None
 
-        if not hasattr(pids_to_unfreeze, "__iter__"):
-            pids_to_unfreeze = [pids_to_unfreeze]
-        else:
-            pids_to_unfreeze = list(pids_to_unfreeze)
+    ## queue or stack?  Seems like both approaches are problematic
+    if num_unfreezes % config.unfreeze_pop_ratio:
+        item = frozen_items.pop()
+    else:
+        item = frozen_items.pop(0)
 
+    # Extract pids based on item type
+    if item[0] == "cgroup":
+        _, cgroup_path, pids_to_unfreeze = item
+    else:  # sigstop
+        _, pids_to_unfreeze = item
+        cgroup_path = None
+
+    # Normalize pids to a list
+    if not hasattr(pids_to_unfreeze, "__iter__"):
+        pids_to_unfreeze = [pids_to_unfreeze]
+    else:
+        pids_to_unfreeze = list(pids_to_unfreeze)
+
+    if cgroup_path:
+        # Unfreeze via cgroup
         logging.debug("pids to unfreeze (via cgroup): %s" % pids_to_unfreeze)
         unfreeze_cgroup(cgroup_path)
-        for pid_to_unfreeze in pids_to_unfreeze:
-            log_unfrozen(pid_to_unfreeze)
-        num_unfreezes += 1
-        return pids_to_unfreeze
-
-    # Fall back to SIGCONT for regular frozen processes
-    if frozen_pids:
-        ## queue or stack?  Seems like both approaches are problematic
-        if num_unfreezes % config.unfreeze_pop_ratio:
-            pids_to_unfreeze = frozen_pids.pop()
-        else:
-            pids_to_unfreeze = frozen_pids.pop(0)
-        ## pids_to_unfreeze can be both numeric and tuple
-        if not hasattr(pids_to_unfreeze, "__iter__"):
-            pids_to_unfreeze = [pids_to_unfreeze]
-        else:
-            pids_to_unfreeze = list(pids_to_unfreeze)
+    else:
+        # Unfreeze via SIGCONT
         logging.debug("pids to unfreeze: %s" % pids_to_unfreeze)
         for pid_to_unfreeze in reversed(pids_to_unfreeze):
             try:
@@ -1497,14 +1495,17 @@ def unfreeze_something():
             except ProcessLookupError:
                 ## ignore failure
                 pass
-            log_unfrozen(pid_to_unfreeze)
-        num_unfreezes += 1
-        return pids_to_unfreeze
+
+    for pid_to_unfreeze in pids_to_unfreeze:
+        log_unfrozen(pid_to_unfreeze)
+
+    num_unfreezes += 1
+    return pids_to_unfreeze
 
 
 def thrash_protect(args=None):
     current = SystemState()
-    global frozen_pids
+    global frozen_items
     global global_process_selector
 
     ## A best-effort attempt on running mlockall()
@@ -1565,20 +1566,20 @@ def unfreeze_from_tmpfile():
 
 def cleanup():
     ## Clean up if exiting due to an exception.
-    global frozen_pids
-    global frozen_cgroups
+    global frozen_items
 
-    # Unfreeze cgroup-frozen processes first
-    for cgroup_path, pids in frozen_cgroups:
-        unfreeze_cgroup(cgroup_path)
-
-    # Unfreeze SIGSTOP-frozen processes
-    for pids_to_unfreeze in frozen_pids:
-        for pid_to_unfreeze in reversed(pids_to_unfreeze):
-            try:
-                kill(pid_to_unfreeze, signal.SIGCONT)
-            except ProcessLookupError:
-                pass
+    for item in frozen_items:
+        if item[0] == "cgroup":
+            unfreeze_cgroup(item[1])  # cgroup_path
+        else:  # sigstop
+            pids_to_unfreeze = item[1]
+            if not hasattr(pids_to_unfreeze, "__iter__"):
+                pids_to_unfreeze = [pids_to_unfreeze]
+            for pid_to_unfreeze in reversed(pids_to_unfreeze):
+                try:
+                    kill(pid_to_unfreeze, signal.SIGCONT)
+                except ProcessLookupError:
+                    pass
     try:
         unlink("/tmp/thrash-protect-frozen-pid-list")
     except FileNotFoundError:
@@ -1586,8 +1587,10 @@ def cleanup():
 
 
 ## Globals ... we've refactored most of them away, but some still remains ...
-frozen_pids = []
-frozen_cgroups = []  # List of (cgroup_path, pids) tuples for cgroup-frozen processes
+# Unified list of frozen items - each entry is one of:
+#   ('cgroup', cgroup_path, pids) - frozen via cgroup freezer
+#   ('sigstop', pids)             - frozen via SIGSTOP
+frozen_items = []
 num_unfreezes = 0
 ## A singleton ...
 global_process_selector = GlobalProcessSelector()
