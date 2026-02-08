@@ -3,11 +3,19 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+and this project should adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) - though PEP440 takes precedence for pre-releases.
 
-For changes prior to v0.16.0, see the ChangeLog file in the v0.15.8 release.
+For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
 ## [Unreleased]
+
+New local usage patterns caused problems for me:
+
+* Claude Code tends to require quite much memory sometimes, and I tend to have multiple consoles open - so despite having fairly much memory on my laptop I've had incidents with thrashing and OOM'ing lately.
+* I'm no longer using Xorg, but sway and wayland.  They were not on the whitelist, and was among the processes targeted by thrash-protect and "forgotten" in the middle of the dequeue.
+* I'm using a local "spiced up" bash version (tabashco), which was not on the list of shells, causing the job-control-workaround to fail.  Even after fixing this, the job-control-workaround continued failing as tmux is aggressively running "kill -CONT" on its children.
+
+The unreleased code solves all those problems for me, as well as bringing many other benefits and improvements.
 
 ### Added
 
@@ -34,8 +42,6 @@ For changes prior to v0.16.0, see the ChangeLog file in the v0.15.8 release.
 ### Changed
 
 - **Configuration priority**: CLI > environment variables > config file > defaults.
-- **Unified frozen items tracking**: Internal refactor - `frozen_pids` and `frozen_cgroups`
-  merged into single `frozen_items` list for fair FIFO/LIFO ordering.
 - **Unified CONFIG_SCHEMA**: Single source of truth for configuration keys, types, and mappings.
 - **Helper functions**: Added `normalize_pids()`, `apply_score_adjustments()`, `unpack_frozen_item()`
   to reduce code duplication.
@@ -49,6 +55,10 @@ For changes prior to v0.16.0, see the ChangeLog file in the v0.15.8 release.
 
 ### Fixed
 
+- **Skip kernel threads from process selection**: Kernel threads (kthreadd and its children)
+  are now excluded from all process selectors. Freezing kthreadd (pid 2) would prevent the
+  kernel from spawning new threads, causing a system freeze. Also added kthreadd to the
+  static whitelist as defense-in-depth.
 - **Job control detection for login shells**: Fixed detection of shells with `-` prefix
   (e.g., `-bash` for login shells).
 - **Config priority**: Environment variables now correctly override config file settings.

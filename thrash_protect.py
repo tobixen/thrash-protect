@@ -107,6 +107,7 @@ STATIC_WHITELIST = [
     # System
     "systemd-journal",
     "dbus-daemon",
+    "kthreadd",
 ]
 
 
@@ -946,6 +947,11 @@ class ProcessSelector:
     def update(self, prev, curr):
         pass
 
+    @staticmethod
+    def _is_kernel_thread(pid, stats):
+        """Kernel threads have kthreadd (pid 2) as parent, or are kthreadd itself."""
+        return pid == 2 or stats.ppid == 2
+
     procstat = namedtuple("procstat", ("cmd", "state", "majflt", "ppid"))
 
     def readStat(self, sfn):
@@ -1018,6 +1024,8 @@ class OOMScoreProcessSelector(ProcessSelector):
                     oom_score = int(oom_score_file.readline())
                 stats = self.readStat(pid)
                 if not stats:
+                    continue
+                if self._is_kernel_thread(pid, stats):
                     continue
                 if "T" in stats.state:
                     logging.debug(
@@ -1148,6 +1156,10 @@ class CgroupPressureProcessSelector(ProcessSelector):
             if not stats:
                 continue
 
+            # Skip kernel threads
+            if self._is_kernel_thread(pid, stats):
+                continue
+
             # Skip already frozen
             if "T" in stats.state:
                 continue
@@ -1215,6 +1227,8 @@ class PageFaultingProcessSelector(ProcessSelector):
                 continue
             stats = self.readStat(fn)
             if not stats:
+                continue
+            if self._is_kernel_thread(pid, stats):
                 continue
             if stats.majflt > 0 and "T" not in stats.state:
                 prev = self.pagefault_by_pid.get(pid, 0)

@@ -172,6 +172,40 @@ class TestUnitTest:
             result = thrash_protect.ProcessSelector().checkParents(100)
             assert result == (99, 100), f"Expected (99, 100), got {result}"
 
+    def test_is_kernel_thread(self):
+        """Test _is_kernel_thread() detects kthreadd and its children."""
+        ps = thrash_protect.ProcessSelector()
+        procstat = ps.procstat
+
+        # pid 2 (kthreadd itself, ppid 0)
+        assert ps._is_kernel_thread(2, procstat(cmd="kthreadd", state="S", majflt=0, ppid=0))
+        # kernel worker thread (ppid 2)
+        assert ps._is_kernel_thread(123, procstat(cmd="kworker/0:1", state="S", majflt=0, ppid=2))
+        # normal userspace process
+        assert not ps._is_kernel_thread(1000, procstat(cmd="cat", state="R", majflt=100, ppid=999))
+
+    def test_oom_scan_skips_kernel_threads(self):
+        """Test that OOMScoreProcessSelector.scan() skips kernel threads."""
+        kernel_files = {
+            # kthreadd (pid 2, ppid 0) with high oom_score
+            "/proc/2/stat": b"2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/2/oom_score": b"900\n",
+            # kworker (pid 50, ppid 2) with high oom_score
+            "/proc/50/stat": b"50 (kworker/0:1) S 2 0 0 0 -1 69238880 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/50/oom_score": b"800\n",
+            # normal process (pid 500, ppid 1) with low oom_score
+            "/proc/500/stat": b"500 (cat) R 1 500 500 0 -1 4202496 50 0 100 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/500/oom_score": b"100\n",
+        }
+        with patch("thrash_protect.open", new=FileMockup(kernel_files).open):
+            with patch("glob.glob", return_value=["/proc/2/oom_score", "/proc/50/oom_score", "/proc/500/oom_score"]):
+                result = thrash_protect.OOMScoreProcessSelector().scan()
+                # Should select pid 500 (normal process), not 2 or 50 (kernel threads)
+                assert result is not None
+                assert 500 in result
+                assert 2 not in result
+                assert 50 not in result
+
     @patch("thrash_protect.kill")
     @patch("thrash_protect.unlink")
     def test_cleanup(self, unlink, kill):
