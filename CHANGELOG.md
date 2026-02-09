@@ -62,6 +62,8 @@ The unreleased code solves all those problems for me, as well as bringing many o
 - **PSI metric: "some" instead of "full"**: PSI "full" requires all CPUs stalled
   simultaneously, which can be near-zero during heavy thrashing on multi-core systems.
   Now uses "some" (at least one task stalled) which better reflects actual pressure.
+- **CgroupPressureProcessSelector weighted by OOM score**: Combined cgroup pressure
+  with per-process `oom_score` to prevent bias toward large aggregate cgroups.
 
 ### Fixed
 

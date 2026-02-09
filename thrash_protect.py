@@ -1131,11 +1131,16 @@ class CgroupPressureProcessSelector(ProcessSelector):
         return None
 
     def scan(self):
-        """Find process in cgroup with highest memory pressure."""
+        """Find process in cgroup with highest memory pressure, weighted by OOM score.
+
+        Combines cgroup pressure with per-process oom_score to avoid bias toward
+        large aggregate cgroups (e.g., session-1.scope with 124 processes) over
+        smaller cgroups with individual high-memory processes.
+        """
         if not is_psi_available():
             return None
 
-        max_pressure = 0
+        max_score = 0
         worst_pid = None
         worst_cgroup = None
 
@@ -1173,18 +1178,31 @@ class CgroupPressureProcessSelector(ProcessSelector):
             if pressure is None:
                 continue
 
-            # Apply whitelist/blacklist score adjustments
-            pressure = apply_score_adjustments(pressure, stats.cmd)
+            # Read per-process OOM score to weight the cgroup pressure.
+            # This prevents large session cgroups (many processes, high aggregate
+            # pressure) from always winning over smaller cgroups with individual
+            # high-memory processes.
+            try:
+                with open(f"/proc/{pid}/oom_score") as f:
+                    oom_score = int(f.readline())
+            except (FileNotFoundError, PermissionError, OSError, ValueError):
+                continue
 
-            if pressure > max_pressure:
-                max_pressure = pressure
+            # Combined score: pressure * oom_score
+            score = pressure * max(oom_score, 1)
+
+            # Apply whitelist/blacklist score adjustments
+            score = apply_score_adjustments(score, stats.cmd)
+
+            if score > max_score:
+                max_score = score
                 worst_pid = (pid, stats.ppid)
                 worst_cgroup = cgroup_path
 
-        if worst_pid and max_pressure > 0:
+        if worst_pid and max_score > 0:
             logging.debug(
                 f"cgroup pressure scan - selected pid: {worst_pid[0]}, "
-                f"cgroup: {worst_cgroup}, pressure: {max_pressure}%"
+                f"cgroup: {worst_cgroup}, combined score: {max_score}"
             )
             return self.checkParents(*worst_pid)
 

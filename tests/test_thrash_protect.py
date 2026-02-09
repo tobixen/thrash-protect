@@ -898,6 +898,43 @@ class TestCgroupPressureSelector:
         cgroup_idx = selector_types.index("CgroupPressureProcessSelector")
         assert cgroup_idx == last_frozen_idx + 1
 
+    def test_oom_score_unbiases_large_cgroups(self):
+        """Test that OOM score prevents bias toward large aggregate cgroups.
+
+        A chromium renderer in a large session cgroup (high aggregate pressure=5%,
+        low oom_score=100) should lose to a claude process in a small cgroup
+        (low pressure=2%, high oom_score=800).
+        """
+        selector = thrash_protect.CgroupPressureProcessSelector()
+
+        files = {
+            # chromium renderer: low oom_score, high cgroup pressure
+            "/proc/1000/stat": b"1000 (chromium) S 1 1000 1000 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/1000/oom_score": b"100\n",
+            "/proc/1000/cgroup": b"0::/user.slice/user-1000.slice/session-1.scope\n",
+            # claude: high oom_score, lower cgroup pressure
+            "/proc/2000/stat": b"2000 (claude) S 1 2000 2000 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/2000/oom_score": b"800\n",
+            "/proc/2000/cgroup": b"0::/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc.scope\n",
+        }
+        cgroup_pressures = {
+            "/sys/fs/cgroup/user.slice/user-1000.slice/session-1.scope": 5.0,
+            "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc.scope": 2.0,
+        }
+
+        def mock_get_pressure(cgroup_path):
+            return cgroup_pressures.get(cgroup_path)
+
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            with patch("thrash_protect.is_psi_available", return_value=True):
+                with patch("glob.glob", return_value=["/proc/1000/stat", "/proc/2000/stat"]):
+                    with patch.object(selector, "get_cgroup_pressure", side_effect=mock_get_pressure):
+                        result = selector.scan()
+
+        # claude (score=2*800=1600) should win over chromium (score=5*100=500)
+        assert result is not None
+        assert 2000 in result
+
 
 class TestCgroupFreezing:
     """Tests for cgroup-based freezing functionality."""
