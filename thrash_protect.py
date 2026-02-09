@@ -613,19 +613,23 @@ def should_use_cgroup_freeze(pid):
     """Check if we should use cgroup freezing for this process.
 
     Returns cgroup_path if cgroup freezing should be used, None otherwise.
-    Uses cgroup freezing for any .scope cgroup, which are typically created
-    for specific process trees (e.g., by systemd-run, tmux, screen, etc.).
-    Scopes are isolated and safe to freeze without affecting unrelated processes.
+    Only uses cgroup freezing for .scope cgroups under user@NNN.service/
+    (e.g., tmux-spawn, screen sessions). Rejects session-N.scope which lives
+    directly under user-N.slice/ and contains the entire graphical session
+    (sway, waybar, Xwayland, all chromium renderers, etc.).
     """
     cgroup_path = get_cgroup_path(pid)
     if not cgroup_path or not is_cgroup_freezable(cgroup_path):
         return None
-    # Use cgroup freezing for any .scope cgroup
-    # Scopes are process-specific (unlike slices which are shared)
-    # Examples: tmux-spawn-<uuid>.scope, screen-<pid>.scope, run-<id>.scope
-    if cgroup_path.endswith(".scope"):
-        return cgroup_path
-    return None
+    # Must be a .scope cgroup (not a .slice or .service)
+    if not cgroup_path.endswith(".scope"):
+        return None
+    # Must be under user@NNN.service/ (tmux-spawn, screen, systemd-run scopes)
+    # Reject session-N.scope which is under user-N.slice/ and contains
+    # the entire login session (124+ processes)
+    if "/user@" not in cgroup_path:
+        return None
+    return cgroup_path
 
 
 #########################

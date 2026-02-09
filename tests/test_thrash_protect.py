@@ -876,20 +876,38 @@ class TestCgroupFreezing:
     @patch("thrash_protect.get_cgroup_path")
     @patch("thrash_protect.is_cgroup_freezable")
     def test_should_use_cgroup_freeze_scope(self, mock_freezable, mock_cgroup):
-        """Test that any .scope cgroup uses cgroup freezing."""
-        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/tmux-spawn-abc123.scope"
+        """Test that .scope under user@service uses cgroup freezing."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc123.scope"
         mock_freezable.return_value = True
         result = thrash_protect.should_use_cgroup_freeze(12345)
-        assert result == "/sys/fs/cgroup/user.slice/tmux-spawn-abc123.scope"
+        assert result == "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc123.scope"
 
     @patch("thrash_protect.get_cgroup_path")
     @patch("thrash_protect.is_cgroup_freezable")
     def test_should_use_cgroup_freeze_any_scope(self, mock_freezable, mock_cgroup):
-        """Test that any .scope cgroup uses cgroup freezing (not just tmux/screen)."""
-        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/run-12345.scope"
+        """Test that any .scope under user@service uses cgroup freezing."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/run-12345.scope"
         mock_freezable.return_value = True
         result = thrash_protect.should_use_cgroup_freeze(12345)
-        assert result == "/sys/fs/cgroup/user.slice/run-12345.scope"
+        assert result == "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/run-12345.scope"
+
+    @patch("thrash_protect.get_cgroup_path")
+    @patch("thrash_protect.is_cgroup_freezable")
+    def test_should_not_freeze_session_scope(self, mock_freezable, mock_cgroup):
+        """Test that session-N.scope (under user-N.slice, not user@) is rejected."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/user-1000.slice/session-1.scope"
+        mock_freezable.return_value = True
+        result = thrash_protect.should_use_cgroup_freeze(12345)
+        assert result is None
+
+    @patch("thrash_protect.get_cgroup_path")
+    @patch("thrash_protect.is_cgroup_freezable")
+    def test_should_not_freeze_system_scope(self, mock_freezable, mock_cgroup):
+        """Test that system .scope cgroups are rejected."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/system.slice/some-service.scope"
+        mock_freezable.return_value = True
+        result = thrash_protect.should_use_cgroup_freeze(12345)
+        assert result is None
 
     @patch("thrash_protect.get_cgroup_path")
     @patch("thrash_protect.is_cgroup_freezable")

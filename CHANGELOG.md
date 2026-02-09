@@ -56,6 +56,9 @@ The unreleased code solves all those problems for me, as well as bringing many o
   the swap page counting signal, rather than as a standalone primary detector.
   This provides instant feedback (swap-based cooldown) while PSI amplifies sensitivity
   during memory pressure. Zero swap + any PSI = no trigger.
+- **Cgroup freezing restricted to user@ scopes**: Only freeze `.scope` cgroups under
+  `user@NNN.service/` (tmux, screen). Reject `session-N.scope` which contains the
+  entire graphical session.
 
 ### Fixed
 
