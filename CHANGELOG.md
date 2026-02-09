@@ -31,8 +31,8 @@ The unreleased code solves all those problems for me, as well as bringing many o
   Auto-detected by file extension.
 - **Full CLI options**: All configuration parameters now available as `--long-options`.
 - **Dynamic default whitelist**: Shells are now read from `/etc/shells` instead of hardcoded list.
-- **Modernized static whitelist**: Added Wayland compositors (sway, wayfire, hyprland) and
-  modern terminals (alacritty, kitty, foot).
+- **Modernized static whitelist**: Added Wayland compositors (sway, wayfire, hyprland),
+  modern terminals (alacritty, kitty, foot), login, and supervisord.
 - **Example config files**: `thrash-protect.conf.example` (INI) and `thrash-protect.yaml.example` (YAML).
 - **Optional dependencies**: PyYAML for YAML config, tomli for TOML config on Python < 3.11.
 - **GitHub Actions**: CI for linting/testing, automatic PyPI release on tags.

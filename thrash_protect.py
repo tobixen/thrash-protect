@@ -108,6 +108,8 @@ STATIC_WHITELIST = [
     "systemd-journal",
     "dbus-daemon",
     "kthreadd",
+    "login",
+    "supervisord",
 ]
 
 

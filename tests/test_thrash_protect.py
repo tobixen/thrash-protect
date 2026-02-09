@@ -401,6 +401,11 @@ class TestConfigurationSystem:
             assert "bash" in whitelist
             assert "zsh" in whitelist
 
+    def test_static_whitelist_includes_login_and_supervisord(self):
+        """Test that login and supervisord are in STATIC_WHITELIST."""
+        assert "login" in thrash_protect.STATIC_WHITELIST
+        assert "supervisord" in thrash_protect.STATIC_WHITELIST
+
     def test_get_default_jobctrllist(self):
         """Test get_default_jobctrllist() includes shells and sudo."""
         with patch("thrash_protect.get_shells_from_etc", return_value=["bash", "zsh"]):
