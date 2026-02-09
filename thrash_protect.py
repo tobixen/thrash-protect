@@ -280,7 +280,7 @@ def get_defaults():
         "swap_page_threshold": 4,
         "pgmajfault_scan_threshold": None,  # Computed from swap_page_threshold if not set
         "use_psi": True,  # Use PSI for thrash detection if available
-        "psi_threshold": 5.0,  # Trigger when full avg10 exceeds this percentage
+        "psi_threshold": 5.0,  # Trigger when some avg10 exceeds this percentage
         "cmd_whitelist": get_default_whitelist(),
         "cmd_jobctrllist": get_default_jobctrllist(),
         "cmd_blacklist": [],
@@ -456,7 +456,7 @@ Example usage:
         dest="psi_threshold",
         type=float,
         metavar="PCT",
-        help="PSI full avg10 percentage to trigger action (default: 5.0)",
+        help="PSI some avg10 percentage to trigger action (default: 5.0)",
     )
 
     # Process lists
@@ -832,13 +832,15 @@ class SystemState:
         )
 
         ## PSI weight: amplify swap signal when memory pressure is detected
+        ## Uses "some" (at least one task stalled) rather than "full" (all CPUs stalled),
+        ## because "full" can be near-zero even during heavy thrashing on multi-core systems.
         psi_weight = 1.0
-        if config.use_psi and self.psi and "full" in self.psi:
-            psi_full = self.psi["full"].get("avg10", 0)
-            psi_weight = 1.0 + psi_full / config.psi_threshold
+        if config.use_psi and self.psi and "some" in self.psi:
+            psi_some = self.psi["some"].get("avg10", 0)
+            psi_weight = 1.0 + psi_some / config.psi_threshold
             if psi_weight > 1.0:
                 logging.debug(
-                    f"PSI weight applied: full avg10={psi_full}%, weight={psi_weight:.2f}"
+                    f"PSI weight applied: some avg10={psi_some}%, weight={psi_weight:.2f}"
                 )
 
         ret = swap_product * psi_weight > 1.0
@@ -1115,8 +1117,8 @@ class CgroupPressureProcessSelector(ProcessSelector):
         try:
             with open(pressure_file) as f:
                 for line in f:
-                    if line.startswith("full "):
-                        # Parse: full avg10=X.XX avg60=X.XX avg300=X.XX total=XXX
+                    if line.startswith("some "):
+                        # Parse: some avg10=X.XX avg60=X.XX avg300=X.XX total=XXX
                         parts = line.strip().split()
                         for part in parts[1:]:
                             if part.startswith("avg10="):

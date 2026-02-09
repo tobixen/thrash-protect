@@ -59,6 +59,9 @@ The unreleased code solves all those problems for me, as well as bringing many o
 - **Cgroup freezing restricted to user@ scopes**: Only freeze `.scope` cgroups under
   `user@NNN.service/` (tmux, screen). Reject `session-N.scope` which contains the
   entire graphical session.
+- **PSI metric: "some" instead of "full"**: PSI "full" requires all CPUs stalled
+  simultaneously, which can be near-zero during heavy thrashing on multi-core systems.
+  Now uses "some" (at least one task stalled) which better reflects actual pressure.
 
 ### Fixed
 

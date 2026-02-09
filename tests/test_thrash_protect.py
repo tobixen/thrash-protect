@@ -702,7 +702,7 @@ class TestPSI:
         current.swapcount = (3, 3)
         # High PSI: avg10=15%, psi_weight = 1 + 15/5 = 4.0
         # final = 0.600 * 4.0 = 2.4 > 1.0 → triggers
-        current.psi = {"full": {"avg10": 15.0}}
+        current.psi = {"some": {"avg10": 15.0}}
 
         result = current.check_thrashing(prev)
         assert result is True
@@ -722,7 +722,7 @@ class TestPSI:
         # Zero swap delta
         current.swapcount = (100, 100)
         # Very high PSI
-        current.psi = {"full": {"avg10": 50.0}}
+        current.psi = {"some": {"avg10": 50.0}}
         current.timestamp = time.time()
         # swap_product = (0.1/4) * (0.1/4) = 0.000625
         # psi_weight = 1 + 50/5 = 11.0
@@ -744,7 +744,7 @@ class TestPSI:
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         # Tiny swap delta (1 page each direction)
         current.swapcount = (51, 51)
-        current.psi = {"full": {"avg10": 10.0}}
+        current.psi = {"some": {"avg10": 10.0}}
         current.timestamp = time.time()
         # swap_product = (1.1/4) * (1.1/4) = 0.275^2 ≈ 0.0756
         # psi_weight = 1 + 10/5 = 3.0
@@ -764,7 +764,7 @@ class TestPSI:
         prev.timer_alert = False
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        current.psi = {"full": {"avg10": 50.0}}  # High PSI (should be ignored)
+        current.psi = {"some": {"avg10": 50.0}}  # High PSI (should be ignored)
         current.swapcount = (100, 100)  # High swap activity
         current.cooldown_counter = 0
 
@@ -805,7 +805,7 @@ class TestPSI:
         # Swap stopped (same counts)
         current.swapcount = (100, 100)
         # PSI still elevated (stale avg10)
-        current.psi = {"full": {"avg10": 20.0}}
+        current.psi = {"some": {"avg10": 20.0}}
         # Enough time has elapsed
         current.timestamp = time.time()
         prev.timestamp = current.timestamp - 1.0
@@ -816,6 +816,42 @@ class TestPSI:
         assert result is False
         # Cooldown should have decremented despite PSI being elevated
         assert current.cooldown_counter == 2
+
+    def test_psi_uses_some_not_full(self):
+        """Test that PSI uses 'some' metric, not 'full'.
+
+        'full' requires ALL CPUs to be stalled simultaneously, which can be
+        near-zero even during heavy thrashing on multi-core systems.
+        'some' triggers when at least one task is stalled.
+        """
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (0, 0)
+        prev.timer_alert = False
+
+        # With 'some' PSI data + moderate swap → should trigger
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current.swapcount = (3, 3)
+        current.psi = {"some": {"avg10": 15.0}}
+        result = current.check_thrashing(prev)
+        assert result is True
+
+        # With only 'full' PSI data (no 'some') + moderate swap → should NOT amplify
+        current2 = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current2.swapcount = (3, 3)
+        current2.psi = {"full": {"avg10": 15.0}}
+        current2.cooldown_counter = 0
+        current2.timestamp = time.time()
+        prev2 = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev2.cooldown_counter = 0
+        prev2.swapcount = (0, 0)
+        prev2.timer_alert = False
+        prev2.timestamp = current2.timestamp - 1.0
+        result2 = current2.check_thrashing(prev2)
+        # swap_product = (3.1/4)^2 ≈ 0.60 < 1.0, no amplification → False
+        assert result2 is False
 
 
 class TestCgroupPressureSelector:
