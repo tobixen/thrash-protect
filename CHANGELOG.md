@@ -70,6 +70,11 @@ The unreleased code solves all those problems for me, as well as bringing many o
   (e.g., `-bash` for login shells).
 - **Config priority**: Environment variables now correctly override config file settings.
 - **Test mock attributes**: Fixed missing `timer_alert` attribute in PSI fallback test.
+- **Duplicate frozen_items for cgroup entries**: Cgroup-frozen processes don't show
+  state "T" in `/proc/pid/stat`, causing selectors to re-select them and create
+  duplicate entries. Added dedup check and `frozen_cgroup_paths` tracking set.
+- **Cgroup-frozen process detection in selectors**: All process selectors now check
+  both SIGSTOP state ("T") and `frozen_cgroup_paths` to skip already-frozen processes.
 
 ### Removed
 

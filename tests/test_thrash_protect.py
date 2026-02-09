@@ -19,10 +19,12 @@ import thrash_protect
 def reset_global_state():
     """Reset global state before each test."""
     thrash_protect.frozen_items = []
+    thrash_protect.frozen_cgroup_paths = set()
     thrash_protect.num_unfreezes = 0
     yield
     # Clean up after test
     thrash_protect.frozen_items = []
+    thrash_protect.frozen_cgroup_paths = set()
     thrash_protect.num_unfreezes = 0
 
 
@@ -183,6 +185,28 @@ class TestUnitTest:
         assert ps._is_kernel_thread(123, procstat(cmd="kworker/0:1", state="S", majflt=0, ppid=2))
         # normal userspace process
         assert not ps._is_kernel_thread(1000, procstat(cmd="cat", state="R", majflt=100, ppid=999))
+
+    def test_is_frozen_sigstop(self):
+        """Test _is_frozen detects SIGSTOP-frozen processes."""
+        ps = thrash_protect.ProcessSelector()
+        procstat = ps.procstat
+        assert ps._is_frozen(100, procstat(cmd="cat", state="T", majflt=0, ppid=1))
+        assert not ps._is_frozen(100, procstat(cmd="cat", state="R", majflt=0, ppid=1))
+
+    def test_is_frozen_cgroup(self):
+        """Test _is_frozen detects cgroup-frozen processes."""
+        ps = thrash_protect.ProcessSelector()
+        procstat = ps.procstat
+        cgroup_path = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux.scope"
+
+        # Not frozen when frozen_cgroup_paths is empty
+        with patch("thrash_protect.get_cgroup_path", return_value=cgroup_path):
+            assert not ps._is_frozen(100, procstat(cmd="cat", state="S", majflt=0, ppid=1))
+
+        # Frozen when cgroup is in frozen_cgroup_paths
+        thrash_protect.frozen_cgroup_paths.add(cgroup_path)
+        with patch("thrash_protect.get_cgroup_path", return_value=cgroup_path):
+            assert ps._is_frozen(100, procstat(cmd="cat", state="S", majflt=0, ppid=1))
 
     def test_oom_scan_skips_kernel_threads(self):
         """Test that OOMScoreProcessSelector.scan() skips kernel threads."""
@@ -955,3 +979,19 @@ class TestCgroupFreezing:
         assert mock_unfreeze_cgroup.call_count == 2
         # Should SIGCONT regular pids (10, 30, 20 - in reverse order for tuples)
         assert kill.call_count == 3
+
+    @patch("thrash_protect.freeze_cgroup", return_value=True)
+    @patch("thrash_protect.should_use_cgroup_freeze")
+    @patch("thrash_protect.open")
+    @patch("thrash_protect.unlink")
+    def test_no_duplicate_cgroup_frozen_items(self, unlink, open, mock_should_use, mock_freeze):
+        """Test that freezing the same cgroup twice creates only one entry."""
+        cgroup_path = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc.scope"
+        mock_should_use.return_value = cgroup_path
+
+        thrash_protect.freeze_something((100,))
+        thrash_protect.freeze_something((200,))
+
+        cgroup_entries = [item for item in thrash_protect.frozen_items if item[0] == "cgroup"]
+        assert len(cgroup_entries) == 1
+        assert cgroup_entries[0][1] == cgroup_path

@@ -934,6 +934,21 @@ class ProcessSelector:
         """Kernel threads have kthreadd (pid 2) as parent, or are kthreadd itself."""
         return pid == 2 or stats.ppid == 2
 
+    @staticmethod
+    def _is_frozen(pid, stats):
+        """Check if a process is already frozen (SIGSTOP or cgroup freeze).
+
+        Cgroup-frozen processes don't show state "T" in /proc/pid/stat,
+        so we also check if the process's cgroup is in frozen_cgroup_paths.
+        """
+        if "T" in stats.state:
+            return True
+        if frozen_cgroup_paths:
+            cgroup_path = get_cgroup_path(pid)
+            if cgroup_path in frozen_cgroup_paths:
+                return True
+        return False
+
     procstat = namedtuple("procstat", ("cmd", "state", "majflt", "ppid"))
 
     def readStat(self, sfn):
@@ -1009,7 +1024,7 @@ class OOMScoreProcessSelector(ProcessSelector):
                     continue
                 if self._is_kernel_thread(pid, stats):
                     continue
-                if "T" in stats.state:
+                if self._is_frozen(pid, stats):
                     logging.debug(
                         "oom_score: %s, cmd: %s, pid: %s, state: %s - no touch"
                         % (oom_score, stats.cmd, pid, stats.state)
@@ -1143,7 +1158,7 @@ class CgroupPressureProcessSelector(ProcessSelector):
                 continue
 
             # Skip already frozen
-            if "T" in stats.state:
+            if self._is_frozen(pid, stats):
                 continue
 
             # Get cgroup path
@@ -1212,7 +1227,7 @@ class PageFaultingProcessSelector(ProcessSelector):
                 continue
             if self._is_kernel_thread(pid, stats):
                 continue
-            if stats.majflt > 0 and "T" not in stats.state:
+            if stats.majflt > 0 and not self._is_frozen(pid, stats):
                 prev = self.pagefault_by_pid.get(pid, 0)
                 self.pagefault_by_pid[pid] = stats.majflt
                 diff = stats.majflt - prev
@@ -1412,7 +1427,10 @@ def freeze_something(pids_to_freeze=None):
     if cgroup_path:
         # Use cgroup freezing - freezes all processes in the cgroup atomically
         if freeze_cgroup(cgroup_path):
-            frozen_items.append(("cgroup", cgroup_path, pids_to_freeze))
+            # Check if already frozen (avoid duplicates) - keyed on cgroup_path
+            if not any(item[0] == "cgroup" and item[1] == cgroup_path for item in frozen_items):
+                frozen_items.append(("cgroup", cgroup_path, pids_to_freeze))
+            frozen_cgroup_paths.add(cgroup_path)
             for pid_to_freeze in pids_to_freeze:
                 logging.debug("froze pid %s (via cgroup)" % str(pid_to_freeze))
                 log_frozen(pid_to_freeze)
@@ -1460,6 +1478,7 @@ def unfreeze_something():
         # Unfreeze via cgroup
         logging.debug("pids to unfreeze (via cgroup): %s" % pids_to_unfreeze)
         unfreeze_cgroup(cgroup_path)
+        frozen_cgroup_paths.discard(cgroup_path)
     else:
         # Unfreeze via SIGCONT
         logging.debug("pids to unfreeze: %s" % pids_to_unfreeze)
@@ -1546,6 +1565,7 @@ def cleanup():
     ## Clean up if exiting due to an exception.
     global frozen_items
 
+    frozen_cgroup_paths.clear()
     for item in frozen_items:
         item_type, cgroup_path, pids = unpack_frozen_item(item)
         if item_type == "cgroup":
@@ -1567,6 +1587,10 @@ def cleanup():
 #   ('cgroup', cgroup_path, pids) - frozen via cgroup freezer
 #   ('sigstop', pids)             - frozen via SIGSTOP
 frozen_items = []
+# Set of currently frozen cgroup paths, for fast lookup in selectors.
+# Cgroup-frozen processes don't show state "T" in /proc/pid/stat, so
+# selectors need this to skip already-frozen processes.
+frozen_cgroup_paths = set()
 num_unfreezes = 0
 ## A singleton ...
 global_process_selector = GlobalProcessSelector()
