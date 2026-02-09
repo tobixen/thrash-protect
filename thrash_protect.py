@@ -190,6 +190,7 @@ CONFIG_SCHEMA = {
         ["log-user-data-on-unfreeze"],
     ),
     "date_human_readable": (_parse_bool, "THRASH_PROTECT_DATE_HUMAN_READABLE", ["date-human-readable"]),
+    "diagnostic_logging": (_parse_bool, "THRASH_PROTECT_DIAGNOSTIC_LOGGING", ["diagnostic-logging"]),
 }
 
 
@@ -291,6 +292,7 @@ def get_defaults():
         "log_user_data_on_freeze": False,
         "log_user_data_on_unfreeze": True,
         "date_human_readable": True,
+        "diagnostic_logging": False,
     }
 
 
@@ -549,6 +551,15 @@ Example usage:
         help="Use Unix timestamp in logs",
     )
 
+    # Diagnostic options
+    p.add_argument(
+        "--diagnostic",
+        dest="diagnostic_logging",
+        action="store_true",
+        default=None,
+        help="Enable diagnostic logging (logs selector decisions, scores, and PSI weights)",
+    )
+
     return p
 
 
@@ -757,6 +768,14 @@ def init_config(args=None):
     else:
         debug_check_state = lambda a, b: None
 
+    # Set up diagnostic_log function based on config
+    # When disabled, set to None so `if diagnostic_log:` guards skip string formatting
+    global diagnostic_log
+    if config.diagnostic_logging:
+        diagnostic_log = _diagnostic_log
+    else:
+        diagnostic_log = None
+
 
 # Initialize with defaults immediately so the module can be imported
 # (will be re-initialized in main() with proper args)
@@ -844,6 +863,12 @@ class SystemState:
                 )
 
         ret = swap_product * psi_weight > 1.0
+        if diagnostic_log:
+            diagnostic_log(
+                f"check_swap_threshold: swap_product={swap_product:.4f}, "
+                f"psi_weight={psi_weight:.2f}, "
+                f"final={swap_product * psi_weight:.4f}, trigger={ret}"
+            )
         ## Increase or decrease the busy-counter ... or keep it where it is
         if ret:
             ## thrashing alert, increase the counter
@@ -1045,6 +1070,10 @@ class OOMScoreProcessSelector(ProcessSelector):
                     worstpid = (pid, stats.ppid)
         logging.debug("oom scan completed - selected pid: %s" % (worstpid and worstpid[0]))
         if worstpid is not None:
+            if diagnostic_log:
+                diagnostic_log(
+                    f"OOMScoreProcessSelector: pid={worstpid[0]}, oom_score={max}"
+                )
             return self.checkParents(*worstpid)
         else:
             return None
@@ -1204,6 +1233,11 @@ class CgroupPressureProcessSelector(ProcessSelector):
                 f"cgroup pressure scan - selected pid: {worst_pid[0]}, "
                 f"cgroup: {worst_cgroup}, combined score: {max_score}"
             )
+            if diagnostic_log:
+                diagnostic_log(
+                    f"CgroupPressureProcessSelector: pid={worst_pid[0]}, "
+                    f"cgroup={worst_cgroup}, combined_score={max_score}"
+                )
             return self.checkParents(*worst_pid)
 
         return None
@@ -1308,10 +1342,16 @@ class GlobalProcessSelector(ProcessSelector):
 
         ## a for loop here to make sure we fall back on the next method if the first method fails to find anything.
         for i in range(0, len(self.collection)):
+            selector = self.collection[self.scan_method_count % len(self.collection)]
             logging.debug("scan method: %s" % (self.scan_method_count % len(self.collection)))
-            ret = self.collection[self.scan_method_count % len(self.collection)].scan()
+            ret = selector.scan()
             self.scan_method_count += 1
             if ret:
+                if diagnostic_log:
+                    diagnostic_log(
+                        f"selected pids {ret} via {type(selector).__name__} "
+                        f"(method #{self.scan_method_count - 1})"
+                    )
                 return ret
 
     logging.debug("found nothing to stop!? :-(")
@@ -1422,6 +1462,16 @@ def _debug_check_state(pid, should_be_suspended=False):
 
 # debug_check_state is set up by init_config() based on debug_checkstate setting
 debug_check_state = lambda a, b: None
+
+
+def _diagnostic_log(msg):
+    """Log diagnostic information at INFO level (only called when --diagnostic is enabled)."""
+    logging.info("DIAGNOSTIC: %s" % msg)
+
+
+# diagnostic_log is set up by init_config() based on diagnostic_logging setting.
+# When disabled, set to None so `if diagnostic_log:` guards skip string formatting.
+diagnostic_log = None
 
 
 def freeze_something(pids_to_freeze=None):
@@ -1624,9 +1674,11 @@ def main():
     # Initialize configuration from all sources (CLI > file > env > defaults)
     init_config(args)
 
-    # Set up debug logging if enabled
+    # Set up logging level
     if config.debug_logging:
         logging.root.setLevel(logging.DEBUG)
+    elif config.diagnostic_logging:
+        logging.root.setLevel(logging.INFO)
 
     unfreeze_from_tmpfile()
 

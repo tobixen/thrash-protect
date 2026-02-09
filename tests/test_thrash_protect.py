@@ -580,6 +580,7 @@ cmd_whitelist = sshd bash
                     "log_user_data_on_freeze",
                     "log_user_data_on_unfreeze",
                     "date_human_readable",
+                    "diagnostic_logging",
                 ]:
                     setattr(args, attr, None)
 
@@ -654,6 +655,43 @@ cmd_whitelist = ["sshd", "bash"]
                 assert config["cmd_whitelist"] == ["sshd", "bash"]
             finally:
                 os.unlink(f.name)
+
+
+class TestDiagnosticLogging:
+    """Tests for diagnostic logging functionality."""
+
+    def test_diagnostic_disabled_by_default(self):
+        """Test that diagnostic_log is None (no-op) by default."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect.diagnostic_log is None
+
+    def test_diagnostic_enabled(self):
+        """Test that diagnostic_log is set to _diagnostic_log when enabled."""
+        args = argparse.Namespace(config=None, diagnostic_logging=True)
+        thrash_protect.init_config(args)
+        assert thrash_protect.diagnostic_log is thrash_protect._diagnostic_log
+        # Reset
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+    def test_diagnostic_logs_via_logging_info(self):
+        """Test that diagnostic_log outputs via logging.info."""
+        args = argparse.Namespace(config=None, diagnostic_logging=True)
+        thrash_protect.init_config(args)
+        try:
+            with patch("logging.info") as mock_info:
+                thrash_protect.diagnostic_log("test message")
+                mock_info.assert_called_once_with("DIAGNOSTIC: %s" % "test message")
+        finally:
+            thrash_protect.init_config(argparse.Namespace(config=None))
+
+    def test_diagnostic_argument_parser(self):
+        """Test that --diagnostic flag is parsed correctly."""
+        parser = thrash_protect.create_argument_parser()
+        args = parser.parse_args(["--diagnostic"])
+        assert args.diagnostic_logging is True
+
+        args = parser.parse_args([])
+        assert args.diagnostic_logging is None
 
 
 class TestPSI:

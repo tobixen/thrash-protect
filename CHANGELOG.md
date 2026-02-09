@@ -38,6 +38,8 @@ The unreleased code solves all those problems for me, as well as bringing many o
 - **GitHub Actions**: CI for linting/testing, automatic PyPI release on tags.
 - **Pre-commit hooks**: ruff linting and formatting, lychee link checker.
 - **Documentation**: `docs/CODE_REVIEW.md`, `docs/TODO.md`, `docs/cgroup-enhancement-ideas.md`.
+- **Diagnostic logging**: `--diagnostic` flag enables detailed logging of process selection
+  decisions, swap/PSI values, and scoring. Zero-cost when disabled (no string formatting).
 
 ### Changed
 
