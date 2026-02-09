@@ -23,7 +23,7 @@ The unreleased code solves all those problems for me, as well as bringing many o
   in `.scope` cgroups (e.g., tmux, screen sessions). This provides atomic freezing that can't
   be bypassed by terminal multiplexers.
 - **PSI-based thrash detection**: Use Pressure Stall Information (`/proc/pressure/memory`)
-  instead of swap page counting for more accurate thrash detection. Available on Linux 4.20+.
+  to amplify swap page counting for more accurate thrash detection. Available on Linux 4.20+.
   Configurable via `--use-psi`/`--no-psi` and `--psi-threshold`.
 - **CgroupPressureProcessSelector**: New process selector that uses per-cgroup memory pressure
   (`/sys/fs/cgroup/.../memory.pressure`) to identify which cgroup is causing memory stalls.
@@ -52,6 +52,10 @@ The unreleased code solves all those problems for me, as well as bringing many o
 - **Test framework**: Migrated from nose to pytest.
 - **Code formatting**: Applied ruff linting and formatting throughout.
 - **Millisecond precision**: Log timestamps now include milliseconds.
+- **Hybrid swap+PSI thrash detection**: PSI is now used as a weight that amplifies
+  the swap page counting signal, rather than as a standalone primary detector.
+  This provides instant feedback (swap-based cooldown) while PSI amplifies sensitivity
+  during memory pressure. Zero swap + any PSI = no trigger.
 
 ### Fixed
 

@@ -658,55 +658,74 @@ class TestPSI:
         result = thrash_protect.get_memory_pressure()
         assert result is None
 
-    def test_check_psi_threshold(self):
-        """Test PSI threshold checking."""
+    def test_hybrid_psi_amplifies_swap(self):
+        """Test that PSI weight amplifies moderate swap to trigger detection."""
         thrash_protect.init_config(argparse.Namespace(config=None))
 
-        # Create mock states with PSI data
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 0
+        prev.swapcount = (0, 0)
+        prev.timer_alert = False
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        current.psi = {"full": {"avg10": 10.0, "avg60": 5.0, "avg300": 2.0, "total": 1000000}}
+        # Moderate swap: delta_in=3, delta_out=3 with threshold=4
+        # swap_product = (3.1/4) * (3.1/4) = 0.775^2 ≈ 0.600 (below 1.0)
+        current.swapcount = (3, 3)
+        # High PSI: avg10=15%, psi_weight = 1 + 15/5 = 4.0
+        # final = 0.600 * 4.0 = 2.4 > 1.0 → triggers
+        current.psi = {"full": {"avg10": 15.0}}
 
-        # With default threshold of 5.0, avg10=10.0 should trigger
-        result = current.check_psi_threshold(prev)
+        result = current.check_thrashing(prev)
         assert result is True
         assert current.cooldown_counter == 1
 
-    def test_check_psi_threshold_below(self):
-        """Test PSI threshold not triggered when below threshold."""
-        thrash_protect.init_config(argparse.Namespace(config=None))
-
-        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        prev.cooldown_counter = 0
-
-        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        current.psi = {"full": {"avg10": 2.0, "avg60": 1.0, "avg300": 0.5, "total": 100000}}
-
-        # With default threshold of 5.0, avg10=2.0 should not trigger
-        result = current.check_psi_threshold(prev)
-        assert result is False
-
-    def test_check_thrashing_uses_psi(self):
-        """Test that check_thrashing uses PSI when available."""
+    def test_hybrid_psi_without_swap_does_not_trigger(self):
+        """Test that high PSI + zero swap does NOT trigger."""
         thrash_protect.init_config(argparse.Namespace(config=None))
 
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 0
         prev.swapcount = (100, 100)
+        prev.timer_alert = False
+        prev.timestamp = time.time() - 1.0
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        current.psi = {"full": {"avg10": 10.0, "avg60": 5.0, "avg300": 2.0, "total": 1000000}}
-        current.swapcount = (100, 100)  # No swap activity
+        # Zero swap delta
+        current.swapcount = (100, 100)
+        # Very high PSI
+        current.psi = {"full": {"avg10": 50.0}}
+        current.timestamp = time.time()
+        # swap_product = (0.1/4) * (0.1/4) = 0.000625
+        # psi_weight = 1 + 50/5 = 11.0
+        # final = 0.000625 * 11.0 = 0.006875 < 1.0 → does NOT trigger
 
-        with patch("thrash_protect.is_psi_available", return_value=True):
-            # PSI indicates pressure, swap doesn't - should use PSI
-            result = current.check_thrashing(prev)
-            assert result is True
+        result = current.check_thrashing(prev)
+        assert result is False
 
-    def test_check_thrashing_fallback_to_swap(self):
-        """Test that check_thrashing falls back to swap when PSI disabled."""
+    def test_hybrid_requires_swap_evidence(self):
+        """Test that PSI alone without swap evidence does not trigger."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (50, 50)
+        prev.timer_alert = False
+        prev.timestamp = time.time() - 1.0
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        # Tiny swap delta (1 page each direction)
+        current.swapcount = (51, 51)
+        current.psi = {"full": {"avg10": 10.0}}
+        current.timestamp = time.time()
+        # swap_product = (1.1/4) * (1.1/4) = 0.275^2 ≈ 0.0756
+        # psi_weight = 1 + 10/5 = 3.0
+        # final = 0.0756 * 3.0 = 0.227 < 1.0 → does NOT trigger
+
+        result = current.check_thrashing(prev)
+        assert result is False
+
+    def test_check_thrashing_no_psi(self):
+        """Test that --no-psi uses pure swap counting."""
         args = argparse.Namespace(config=None, use_psi=False)
         thrash_protect.init_config(args)
 
@@ -716,13 +735,58 @@ class TestPSI:
         prev.timer_alert = False
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        current.psi = {"full": {"avg10": 10.0}}  # High PSI
+        current.psi = {"full": {"avg10": 50.0}}  # High PSI (should be ignored)
         current.swapcount = (100, 100)  # High swap activity
         current.cooldown_counter = 0
 
-        # With PSI disabled, should use swap counting
+        # With PSI disabled, should use pure swap counting
         result = current.check_thrashing(prev)
-        assert result is True  # Swap activity should trigger
+        assert result is True  # Swap activity alone should trigger
+
+    def test_hybrid_swap_only_still_works(self):
+        """Test that swap-only triggers work when PSI is not available."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (0, 0)
+        prev.timer_alert = False
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        # No PSI data at all
+        current.psi = None
+        # Large swap: delta_in=100, delta_out=100 with threshold=4
+        # swap_product = (100.1/4) * (100.1/4) ≈ 626 > 1.0
+        current.swapcount = (100, 100)
+
+        result = current.check_thrashing(prev)
+        assert result is True
+        assert current.cooldown_counter == 1
+
+    def test_hybrid_cooldown_uses_swap_not_psi(self):
+        """Test that cooldown decrements when swap stops, even if PSI is still elevated."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 3
+        prev.swapcount = (100, 100)
+        prev.timer_alert = False
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        # Swap stopped (same counts)
+        current.swapcount = (100, 100)
+        # PSI still elevated (stale avg10)
+        current.psi = {"full": {"avg10": 20.0}}
+        # Enough time has elapsed
+        current.timestamp = time.time()
+        prev.timestamp = current.timestamp - 1.0
+
+        # Mock get_sleep_interval to return a small value so the time check passes
+        with patch.object(current, "get_sleep_interval", return_value=0.5):
+            result = current.check_thrashing(prev)
+        assert result is False
+        # Cooldown should have decremented despite PSI being elevated
+        assert current.cooldown_counter == 2
 
 
 class TestCgroupPressureSelector:

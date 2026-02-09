@@ -821,9 +821,21 @@ class SystemState:
         ## the below algorithm seems to satisfy those two criterias, though
         ## I'm not much happy with the arbitrary constant "0.1" being thrown
         ## in.
-        ret = ((self.swapcount[0] - prev.swapcount[0] + 0.1) / config.swap_page_threshold) * (
+        swap_product = ((self.swapcount[0] - prev.swapcount[0] + 0.1) / config.swap_page_threshold) * (
             (self.swapcount[1] - prev.swapcount[1] + 0.1) / config.swap_page_threshold
-        ) > 1.0
+        )
+
+        ## PSI weight: amplify swap signal when memory pressure is detected
+        psi_weight = 1.0
+        if config.use_psi and self.psi and "full" in self.psi:
+            psi_full = self.psi["full"].get("avg10", 0)
+            psi_weight = 1.0 + psi_full / config.psi_threshold
+            if psi_weight > 1.0:
+                logging.debug(
+                    f"PSI weight applied: full avg10={psi_full}%, weight={psi_weight:.2f}"
+                )
+
+        ret = swap_product * psi_weight > 1.0
         ## Increase or decrease the busy-counter ... or keep it where it is
         if ret:
             ## thrashing alert, increase the counter
@@ -859,50 +871,14 @@ class SystemState:
             ## (Hm - we risk that process A gets frozen but never unfrozen due to process B generating swap activity?)
         return ret
 
-    def check_psi_threshold(self, prev):
-        """Check if memory pressure (PSI) indicates thrashing.
-
-        Uses the 'full' metric which indicates time when ALL tasks are
-        stalled on memory - a more direct measure of thrashing than swap counts.
-        """
-        self.cooldown_counter = prev.cooldown_counter
-
-        if config.test_mode and not random.getrandbits(config.test_mode):
-            self.cooldown_counter = prev.cooldown_counter + 1
-            return True
-
-        if not self.psi or "full" not in self.psi:
-            # PSI not available, can't check
-            return None
-
-        # Use avg10 (10-second average) for responsiveness
-        psi_full = self.psi["full"].get("avg10", 0)
-        ret = psi_full >= config.psi_threshold
-
-        if ret:
-            self.cooldown_counter = prev.cooldown_counter + 1
-            logging.debug(f"PSI thrashing detected: full avg10={psi_full}% >= threshold {config.psi_threshold}%")
-        elif prev.cooldown_counter and psi_full < config.psi_threshold / 2:
-            # System is significantly below threshold, decrease cooldown
-            self.cooldown_counter = prev.cooldown_counter - 1
-            logging.debug(f"PSI pressure low: full avg10={psi_full}%, decreasing cooldown")
-
-        return ret
-
     def check_thrashing(self, prev):
-        """Check if the system is thrashing using PSI or swap page counting.
+        """Check if the system is thrashing using swap page counting with PSI amplification.
 
         Returns True if thrashing is detected, False otherwise.
-        Uses PSI if available and enabled, falls back to swap page counting.
+        Uses swap page counting as the primary trigger. When PSI is available
+        and enabled, it amplifies the swap signal (heavy PSI + small swap = trigger,
+        but zero swap + any PSI = no trigger).
         """
-        # Try PSI first if enabled
-        if config.use_psi and is_psi_available():
-            result = self.check_psi_threshold(prev)
-            if result is not None:
-                return result
-            # PSI check failed, fall back to swap counting
-
-        # Fall back to swap page counting
         return self.check_swap_threshold(prev)
 
     def get_sleep_interval(self):

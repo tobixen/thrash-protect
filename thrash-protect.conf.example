@@ -49,5 +49,14 @@ log_user_data_on_unfreeze = true
 # Set to false for Unix timestamps
 date_human_readable = true
 
+# Use PSI (Pressure Stall Information) to amplify swap-based thrash detection
+# Requires Linux 4.20+. When enabled, memory pressure amplifies the swap signal.
+# (default: true)
+# use_psi = true
+
+# PSI full avg10 threshold for amplification (default: 5.0)
+# At this value, swap sensitivity is doubled. Higher PSI = more amplification.
+# psi_threshold = 5.0
+
 # Pretend thrashing every 2^N iterations, for testing (default: 0 = disabled)
 # test_mode = 0
