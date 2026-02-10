@@ -2,6 +2,14 @@ export INSTALL_ROOT = "$(DESTDIR)"
 export PREFIX = ${INSTALL_ROOT}/usr
 export pkgname = thrash-protect
 
+# Auto-detect version from latest .tag.* file (created by make release)
+ifndef version
+_detected_version := $(shell ls .tag.* 2>/dev/null | sed 's/.*\.tag\.v\{0,1\}//' | sort -V | tail -1)
+ifneq ($(_detected_version),)
+version := $(_detected_version)
+endif
+endif
+
 .PHONY: build install clean distclean rpm archlinux dist release do-release ubuntu debian
 
 all: build
