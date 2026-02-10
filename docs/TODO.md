@@ -1,5 +1,7 @@
 # TODO List for thrash-protect
 
+Update 2026-02-10: I've forgotten completely to read and update this document, so it's probably already slightly outdated.
+
 ## High Priority
 
 ### SSD Default Settings

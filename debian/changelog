@@ -1,3 +1,19 @@
+thrash-protect (1.0.1) unstable; urgency=low
+
+  * Fix ruff lint and formatting issues
+  * Update Makefile and RPM/deb packaging for v1.0.0 filename and dependency changes
+  * See CHANGELOG.md for full details
+
+ -- Tobias Brox <tobias@redpill-linpro.com>  Mon, 10 Feb 2026 17:00:00 +0100
+
+thrash-protect (1.0.0) unstable; urgency=medium
+
+  * Major release: cgroup freezing, PSI-based detection, process selection fixes
+  * Requires Python 3.9+
+  * See CHANGELOG.md for full details
+
+ -- Tobias Brox <tobias@redpill-linpro.com>  Mon, 10 Feb 2026 16:00:00 +0100
+
 thrash-protect (0.6.2) UNRELEASED; urgency=low
 
   * version bump

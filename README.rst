@@ -14,17 +14,12 @@ situation despite the thrashing - or eventually letting the box become
 slightly degraded instead of completely thrashed (until the rogue
 process ends or gets killed by the oom killer).
 
-The commit rate has been fairly low during the last few years - for
-the very simple reason that it seems to work fairly well.
-
-Update 2025-12
+Update 2026-02
 --------------
 
-There was no commits to this project for several years, but it's been running on several servers as well as my personal laptop.  Over the last few years I've realized that the default values aren't optimized for SSDs.  Nowadays there are also statistics available under /proc/pressure on any modern linux systems, statistics that are likely to be more reliable than the current thrash detection algorithm.  As of 2025-12-16 I've done some QA work getting the project up to "best current practices", release 0.15 should be functionally completely equivalent with the latest 0.14, but the code base has been cleaned up a bit for better maintanability.  If I get time for it, I'm planning to make better functionality for auto-tuning the configuration values as well as reading /proc/pressure to make better decisions on weather we're observing thrashing or not.
+There was no commits to this project for several years, but it's been running on several servers as well as my personal laptop.  However, the world changes and hence it was needed to change things in the script.  It became very clear when thrash-protect started making troubles for me rather than ensuring that I have full control the laptop even when it's thrashing.  With the availability of AI-tools it was quite easy to do a full overhaul and modernization of the project.  So version 1.0 was released at 2026-02-10, utilizing new kernel features, having updated process whitelists and also allowing better ways to configure it.
 
-The rapid attempts on releases (0.15.7 was released same day as 0.15) is mostly due to problems getting the auto-publish-to-pypi-feature up and running.
-
-See `docs/TODO.md <docs/TODO.md>`_ for the current development roadmap.
+I sort of had a development roadmap at `docs/TODO.md <docs/TODO.md>`_, but I've forgotten both to read it and update it during the last weeks.
 
 How to use and how to configure
 -------------------------------

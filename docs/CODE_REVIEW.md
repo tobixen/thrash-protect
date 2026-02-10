@@ -1,5 +1,7 @@
 # Code Review: thrash-protect
 
+TODO: quite some changes done in v1.0, so this document is probably already outdated.
+
 Date: 2025-12-16 (Updated)
 Original review: 2025-12-15
 

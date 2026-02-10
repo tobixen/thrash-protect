@@ -2,7 +2,7 @@ export INSTALL_ROOT = "$(DESTDIR)"
 export PREFIX = ${INSTALL_ROOT}/usr
 export pkgname = thrash-protect
 
-.PHONY: build install clean distclean rpm archlinux dist release do-release ubuntu
+.PHONY: build install clean distclean rpm archlinux dist release do-release ubuntu debian
 
 all: build
 
@@ -18,10 +18,10 @@ dist:
 ifndef version
 	$(error dist requires version=X.Y.Z)
 endif
-	tar czf ${pkgname}-${version}.tar.gz --transform='s,^,${pkgname}-${version}/,' *
+	tar czf ${pkgname}-${version}.tar.gz --transform='s,^,${pkgname}-${version}/,' --exclude='${pkgname}-*.tar.gz' *
 
-install: thrash-protect.py
-	install "thrash-protect.py" "$(PREFIX)/sbin/thrash-protect"
+install: thrash_protect.py
+	install "thrash_protect.py" "$(PREFIX)/sbin/thrash-protect"
 	if [ -d "$(INSTALL_ROOT)/lib/systemd/system" ]; then install systemd/thrash-protect.service "$(INSTALL_ROOT)/lib/systemd/system" ; \
         elif [ -d "$(PREFIX)/lib/systemd/system" ]; then install systemd/thrash-protect.service "$(PREFIX)/lib/systemd/system" ; fi
 	if [ -d "$(INSTALL_ROOT)/etc/init" ]; then install upstart/thrash-protect.conf "$(INSTALL_ROOT)/etc/init/thrash-protect.conf" ; fi
@@ -57,7 +57,9 @@ release:
 			git tag -s "v$$ver" -m "Release v$$ver - see CHANGELOG.md for details" && \
 			git push origin "v$$ver" && \
 			touch ".tag.$$ver" && \
-			echo "Released v$$ver"; \
+			echo "Released v$$ver" && \
+			notes=$$(sed -n '/^## \['"$$ver"'\]/,/^## \[/{/^## \['"$$ver"'\]/d;/^## \[/d;p;}' CHANGELOG.md) && \
+			gh release create "v$$ver" --title "v$$ver" --notes "$$notes"; \
 		else \
 			echo "Aborted"; \
 		fi \
@@ -66,26 +68,26 @@ release:
 ## Package targets require version=X.Y.Z on command line
 ## Example: make archlinux version=0.15.0
 
-archlinux: archlinux/PKGBUILD_ thrash-protect.py
+archlinux: archlinux/PKGBUILD_ thrash_protect.py
 ifndef version
 	$(error archlinux requires version=X.Y.Z)
 endif
 	@test -f .tag.${version} || { echo "Error: Run 'make release' first to create tag v${version}"; exit 1; }
 	${MAKE} -C $@ archlinux
 
-rpm: rpm/thrash-protect.spec thrash-protect.py
+rpm: rpm/thrash-protect.spec thrash_protect.py
 ifndef version
 	$(error rpm requires version=X.Y.Z)
 endif
 	@test -f .tag.${version} || { echo "Error: Run 'make release' first to create tag v${version}"; exit 1; }
 	$(MAKE) dist version=${version}
 	rsync ${pkgname}-${version}.tar.gz ${HOME}/rpmbuild/SOURCES/v${version}.tar.gz
-	${MAKE} -C $@ rpm
+	${MAKE} -C $@ rpm version=${version}
 
 ## TODO: debian target (with systemv)
 
 ## TODO: not tested
-ubuntu: debian/changelog
+ubuntu:
 ifndef version
 	$(error ubuntu requires version=X.Y.Z)
 endif
@@ -93,15 +95,29 @@ endif
 	rm -f debian/${pkgname}.init
 	dpkg-buildpackage
 
-debian: debian/changelog
+debian:
 ifndef version
 	$(error debian requires version=X.Y.Z)
 endif
 	@test -f .tag.${version} || { echo "Error: Run 'make release' first to create tag v${version}"; exit 1; }
-	dpkg-buildpackage
+	rm -rf debian/tmp
+	mkdir -p debian/tmp/DEBIAN
+	mkdir -p debian/tmp/usr/sbin
+	mkdir -p debian/tmp/usr/lib/systemd/system
+	mkdir -p debian/tmp/usr/share/doc/${pkgname}
+	install -m 755 thrash_protect.py debian/tmp/usr/sbin/thrash-protect
+	install -m 644 systemd/thrash-protect.service debian/tmp/usr/lib/systemd/system/
+	install -m 644 README.rst debian/tmp/usr/share/doc/${pkgname}/
+	install -m 644 CHANGELOG.md debian/tmp/usr/share/doc/${pkgname}/
+	echo "Package: ${pkgname}" > debian/tmp/DEBIAN/control
+	echo "Version: ${version}" >> debian/tmp/DEBIAN/control
+	echo "Architecture: all" >> debian/tmp/DEBIAN/control
+	echo "Maintainer: Tobias Brox <tobias@redpill-linpro.com>" >> debian/tmp/DEBIAN/control
+	echo "Depends: python3 (>= 3.9)" >> debian/tmp/DEBIAN/control
+	echo "Section: admin" >> debian/tmp/DEBIAN/control
+	echo "Priority: optional" >> debian/tmp/DEBIAN/control
+	echo "Description: Simple-Stupid user-space program protecting a linux host from thrashing" >> debian/tmp/DEBIAN/control
+	fakeroot dpkg-deb --build debian/tmp ../${pkgname}_${version}_all.deb
+	rm -rf debian/tmp
 
-debian/changelog:
-ifndef version
-	$(error debian/changelog requires version=X.Y.Z)
-endif
-	dch --distribution=UNRELEASED -v ${version} "version bump"
+## debian/changelog is maintained manually (dch not available on all platforms)

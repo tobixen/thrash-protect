@@ -3,11 +3,10 @@ Version:        0.14.2
 Release:        1%{?dist}
 Summary:        Simple-Stupid user-space program protecting a linux host from thrashing
 BuildArch:      noarch
-Group:          System Environment/Daemons
 License:        GPLv3
 URL:            https://github.com/tobixen/thrash-protect
 Source0:        https://github.com/tobixen/%{name}/archive/v%{version}.tar.gz
-Requires:       python
+Requires:       python3 >= 3.9
 
 %description
 The program will on fixed intervals check if there has been a lot of

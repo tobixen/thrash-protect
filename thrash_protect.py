@@ -858,9 +858,7 @@ class SystemState:
             psi_some = self.psi["some"].get("avg10", 0)
             psi_weight = 1.0 + psi_some / config.psi_threshold
             if psi_weight > 1.0:
-                logging.debug(
-                    f"PSI weight applied: some avg10={psi_some}%, weight={psi_weight:.2f}"
-                )
+                logging.debug(f"PSI weight applied: some avg10={psi_some}%, weight={psi_weight:.2f}")
 
         ret = swap_product * psi_weight > 1.0
         if diagnostic_log:
@@ -1071,9 +1069,7 @@ class OOMScoreProcessSelector(ProcessSelector):
         logging.debug("oom scan completed - selected pid: %s" % (worstpid and worstpid[0]))
         if worstpid is not None:
             if diagnostic_log:
-                diagnostic_log(
-                    f"OOMScoreProcessSelector: pid={worstpid[0]}, oom_score={max}"
-                )
+                diagnostic_log(f"OOMScoreProcessSelector: pid={worstpid[0]}, oom_score={max}")
             return self.checkParents(*worstpid)
         else:
             return None
@@ -1349,8 +1345,7 @@ class GlobalProcessSelector(ProcessSelector):
             if ret:
                 if diagnostic_log:
                     diagnostic_log(
-                        f"selected pids {ret} via {type(selector).__name__} "
-                        f"(method #{self.scan_method_count - 1})"
+                        f"selected pids {ret} via {type(selector).__name__} (method #{self.scan_method_count - 1})"
                     )
                 return ret
 
@@ -1417,7 +1412,9 @@ def _write_log_entry(action, pid, log_user_data, all_frozen):
         else:
             if all_frozen:
                 logfile.write(
-                    ("%s - %s pid %s - frozen list: %s\n" % (get_date_string(), action, pid, all_frozen)).encode("utf-8")
+                    ("%s - %s pid %s - frozen list: %s\n" % (get_date_string(), action, pid, all_frozen)).encode(
+                        "utf-8"
+                    )
                 )
             else:
                 logfile.write(("%s - %s pid %s\n" % (get_date_string(), action, pid)).encode("utf-8"))
@@ -1494,18 +1491,16 @@ def freeze_something(pids_to_freeze=None):
         if cgroup_path:
             break
 
-    if cgroup_path:
-        # Use cgroup freezing - freezes all processes in the cgroup atomically
-        if freeze_cgroup(cgroup_path):
-            # Check if already frozen (avoid duplicates) - keyed on cgroup_path
-            if not any(item[0] == "cgroup" and item[1] == cgroup_path for item in frozen_items):
-                frozen_items.append(("cgroup", cgroup_path, pids_to_freeze))
-            frozen_cgroup_paths.add(cgroup_path)
-            for pid_to_freeze in pids_to_freeze:
-                logging.debug("froze pid %s (via cgroup)" % str(pid_to_freeze))
-                log_frozen(pid_to_freeze)
-            return pids_to_freeze
-        # Fall through to SIGSTOP if cgroup freezing failed
+    if cgroup_path and freeze_cgroup(cgroup_path):
+        # Cgroup freezing succeeded - freezes all processes atomically
+        # Check if already frozen (avoid duplicates) - keyed on cgroup_path
+        if not any(item[0] == "cgroup" and item[1] == cgroup_path for item in frozen_items):
+            frozen_items.append(("cgroup", cgroup_path, pids_to_freeze))
+        frozen_cgroup_paths.add(cgroup_path)
+        for pid_to_freeze in pids_to_freeze:
+            logging.debug("froze pid %s (via cgroup)" % str(pid_to_freeze))
+            log_frozen(pid_to_freeze)
+        return pids_to_freeze
 
     # Use SIGSTOP (original behavior)
     for pid_to_freeze in pids_to_freeze:
