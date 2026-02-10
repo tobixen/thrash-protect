@@ -9,6 +9,8 @@ For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
 ## [1.0.0] - 2026-02-10
 
+LOTS of changes done in v1.0.0.  This has been tested on my personal laptop, but nowhere else so far, so if you're dependent on thrash-protect you may want to wait for a while before upgrading.
+
 New local usage patterns caused problems for me:
 
 * Claude Code tends to require quite much memory sometimes, and I tend to have multiple consoles open - so despite having fairly much memory on my laptop I've had incidents with thrashing and OOM'ing lately.
