@@ -30,6 +30,7 @@ v.1.0.1 is a "meta-release", no changes to the business logic, only Makefile, li
 - Add `debian/changelog` entry for v1.0.0
 - Add `debian` to `.PHONY` in Makefile (directory name conflict)
 - Add `gh release create` to `make release` target
+- Auto-detect version from `.tag.*` files so package targets work without `version=X.Y.Z`
 
 ## [1.0.0] - 2026-02-10
 
