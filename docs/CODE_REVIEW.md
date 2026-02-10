@@ -181,4 +181,4 @@ thrash-protect is a useful, battle-tested tool. Major modernization completed in
 - **Log path configuration**: Make log paths configurable via environment variables
 - **Package restructure**: Consider src/ layout for larger refactors
 - **Test coverage**: Increase unit test coverage for edge cases
-- **ChangeLog format**: The GNU-style ChangeLog format is dated; consider migrating to [Keep a Changelog](https://keepachangelog.com/) format (CHANGELOG.md)
+- ~~**ChangeLog format**: The GNU-style ChangeLog format is dated; consider migrating to [Keep a Changelog](https://keepachangelog.com/) format (CHANGELOG.md)~~ **DONE** - Migrated to CHANGELOG.md

@@ -19,10 +19,12 @@ import thrash_protect
 def reset_global_state():
     """Reset global state before each test."""
     thrash_protect.frozen_items = []
+    thrash_protect.frozen_cgroup_paths = set()
     thrash_protect.num_unfreezes = 0
     yield
     # Clean up after test
     thrash_protect.frozen_items = []
+    thrash_protect.frozen_cgroup_paths = set()
     thrash_protect.num_unfreezes = 0
 
 
@@ -171,6 +173,62 @@ class TestUnitTest:
             # The parent shell is '-bash' (login shell), should still be detected
             result = thrash_protect.ProcessSelector().checkParents(100)
             assert result == (99, 100), f"Expected (99, 100), got {result}"
+
+    def test_is_kernel_thread(self):
+        """Test _is_kernel_thread() detects kthreadd and its children."""
+        ps = thrash_protect.ProcessSelector()
+        procstat = ps.procstat
+
+        # pid 2 (kthreadd itself, ppid 0)
+        assert ps._is_kernel_thread(2, procstat(cmd="kthreadd", state="S", majflt=0, ppid=0))
+        # kernel worker thread (ppid 2)
+        assert ps._is_kernel_thread(123, procstat(cmd="kworker/0:1", state="S", majflt=0, ppid=2))
+        # normal userspace process
+        assert not ps._is_kernel_thread(1000, procstat(cmd="cat", state="R", majflt=100, ppid=999))
+
+    def test_is_frozen_sigstop(self):
+        """Test _is_frozen detects SIGSTOP-frozen processes."""
+        ps = thrash_protect.ProcessSelector()
+        procstat = ps.procstat
+        assert ps._is_frozen(100, procstat(cmd="cat", state="T", majflt=0, ppid=1))
+        assert not ps._is_frozen(100, procstat(cmd="cat", state="R", majflt=0, ppid=1))
+
+    def test_is_frozen_cgroup(self):
+        """Test _is_frozen detects cgroup-frozen processes."""
+        ps = thrash_protect.ProcessSelector()
+        procstat = ps.procstat
+        cgroup_path = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux.scope"
+
+        # Not frozen when frozen_cgroup_paths is empty
+        with patch("thrash_protect.get_cgroup_path", return_value=cgroup_path):
+            assert not ps._is_frozen(100, procstat(cmd="cat", state="S", majflt=0, ppid=1))
+
+        # Frozen when cgroup is in frozen_cgroup_paths
+        thrash_protect.frozen_cgroup_paths.add(cgroup_path)
+        with patch("thrash_protect.get_cgroup_path", return_value=cgroup_path):
+            assert ps._is_frozen(100, procstat(cmd="cat", state="S", majflt=0, ppid=1))
+
+    def test_oom_scan_skips_kernel_threads(self):
+        """Test that OOMScoreProcessSelector.scan() skips kernel threads."""
+        kernel_files = {
+            # kthreadd (pid 2, ppid 0) with high oom_score
+            "/proc/2/stat": b"2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/2/oom_score": b"900\n",
+            # kworker (pid 50, ppid 2) with high oom_score
+            "/proc/50/stat": b"50 (kworker/0:1) S 2 0 0 0 -1 69238880 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/50/oom_score": b"800\n",
+            # normal process (pid 500, ppid 1) with low oom_score
+            "/proc/500/stat": b"500 (cat) R 1 500 500 0 -1 4202496 50 0 100 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/500/oom_score": b"100\n",
+        }
+        with patch("thrash_protect.open", new=FileMockup(kernel_files).open):
+            with patch("glob.glob", return_value=["/proc/2/oom_score", "/proc/50/oom_score", "/proc/500/oom_score"]):
+                result = thrash_protect.OOMScoreProcessSelector().scan()
+                # Should select pid 500 (normal process), not 2 or 50 (kernel threads)
+                assert result is not None
+                assert 500 in result
+                assert 2 not in result
+                assert 50 not in result
 
     @patch("thrash_protect.kill")
     @patch("thrash_protect.unlink")
@@ -367,6 +425,11 @@ class TestConfigurationSystem:
             assert "bash" in whitelist
             assert "zsh" in whitelist
 
+    def test_static_whitelist_includes_login_and_supervisord(self):
+        """Test that login and supervisord are in STATIC_WHITELIST."""
+        assert "login" in thrash_protect.STATIC_WHITELIST
+        assert "supervisord" in thrash_protect.STATIC_WHITELIST
+
     def test_get_default_jobctrllist(self):
         """Test get_default_jobctrllist() includes shells and sudo."""
         with patch("thrash_protect.get_shells_from_etc", return_value=["bash", "zsh"]):
@@ -517,6 +580,7 @@ cmd_whitelist = sshd bash
                     "log_user_data_on_freeze",
                     "log_user_data_on_unfreeze",
                     "date_human_readable",
+                    "diagnostic_logging",
                 ]:
                     setattr(args, attr, None)
 
@@ -593,6 +657,43 @@ cmd_whitelist = ["sshd", "bash"]
                 os.unlink(f.name)
 
 
+class TestDiagnosticLogging:
+    """Tests for diagnostic logging functionality."""
+
+    def test_diagnostic_disabled_by_default(self):
+        """Test that diagnostic_log is None (no-op) by default."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect.diagnostic_log is None
+
+    def test_diagnostic_enabled(self):
+        """Test that diagnostic_log is set to _diagnostic_log when enabled."""
+        args = argparse.Namespace(config=None, diagnostic_logging=True)
+        thrash_protect.init_config(args)
+        assert thrash_protect.diagnostic_log is thrash_protect._diagnostic_log
+        # Reset
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+    def test_diagnostic_logs_via_logging_info(self):
+        """Test that diagnostic_log outputs via logging.info."""
+        args = argparse.Namespace(config=None, diagnostic_logging=True)
+        thrash_protect.init_config(args)
+        try:
+            with patch("logging.info") as mock_info:
+                thrash_protect.diagnostic_log("test message")
+                mock_info.assert_called_once_with("DIAGNOSTIC: %s" % "test message")
+        finally:
+            thrash_protect.init_config(argparse.Namespace(config=None))
+
+    def test_diagnostic_argument_parser(self):
+        """Test that --diagnostic flag is parsed correctly."""
+        parser = thrash_protect.create_argument_parser()
+        args = parser.parse_args(["--diagnostic"])
+        assert args.diagnostic_logging is True
+
+        args = parser.parse_args([])
+        assert args.diagnostic_logging is None
+
+
 class TestPSI:
     """Tests for PSI (Pressure Stall Information) functionality."""
 
@@ -624,69 +725,171 @@ class TestPSI:
         result = thrash_protect.get_memory_pressure()
         assert result is None
 
-    def test_check_psi_threshold(self):
-        """Test PSI threshold checking."""
+    def test_hybrid_psi_amplifies_swap(self):
+        """Test that PSI weight amplifies moderate swap to trigger detection."""
         thrash_protect.init_config(argparse.Namespace(config=None))
 
-        # Create mock states with PSI data
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 0
+        prev.swapcount = (0, 0)
+        prev.timer_alert = False
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        current.psi = {"full": {"avg10": 10.0, "avg60": 5.0, "avg300": 2.0, "total": 1000000}}
+        # Moderate swap: delta_in=3, delta_out=3 with threshold=4
+        # swap_product = (3.1/4) * (3.1/4) = 0.775^2 ≈ 0.600 (below 1.0)
+        current.swapcount = (3, 3)
+        # High PSI: avg10=15%, psi_weight = 1 + 15/5 = 4.0
+        # final = 0.600 * 4.0 = 2.4 > 1.0 → triggers
+        current.psi = {"some": {"avg10": 15.0}}
 
-        # With default threshold of 5.0, avg10=10.0 should trigger
-        result = current.check_psi_threshold(prev)
+        result = current.check_thrashing(prev)
         assert result is True
         assert current.cooldown_counter == 1
 
-    def test_check_psi_threshold_below(self):
-        """Test PSI threshold not triggered when below threshold."""
-        thrash_protect.init_config(argparse.Namespace(config=None))
-
-        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        prev.cooldown_counter = 0
-
-        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        current.psi = {"full": {"avg10": 2.0, "avg60": 1.0, "avg300": 0.5, "total": 100000}}
-
-        # With default threshold of 5.0, avg10=2.0 should not trigger
-        result = current.check_psi_threshold(prev)
-        assert result is False
-
-    def test_check_thrashing_uses_psi(self):
-        """Test that check_thrashing uses PSI when available."""
+    def test_hybrid_psi_without_swap_does_not_trigger(self):
+        """Test that high PSI + zero swap does NOT trigger."""
         thrash_protect.init_config(argparse.Namespace(config=None))
 
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 0
         prev.swapcount = (100, 100)
+        prev.timer_alert = False
+        prev.timestamp = time.time() - 1.0
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        current.psi = {"full": {"avg10": 10.0, "avg60": 5.0, "avg300": 2.0, "total": 1000000}}
-        current.swapcount = (100, 100)  # No swap activity
+        # Zero swap delta
+        current.swapcount = (100, 100)
+        # Very high PSI
+        current.psi = {"some": {"avg10": 50.0}}
+        current.timestamp = time.time()
+        # swap_product = (0.1/4) * (0.1/4) = 0.000625
+        # psi_weight = 1 + 50/5 = 11.0
+        # final = 0.000625 * 11.0 = 0.006875 < 1.0 → does NOT trigger
 
-        with patch("thrash_protect.is_psi_available", return_value=True):
-            # PSI indicates pressure, swap doesn't - should use PSI
-            result = current.check_thrashing(prev)
-            assert result is True
+        result = current.check_thrashing(prev)
+        assert result is False
 
-    def test_check_thrashing_fallback_to_swap(self):
-        """Test that check_thrashing falls back to swap when PSI disabled."""
+    def test_hybrid_requires_swap_evidence(self):
+        """Test that PSI alone without swap evidence does not trigger."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (50, 50)
+        prev.timer_alert = False
+        prev.timestamp = time.time() - 1.0
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        # Tiny swap delta (1 page each direction)
+        current.swapcount = (51, 51)
+        current.psi = {"some": {"avg10": 10.0}}
+        current.timestamp = time.time()
+        # swap_product = (1.1/4) * (1.1/4) = 0.275^2 ≈ 0.0756
+        # psi_weight = 1 + 10/5 = 3.0
+        # final = 0.0756 * 3.0 = 0.227 < 1.0 → does NOT trigger
+
+        result = current.check_thrashing(prev)
+        assert result is False
+
+    def test_check_thrashing_no_psi(self):
+        """Test that --no-psi uses pure swap counting."""
         args = argparse.Namespace(config=None, use_psi=False)
         thrash_protect.init_config(args)
 
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 0
         prev.swapcount = (0, 0)
+        prev.timer_alert = False
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        current.psi = {"full": {"avg10": 10.0}}  # High PSI
+        current.psi = {"some": {"avg10": 50.0}}  # High PSI (should be ignored)
         current.swapcount = (100, 100)  # High swap activity
+        current.cooldown_counter = 0
 
-        # With PSI disabled, should use swap counting
+        # With PSI disabled, should use pure swap counting
         result = current.check_thrashing(prev)
-        assert result is True  # Swap activity should trigger
+        assert result is True  # Swap activity alone should trigger
+
+    def test_hybrid_swap_only_still_works(self):
+        """Test that swap-only triggers work when PSI is not available."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (0, 0)
+        prev.timer_alert = False
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        # No PSI data at all
+        current.psi = None
+        # Large swap: delta_in=100, delta_out=100 with threshold=4
+        # swap_product = (100.1/4) * (100.1/4) ≈ 626 > 1.0
+        current.swapcount = (100, 100)
+
+        result = current.check_thrashing(prev)
+        assert result is True
+        assert current.cooldown_counter == 1
+
+    def test_hybrid_cooldown_uses_swap_not_psi(self):
+        """Test that cooldown decrements when swap stops, even if PSI is still elevated."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 3
+        prev.swapcount = (100, 100)
+        prev.timer_alert = False
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        # Swap stopped (same counts)
+        current.swapcount = (100, 100)
+        # PSI still elevated (stale avg10)
+        current.psi = {"some": {"avg10": 20.0}}
+        # Enough time has elapsed
+        current.timestamp = time.time()
+        prev.timestamp = current.timestamp - 1.0
+
+        # Mock get_sleep_interval to return a small value so the time check passes
+        with patch.object(current, "get_sleep_interval", return_value=0.5):
+            result = current.check_thrashing(prev)
+        assert result is False
+        # Cooldown should have decremented despite PSI being elevated
+        assert current.cooldown_counter == 2
+
+    def test_psi_uses_some_not_full(self):
+        """Test that PSI uses 'some' metric, not 'full'.
+
+        'full' requires ALL CPUs to be stalled simultaneously, which can be
+        near-zero even during heavy thrashing on multi-core systems.
+        'some' triggers when at least one task is stalled.
+        """
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (0, 0)
+        prev.timer_alert = False
+
+        # With 'some' PSI data + moderate swap → should trigger
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current.swapcount = (3, 3)
+        current.psi = {"some": {"avg10": 15.0}}
+        result = current.check_thrashing(prev)
+        assert result is True
+
+        # With only 'full' PSI data (no 'some') + moderate swap → should NOT amplify
+        current2 = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current2.swapcount = (3, 3)
+        current2.psi = {"full": {"avg10": 15.0}}
+        current2.cooldown_counter = 0
+        current2.timestamp = time.time()
+        prev2 = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev2.cooldown_counter = 0
+        prev2.swapcount = (0, 0)
+        prev2.timer_alert = False
+        prev2.timestamp = current2.timestamp - 1.0
+        result2 = current2.check_thrashing(prev2)
+        # swap_product = (3.1/4)^2 ≈ 0.60 < 1.0, no amplification → False
+        assert result2 is False
 
 
 class TestCgroupPressureSelector:
@@ -733,6 +936,43 @@ class TestCgroupPressureSelector:
         cgroup_idx = selector_types.index("CgroupPressureProcessSelector")
         assert cgroup_idx == last_frozen_idx + 1
 
+    def test_oom_score_unbiases_large_cgroups(self):
+        """Test that OOM score prevents bias toward large aggregate cgroups.
+
+        A chromium renderer in a large session cgroup (high aggregate pressure=5%,
+        low oom_score=100) should lose to a claude process in a small cgroup
+        (low pressure=2%, high oom_score=800).
+        """
+        selector = thrash_protect.CgroupPressureProcessSelector()
+
+        files = {
+            # chromium renderer: low oom_score, high cgroup pressure
+            "/proc/1000/stat": b"1000 (chromium) S 1 1000 1000 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/1000/oom_score": b"100\n",
+            "/proc/1000/cgroup": b"0::/user.slice/user-1000.slice/session-1.scope\n",
+            # claude: high oom_score, lower cgroup pressure
+            "/proc/2000/stat": b"2000 (claude) S 1 2000 2000 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/2000/oom_score": b"800\n",
+            "/proc/2000/cgroup": b"0::/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc.scope\n",
+        }
+        cgroup_pressures = {
+            "/sys/fs/cgroup/user.slice/user-1000.slice/session-1.scope": 5.0,
+            "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc.scope": 2.0,
+        }
+
+        def mock_get_pressure(cgroup_path):
+            return cgroup_pressures.get(cgroup_path)
+
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            with patch("thrash_protect.is_psi_available", return_value=True):
+                with patch("glob.glob", return_value=["/proc/1000/stat", "/proc/2000/stat"]):
+                    with patch.object(selector, "get_cgroup_pressure", side_effect=mock_get_pressure):
+                        result = selector.scan()
+
+        # claude (score=2*800=1600) should win over chromium (score=5*100=500)
+        assert result is not None
+        assert 2000 in result
+
 
 class TestCgroupFreezing:
     """Tests for cgroup-based freezing functionality."""
@@ -771,20 +1011,38 @@ class TestCgroupFreezing:
     @patch("thrash_protect.get_cgroup_path")
     @patch("thrash_protect.is_cgroup_freezable")
     def test_should_use_cgroup_freeze_scope(self, mock_freezable, mock_cgroup):
-        """Test that any .scope cgroup uses cgroup freezing."""
-        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/tmux-spawn-abc123.scope"
+        """Test that .scope under user@service uses cgroup freezing."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc123.scope"
         mock_freezable.return_value = True
         result = thrash_protect.should_use_cgroup_freeze(12345)
-        assert result == "/sys/fs/cgroup/user.slice/tmux-spawn-abc123.scope"
+        assert result == "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc123.scope"
 
     @patch("thrash_protect.get_cgroup_path")
     @patch("thrash_protect.is_cgroup_freezable")
     def test_should_use_cgroup_freeze_any_scope(self, mock_freezable, mock_cgroup):
-        """Test that any .scope cgroup uses cgroup freezing (not just tmux/screen)."""
-        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/run-12345.scope"
+        """Test that any .scope under user@service uses cgroup freezing."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/run-12345.scope"
         mock_freezable.return_value = True
         result = thrash_protect.should_use_cgroup_freeze(12345)
-        assert result == "/sys/fs/cgroup/user.slice/run-12345.scope"
+        assert result == "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/run-12345.scope"
+
+    @patch("thrash_protect.get_cgroup_path")
+    @patch("thrash_protect.is_cgroup_freezable")
+    def test_should_not_freeze_session_scope(self, mock_freezable, mock_cgroup):
+        """Test that session-N.scope (under user-N.slice, not user@) is rejected."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/user-1000.slice/session-1.scope"
+        mock_freezable.return_value = True
+        result = thrash_protect.should_use_cgroup_freeze(12345)
+        assert result is None
+
+    @patch("thrash_protect.get_cgroup_path")
+    @patch("thrash_protect.is_cgroup_freezable")
+    def test_should_not_freeze_system_scope(self, mock_freezable, mock_cgroup):
+        """Test that system .scope cgroups are rejected."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/system.slice/some-service.scope"
+        mock_freezable.return_value = True
+        result = thrash_protect.should_use_cgroup_freeze(12345)
+        assert result is None
 
     @patch("thrash_protect.get_cgroup_path")
     @patch("thrash_protect.is_cgroup_freezable")
@@ -832,3 +1090,19 @@ class TestCgroupFreezing:
         assert mock_unfreeze_cgroup.call_count == 2
         # Should SIGCONT regular pids (10, 30, 20 - in reverse order for tuples)
         assert kill.call_count == 3
+
+    @patch("thrash_protect.freeze_cgroup", return_value=True)
+    @patch("thrash_protect.should_use_cgroup_freeze")
+    @patch("thrash_protect.open")
+    @patch("thrash_protect.unlink")
+    def test_no_duplicate_cgroup_frozen_items(self, unlink, open, mock_should_use, mock_freeze):
+        """Test that freezing the same cgroup twice creates only one entry."""
+        cgroup_path = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc.scope"
+        mock_should_use.return_value = cgroup_path
+
+        thrash_protect.freeze_something((100,))
+        thrash_protect.freeze_something((200,))
+
+        cgroup_entries = [item for item in thrash_protect.frozen_items if item[0] == "cgroup"]
+        assert len(cgroup_entries) == 1
+        assert cgroup_entries[0][1] == cgroup_path

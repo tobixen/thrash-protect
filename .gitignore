@@ -9,7 +9,6 @@ __pycache__/
 _version.py
 
 # Make-generated files
-ChangeLog.recent
 .tag.*
 /*.tar.gz
 
