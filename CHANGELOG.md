@@ -7,6 +7,12 @@ and this project should adhere to [Semantic Versioning](https://semver.org/spec/
 
 For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
+## [1.0.2] - 2026-02-11
+
+### Changed
+
+- Auto-detect version from `.tag.*` files so package targets work without `version=X.Y.Z`
+
 ## [1.0.1] - 2026-02-10
 
 v.1.0.1 is a "meta-release", no changes to the business logic, only Makefile, linting, etc.
@@ -30,7 +36,6 @@ v.1.0.1 is a "meta-release", no changes to the business logic, only Makefile, li
 - Add `debian/changelog` entry for v1.0.0
 - Add `debian` to `.PHONY` in Makefile (directory name conflict)
 - Add `gh release create` to `make release` target
-- Auto-detect version from `.tag.*` files so package targets work without `version=X.Y.Z`
 
 ## [1.0.0] - 2026-02-10
 
