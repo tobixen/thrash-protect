@@ -7,7 +7,7 @@ and this project should adhere to [Semantic Versioning](https://semver.org/spec/
 
 For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
-## [Unreleased]
+## [1.0.0] - 2026-02-10
 
 New local usage patterns caused problems for me:
 
