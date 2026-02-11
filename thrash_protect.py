@@ -29,7 +29,7 @@ import os
 import random  ## for the test_mode
 import signal
 import time
-from collections import namedtuple
+from collections import deque, namedtuple
 from datetime import datetime
 from os import getenv, getpid, getppid, kill, unlink
 from subprocess import check_output
@@ -195,6 +195,7 @@ CONFIG_SCHEMA = {
     "diagnostic_logging": (_parse_bool, "THRASH_PROTECT_DIAGNOSTIC_LOGGING", ["diagnostic-logging"]),
     "storage_type": (str, "THRASH_PROTECT_STORAGE_TYPE", ["storage-type"]),
     "oom_protection": (_parse_bool, "THRASH_PROTECT_OOM_PROTECTION", ["oom-protection"]),
+    "oom_observation_window": (int, "THRASH_PROTECT_OOM_OBSERVATION_WINDOW", ["oom-observation-window"]),
     "oom_horizon": (int, "THRASH_PROTECT_OOM_HORIZON", ["oom-horizon"]),
     "oom_swap_weight": (float, "THRASH_PROTECT_OOM_SWAP_WEIGHT", ["oom-swap-weight"]),
     "oom_low_pct": (float, "THRASH_PROTECT_OOM_LOW_PCT", ["oom-low-pct"]),
@@ -302,9 +303,10 @@ def get_defaults() -> dict[str, Any]:
         "diagnostic_logging": False,
         "storage_type": "auto",
         "oom_protection": True,
-        "oom_horizon": 120,
+        "oom_observation_window": 60,
+        "oom_horizon": 600,
         "oom_swap_weight": None,  # Auto-set based on storage type
-        "oom_low_pct": 10.0,  # Only predict when available < this % of total
+        "oom_low_pct": 100.0,  # Effectively disabled until algorithms are well-tuned
     }
 
 
@@ -603,11 +605,18 @@ Example usage:
         help="Disable proactive OOM protection",
     )
     p.add_argument(
+        "--oom-observation-window",
+        dest="oom_observation_window",
+        type=int,
+        metavar="SECONDS",
+        help="Main observation window for OOM prediction in seconds (default: 60)",
+    )
+    p.add_argument(
         "--oom-horizon",
         dest="oom_horizon",
         type=int,
         metavar="SECONDS",
-        help="Time horizon for OOM prediction in seconds (default: 120)",
+        help="Prediction horizon for the main observation window in seconds (default: 600)",
     )
     p.add_argument(
         "--oom-swap-weight",
@@ -621,7 +630,7 @@ Example usage:
         dest="oom_low_pct",
         type=float,
         metavar="PERCENT",
-        help="Only predict OOM when available resources are below this percentage of total (default: 10.0)",
+        help="Only predict OOM when available resources are below this percentage of total (default: 100.0)",
     )
 
     return p
@@ -917,38 +926,62 @@ def read_meminfo() -> tuple[int, int, int, int] | None:
 
 
 class MemoryExhaustionPredictor:
-    """Predicts memory exhaustion using two-point linear projection.
+    """Predicts memory exhaustion using multi-scale linear projection.
 
     Tracks a weighted "available resources" metric:
         available = mem_available + swap_free * swap_weight
 
     Where swap_weight reflects that swap depletion is more dangerous
-    (SSD: 2.0, HDD: 4.0).
+    (SSD: 2.0, HDD: 4.0).  This means the predictor naturally becomes
+    alarmed when swap starts being consumed, even if MemAvailable is stable.
 
-    Uses two consecutive observations to project when resources will hit zero.
-    If the projected time-to-exhaustion is less than oom_horizon seconds
-    AND available resources are already below low_pct% of total,
-    triggers proactive freezing to prevent OOM kills.
+    Maintains a sliding window of observations and checks projections at
+    multiple time scales, each with a proportional horizon:
 
-    The low_pct threshold prevents false positives from normal memory
-    fluctuations when the system has plenty of resources available.
+    - Main window (default 60s) with main horizon (default 600s)
+    - Short window (1/12 of main, ~5s) with proportional horizon (~50s)
+
+    The constant ratio (horizon / observation_window) ensures that longer
+    observation windows tolerate slower declines while shorter windows
+    only trigger on rapid consumption.  This prevents false positives from
+    normal memory fluctuations while still catching runaway allocations.
     """
 
-    def __init__(self, swap_weight: float = 2.0, horizon: int = 120, low_pct: float = 10.0) -> None:
+    # Observation scales relative to the main window.
+    # Each scale checks a different time range with proportional horizon.
+    _SCALES = (1.0, 1 / 12)
+
+    def __init__(
+        self,
+        swap_weight: float = 2.0,
+        observation_window: int = 60,
+        horizon: int = 600,
+        low_pct: float = 100.0,
+    ) -> None:
         self.swap_weight = swap_weight
+        self.observation_window = observation_window
         self.horizon = horizon
         self.low_pct = low_pct
-        self._prev_time: float | None = None
-        self._prev_available: float | None = None
+        self._horizon_ratio = horizon / observation_window if observation_window > 0 else 10.0
+        self._observations: deque[tuple[float, float]] = deque()
+        self._max_age = observation_window * 1.5
+
+    def _find_observation_at(self, target_time: float) -> tuple[float, float] | None:
+        """Find the observation closest to target_time."""
+        best: tuple[float, float] | None = None
+        best_diff = float("inf")
+        for obs_time, obs_available in self._observations:
+            diff = abs(obs_time - target_time)
+            if diff < best_diff:
+                best_diff = diff
+                best = (obs_time, obs_available)
+        return best
 
     def update_and_predict(self) -> float | None:
-        """Read current memory state, project time to exhaustion.
+        """Record observation, project time to exhaustion at multiple scales.
 
-        Returns estimated seconds until exhaustion, or None if:
-        - Resources are not declining
-        - Available resources are above low_pct% of total (not under pressure)
-        - Not enough observations yet
-        - /proc/meminfo is unavailable
+        Returns the minimum ETA (seconds) across all scales that triggered
+        (i.e., ETA < that scale's horizon), or None if no scale triggered.
         """
         meminfo = read_meminfo()
         if meminfo is None:
@@ -959,52 +992,63 @@ class MemoryExhaustionPredictor:
         total = mem_total + swap_total * self.swap_weight
         now = time.time()
 
-        if self._prev_time is None:
-            # First observation - store and return
-            self._prev_time = now
-            self._prev_available = available
+        self._observations.append((now, available))
+
+        # Prune old observations
+        cutoff = now - self._max_age
+        while self._observations and self._observations[0][0] < cutoff:
+            self._observations.popleft()
+
+        if len(self._observations) < 2:
             return None
 
-        prev_time = self._prev_time
-        prev_available = self._prev_available
-
-        # Update stored state for next call
-        self._prev_time = now
-        self._prev_available = available
-
-        # Only predict when available resources are below threshold.
-        # This prevents false positives from normal cache/allocation patterns
-        # when the system has plenty of memory.
+        # Optional low_pct threshold (effectively disabled at 100%)
         if total > 0 and (available / total * 100) >= self.low_pct:
             return None
 
-        # Not declining -> no exhaustion predicted
-        if available >= prev_available:
-            return None
+        min_eta: float | None = None
+        for scale in self._SCALES:
+            target_window = self.observation_window * scale
+            target_horizon = target_window * self._horizon_ratio
 
-        # Two-point projection: when will available hit zero?
-        dt = now - prev_time
-        if dt <= 0:
-            return None
+            target_time = now - target_window
+            past = self._find_observation_at(target_time)
+            if past is None:
+                continue
 
-        decline_rate = (prev_available - available) / dt  # kB/sec declining
-        if decline_rate <= 0:
-            return None
+            past_time, past_available = past
+            # Don't compare an observation with itself
+            if past_time == now:
+                continue
 
-        eta = available / decline_rate
-        return eta
+            # Not declining at this scale
+            if available >= past_available:
+                continue
+
+            dt = now - past_time
+            if dt <= 0:
+                continue
+
+            decline_rate = (past_available - available) / dt
+            if decline_rate <= 0:
+                continue
+
+            eta = available / decline_rate
+
+            if eta < target_horizon and (min_eta is None or eta < min_eta):
+                min_eta = eta
+
+        return min_eta
 
     def should_freeze(self) -> bool:
         """Check if proactive freezing should be triggered.
 
-        Returns True if projected time to exhaustion is within horizon.
+        Returns True if any observation scale predicts exhaustion within
+        its proportional horizon.
         """
         eta = self.update_and_predict()
-        if eta is not None and eta < self.horizon:
-            logging.info(
-                "OOM protection: memory exhaustion predicted in %.0f seconds "
-                "(horizon: %d seconds)" % (eta, self.horizon)
-            )
+        if eta is not None:
+            logging.info("OOM protection: memory exhaustion predicted in %.0f seconds", eta)
             return True
         return False
 
@@ -1057,6 +1101,7 @@ def init_config(args: argparse.Namespace | None = None) -> None:
     if config.oom_protection:
         _tp.memory_predictor = MemoryExhaustionPredictor(
             swap_weight=config.oom_swap_weight,
+            observation_window=config.oom_observation_window,
             horizon=config.oom_horizon,
             low_pct=config.oom_low_pct,
         )
