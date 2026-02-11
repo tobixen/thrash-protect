@@ -620,6 +620,14 @@ def unfreeze_cgroup(cgroup_path):
         return False
 
 
+def get_own_cgroup_path():
+    """Get the cgroup path for thrash-protect's own process, lazily cached."""
+    global _own_cgroup_path
+    if _own_cgroup_path == "_unset":
+        _own_cgroup_path = get_cgroup_path(getpid())
+    return _own_cgroup_path
+
+
 def should_use_cgroup_freeze(pid):
     """Check if we should use cgroup freezing for this process.
 
@@ -1396,6 +1404,7 @@ def get_all_frozen_pids():
 
 
 FROZEN_PID_FILE = "/tmp/thrash-protect-frozen-pid-list"
+FROZEN_CGROUP_FILE = "/tmp/thrash-protect-frozen-cgroup-list"
 LOG_FILE = "/var/log/thrash-protect.log"
 
 
@@ -1421,7 +1430,7 @@ def _write_log_entry(action, pid, log_user_data, all_frozen):
 
 
 def _update_frozen_pid_file(all_frozen):
-    """Update or remove the frozen PID list file."""
+    """Update or remove the frozen PID list file and cgroup list file."""
     if all_frozen:
         with open(FROZEN_PID_FILE, "w") as f:
             f.write(" ".join([" ".join([str(pid) for pid in pid_group]) for pid_group in all_frozen]) + "\n")
@@ -1430,14 +1439,30 @@ def _update_frozen_pid_file(all_frozen):
             unlink(FROZEN_PID_FILE)
         except (FileNotFoundError, OSError):
             pass
+    # Also persist frozen cgroup paths for crash recovery
+    if frozen_cgroup_paths:
+        with open(FROZEN_CGROUP_FILE, "w") as f:
+            for path in frozen_cgroup_paths:
+                f.write(path + "\n")
+    else:
+        try:
+            unlink(FROZEN_CGROUP_FILE)
+        except (FileNotFoundError, OSError):
+            pass
 
 
+# Intentionally has no @ignore_failure — every frozen PID must be logged
+# and persisted for crash recovery.  Operations are lightweight local file
+# writes, so failure indicates a serious problem.
 def log_frozen(pid):
     all_frozen = get_all_frozen_pids()
     _write_log_entry("frozen", pid, config.log_user_data_on_freeze, all_frozen)
     _update_frozen_pid_file(all_frozen)
 
 
+# Uses @ignore_failure because it gathers extra process info (get_process_info)
+# that may fail for exited processes.  Failing to log an unfreeze is tolerable
+# since the process is already unfrozen.
 @ignore_failure
 def log_unfrozen(pid):
     all_frozen = get_all_frozen_pids()
@@ -1491,6 +1516,12 @@ def freeze_something(pids_to_freeze=None):
         if cgroup_path:
             break
 
+    # Prevent self-freezing deadlock: if the target cgroup contains
+    # thrash-protect itself, fall back to SIGSTOP for the individual process.
+    if cgroup_path and cgroup_path == get_own_cgroup_path():
+        logging.warning("target cgroup %s contains thrash-protect's own process, falling back to SIGSTOP" % cgroup_path)
+        cgroup_path = None
+
     if cgroup_path and freeze_cgroup(cgroup_path):
         # Cgroup freezing succeeded - freezes all processes atomically
         # Check if already frozen (avoid duplicates) - keyed on cgroup_path
@@ -1532,9 +1563,10 @@ def unfreeze_something():
 
     ## queue or stack?  Seems like both approaches are problematic
     if num_unfreezes % config.unfreeze_pop_ratio:
-        item = frozen_items.pop()
+        pop_index = -1
     else:
-        item = frozen_items.pop(0)
+        pop_index = 0
+    item = frozen_items.pop(pop_index)
 
     item_type, cgroup_path, pids_to_unfreeze = unpack_frozen_item(item)
     pids_to_unfreeze = list(normalize_pids(pids_to_unfreeze))
@@ -1542,7 +1574,10 @@ def unfreeze_something():
     if cgroup_path:
         # Unfreeze via cgroup
         logging.debug("pids to unfreeze (via cgroup): %s" % pids_to_unfreeze)
-        unfreeze_cgroup(cgroup_path)
+        if not unfreeze_cgroup(cgroup_path):
+            logging.warning("failed to unfreeze cgroup %s, re-inserting" % cgroup_path)
+            frozen_items.insert(pop_index if pop_index == 0 else len(frozen_items), item)
+            return None
         frozen_cgroup_paths.discard(cgroup_path)
     else:
         # Unfreeze via SIGCONT
@@ -1617,11 +1652,24 @@ def unfreeze_from_tmpfile():
     go insta-thrashed, that would be quite bad indeed).
     """
     try:
-        with open("/tmp/thrash-protect-frozen-pid-list") as pidfile:
+        with open(FROZEN_PID_FILE) as pidfile:
             logging.info("cleaning up - unfreezing pids from last run")
             pids_to_open = pidfile.read()
             for pid in pids_to_open.split():
-                kill(int(pid), signal.SIGCONT)
+                try:
+                    kill(int(pid), signal.SIGCONT)
+                except (ProcessLookupError, ValueError):
+                    pass
+    except FileNotFoundError:
+        pass
+    # Also unfreeze any cgroups from a previous run
+    try:
+        with open(FROZEN_CGROUP_FILE) as cgfile:
+            logging.info("cleaning up - unfreezing cgroups from last run")
+            for line in cgfile:
+                path = line.strip()
+                if path:
+                    unfreeze_cgroup(path)
     except FileNotFoundError:
         pass
 
@@ -1642,7 +1690,11 @@ def cleanup():
                 except ProcessLookupError:
                     pass
     try:
-        unlink("/tmp/thrash-protect-frozen-pid-list")
+        unlink(FROZEN_PID_FILE)
+    except FileNotFoundError:
+        pass
+    try:
+        unlink(FROZEN_CGROUP_FILE)
     except FileNotFoundError:
         pass
 
@@ -1657,6 +1709,9 @@ frozen_items = []
 # selectors need this to skip already-frozen processes.
 frozen_cgroup_paths = set()
 num_unfreezes = 0
+# Lazily cached cgroup path for our own process.
+# Sentinel "_unset" distinguishes "not computed" from None (no cgroup).
+_own_cgroup_path = "_unset"
 ## A singleton ...
 global_process_selector = GlobalProcessSelector()
 

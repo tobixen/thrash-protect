@@ -21,11 +21,13 @@ def reset_global_state():
     thrash_protect.frozen_items = []
     thrash_protect.frozen_cgroup_paths = set()
     thrash_protect.num_unfreezes = 0
+    thrash_protect._own_cgroup_path = "_unset"
     yield
     # Clean up after test
     thrash_protect.frozen_items = []
     thrash_protect.frozen_cgroup_paths = set()
     thrash_protect.num_unfreezes = 0
+    thrash_protect._own_cgroup_path = "_unset"
 
 
 class FileMockup:
@@ -241,7 +243,8 @@ class TestUnitTest:
         ]
         thrash_protect.cleanup()
         assert len(kill.call_args_list) == 4
-        assert len(unlink.call_args_list) == 1
+        # 2 unlinks: FROZEN_PID_FILE and FROZEN_CGROUP_FILE
+        assert len(unlink.call_args_list) == 2
 
 
 class TestUncleanUnitTest:
@@ -1106,3 +1109,148 @@ class TestCgroupFreezing:
         cgroup_entries = [item for item in thrash_protect.frozen_items if item[0] == "cgroup"]
         assert len(cgroup_entries) == 1
         assert cgroup_entries[0][1] == cgroup_path
+
+
+class TestCgroupFreezeBugFixes:
+    """Tests for cgroup freeze bug fixes: self-freeze prevention,
+    unfreeze failure handling, and cgroup persistence/recovery."""
+
+    @patch("thrash_protect.freeze_cgroup", return_value=True)
+    @patch("thrash_protect.should_use_cgroup_freeze")
+    @patch("thrash_protect.get_own_cgroup_path")
+    @patch("thrash_protect.kill")
+    @patch("thrash_protect.open")
+    @patch("thrash_protect.unlink")
+    def test_self_freeze_prevention(self, unlink, mock_open, kill, mock_own_cgroup, mock_should_use, mock_freeze):
+        """Freezing a cgroup that contains thrash-protect itself should
+        fall back to SIGSTOP instead of freezing the cgroup."""
+        own_cgroup = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc.scope"
+        mock_should_use.return_value = own_cgroup
+        mock_own_cgroup.return_value = own_cgroup
+
+        result = thrash_protect.freeze_something((100,))
+
+        # freeze_cgroup should NOT have been called (self-freeze avoided)
+        mock_freeze.assert_not_called()
+        # SIGSTOP should have been used instead
+        kill.assert_any_call(100, signal.SIGSTOP)
+        assert result == (100,)
+
+    @patch("thrash_protect.freeze_cgroup", return_value=True)
+    @patch("thrash_protect.should_use_cgroup_freeze")
+    @patch("thrash_protect.get_own_cgroup_path")
+    @patch("thrash_protect.open")
+    @patch("thrash_protect.unlink")
+    def test_different_cgroup_still_freezes(self, unlink, mock_open, mock_own_cgroup, mock_should_use, mock_freeze):
+        """When the target cgroup is different from our own, cgroup freeze should proceed."""
+        own_cgroup = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-own.scope"
+        target_cgroup = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-other.scope"
+        mock_should_use.return_value = target_cgroup
+        mock_own_cgroup.return_value = own_cgroup
+
+        result = thrash_protect.freeze_something((200,))
+
+        # freeze_cgroup should have been called with the target cgroup
+        mock_freeze.assert_called_once_with(target_cgroup)
+        assert result == (200,)
+
+    @patch("thrash_protect.unfreeze_cgroup", return_value=False)
+    @patch("thrash_protect.open")
+    @patch("thrash_protect.unlink")
+    def test_unfreeze_cgroup_failure_reinserts(self, unlink, mock_open, mock_unfreeze):
+        """When unfreeze_cgroup fails, the item should be re-inserted into frozen_items."""
+        cgroup_path = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc.scope"
+        thrash_protect.frozen_items = [("cgroup", cgroup_path, (100,))]
+        thrash_protect.frozen_cgroup_paths.add(cgroup_path)
+
+        result = thrash_protect.unfreeze_something()
+
+        # Should return None (failure)
+        assert result is None
+        # Item should still be in frozen_items
+        assert len(thrash_protect.frozen_items) == 1
+        assert thrash_protect.frozen_items[0][1] == cgroup_path
+        # num_unfreezes should NOT have been incremented
+        assert thrash_protect.num_unfreezes == 0
+        # cgroup_path should still be in frozen_cgroup_paths
+        assert cgroup_path in thrash_protect.frozen_cgroup_paths
+
+    @patch("thrash_protect.unfreeze_cgroup", return_value=True)
+    @patch("thrash_protect.open")
+    @patch("thrash_protect.unlink")
+    def test_unfreeze_cgroup_success_removes(self, unlink, mock_open, mock_unfreeze):
+        """When unfreeze_cgroup succeeds, the item should be removed from frozen_items."""
+        cgroup_path = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc.scope"
+        thrash_protect.frozen_items = [("cgroup", cgroup_path, (100,))]
+        thrash_protect.frozen_cgroup_paths.add(cgroup_path)
+
+        result = thrash_protect.unfreeze_something()
+
+        # Should return the unfrozen pids
+        assert result == [100]
+        # Item should be removed from frozen_items
+        assert len(thrash_protect.frozen_items) == 0
+        # num_unfreezes should have been incremented
+        assert thrash_protect.num_unfreezes == 1
+        # cgroup_path should be removed from frozen_cgroup_paths
+        assert cgroup_path not in thrash_protect.frozen_cgroup_paths
+
+    @patch("thrash_protect.unfreeze_cgroup")
+    @patch("thrash_protect.kill")
+    def test_unfreeze_from_tmpfile_with_cgroups(self, kill, mock_unfreeze):
+        """Test that unfreeze_from_tmpfile handles both PID file and cgroup file."""
+        files = {
+            thrash_protect.FROZEN_PID_FILE: b"1234 2345\n",
+            thrash_protect.FROZEN_CGROUP_FILE: b"/sys/fs/cgroup/path1\n/sys/fs/cgroup/path2\n",
+        }
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            thrash_protect.unfreeze_from_tmpfile()
+
+        # Should SIGCONT the PIDs
+        assert ((1234, signal.SIGCONT),) in kill.call_args_list
+        assert ((2345, signal.SIGCONT),) in kill.call_args_list
+        # Should unfreeze the cgroups
+        mock_unfreeze.assert_any_call("/sys/fs/cgroup/path1")
+        mock_unfreeze.assert_any_call("/sys/fs/cgroup/path2")
+        assert mock_unfreeze.call_count == 2
+
+    @patch("thrash_protect.unfreeze_cgroup")
+    @patch("thrash_protect.kill")
+    def test_unfreeze_from_tmpfile_no_cgroup_file(self, kill, mock_unfreeze):
+        """Test backward compatibility: only PID file, no cgroup file."""
+        files = {
+            thrash_protect.FROZEN_PID_FILE: b"1234 2345\n",
+        }
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            thrash_protect.unfreeze_from_tmpfile()
+
+        # Should SIGCONT the PIDs
+        assert ((1234, signal.SIGCONT),) in kill.call_args_list
+        assert ((2345, signal.SIGCONT),) in kill.call_args_list
+        # Should NOT call unfreeze_cgroup (no cgroup file)
+        mock_unfreeze.assert_not_called()
+
+    @patch("thrash_protect.kill")
+    def test_unfreeze_from_tmpfile_stale_pids(self, kill):
+        """Test that stale PIDs (from reboot) don't crash unfreeze_from_tmpfile."""
+        kill.side_effect = ProcessLookupError("No such process")
+        files = {
+            thrash_protect.FROZEN_PID_FILE: b"99999 99998\n",
+        }
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            # Should not raise
+            thrash_protect.unfreeze_from_tmpfile()
+
+    @patch("thrash_protect.open")
+    @patch("thrash_protect.unlink")
+    @patch("thrash_protect.kill")
+    def test_update_frozen_pid_file_writes_cgroup_file(self, kill, unlink, mock_open):
+        """Test that _update_frozen_pid_file also writes the cgroup file."""
+        cgroup_path = "/sys/fs/cgroup/user.slice/test.scope"
+        thrash_protect.frozen_cgroup_paths.add(cgroup_path)
+
+        thrash_protect._update_frozen_pid_file([(100,)])
+
+        # Should have opened both files for writing
+        mock_open.assert_any_call(thrash_protect.FROZEN_PID_FILE, "w")
+        mock_open.assert_any_call(thrash_protect.FROZEN_CGROUP_FILE, "w")
