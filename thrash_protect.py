@@ -1371,7 +1371,7 @@ def get_process_info(pid):
             return "u:%10s  CPU:%5s%%  MEM:%5s%%  CMD: %s" % (info[0], info[2], info[3], " ".join(info[10:]))
         else:
             return "No information available, the process was probably killed or 'ps' returns unexpected output."
-    except:
+    except Exception:
         logging.error("Could not fetch process user information, the process is probably gone")
         return "problem fetching process information"
 
@@ -1380,7 +1380,7 @@ def ignore_failure(method):
     def _try_except_pass(*args, **kwargs):
         try:
             method(*args, **kwargs)
-        except:
+        except Exception:
             logging.critical("Exception ignored", exc_info=True)
 
     return _try_except_pass
@@ -1576,9 +1576,9 @@ def thrash_protect(args=None):
 
         try:
             assert not ctypes.cdll.LoadLibrary("libc.so.6").mlockall(ctypes.c_int(7))
-        except:
+        except Exception:
             assert not ctypes.cdll.LoadLibrary("libc.so.6").mlockall(ctypes.c_int(3))
-    except:
+    except Exception:
         logging.warning(
             "failed to do mlockall() - this makes the program vulnerable of being swapped out in an extreme thrashing event (maybe you're not running the script as root?)",
             exc_info=False,
