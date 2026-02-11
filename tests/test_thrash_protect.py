@@ -14,14 +14,23 @@ import pytest
 
 import thrash_protect
 
+# Save reference to real function before autouse fixture patches it
+_real_detect_swap_storage_type = thrash_protect.detect_swap_storage_type
+
 
 @pytest.fixture(autouse=True)
 def reset_global_state():
-    """Reset global state before each test."""
+    """Reset global state before each test.
+
+    Mocks detect_swap_storage_type to return None so SSD auto-detection
+    doesn't change swap_page_threshold during tests (tests are calibrated
+    for the default threshold=4).
+    """
     thrash_protect.frozen_items = []
     thrash_protect.frozen_cgroup_paths = set()
     thrash_protect.num_unfreezes = 0
-    yield
+    with patch("thrash_protect.detect_swap_storage_type", return_value=None):
+        yield
     # Clean up after test
     thrash_protect.frozen_items = []
     thrash_protect.frozen_cgroup_paths = set()
@@ -539,15 +548,16 @@ cmd_whitelist = sshd bash
             with patch("thrash_protect.get_default_whitelist", return_value=["sshd"]):
                 with patch("thrash_protect.get_default_jobctrllist", return_value=["bash"]):
                     args = argparse.Namespace(config=config_file, interval=None)
-                    final = thrash_protect.load_config(args)
+                    final, explicitly_set = thrash_protect.load_config(args)
                     assert final["interval"] == 2.0  # from file
+                    assert "interval" in explicitly_set
 
             # Test: env should override file
             with patch.dict(os.environ, test_env, clear=False):
                 with patch("thrash_protect.get_default_whitelist", return_value=["sshd"]):
                     with patch("thrash_protect.get_default_jobctrllist", return_value=["bash"]):
                         args = argparse.Namespace(config=config_file, interval=None)
-                        final = thrash_protect.load_config(args)
+                        final, _ = thrash_protect.load_config(args)
                         assert final["interval"] == 1.0  # from env (overrides file)
 
             # Test: CLI should override env
@@ -555,7 +565,7 @@ cmd_whitelist = sshd bash
                 with patch("thrash_protect.get_default_whitelist", return_value=["sshd"]):
                     with patch("thrash_protect.get_default_jobctrllist", return_value=["bash"]):
                         args = argparse.Namespace(config=config_file, interval=3.0)
-                        final = thrash_protect.load_config(args)
+                        final, _ = thrash_protect.load_config(args)
                         assert final["interval"] == 3.0  # from CLI
         finally:
             os.unlink(config_file)
@@ -1106,3 +1116,96 @@ class TestCgroupFreezing:
         cgroup_entries = [item for item in thrash_protect.frozen_items if item[0] == "cgroup"]
         assert len(cgroup_entries) == 1
         assert cgroup_entries[0][1] == cgroup_path
+
+
+class TestSwapStorageDetection:
+    """Tests for SSD/HDD auto-detection and swap threshold adjustment."""
+
+    def test_detect_ssd(self):
+        """Test detection of SSD swap device."""
+        proc_swaps = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/sda2\tpartition\t8388604\t\t0\t\t-2\n"
+        with patch("builtins.open", return_value=StringIO(proc_swaps)):
+            with patch("thrash_protect._get_device_rotational", return_value=0):
+                result = _real_detect_swap_storage_type()
+                assert result == "ssd"
+
+    def test_detect_hdd(self):
+        """Test detection of HDD swap device."""
+        proc_swaps = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/sda2\tpartition\t8388604\t\t0\t\t-2\n"
+        with patch("builtins.open", return_value=StringIO(proc_swaps)):
+            with patch("thrash_protect._get_device_rotational", return_value=1):
+                result = _real_detect_swap_storage_type()
+                assert result == "hdd"
+
+    def test_detect_mixed_returns_hdd(self):
+        """Test that mixed SSD+HDD returns 'hdd' (conservative)."""
+        proc_swaps = (
+            "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+            "/dev/sda2\tpartition\t8388604\t\t0\t\t-2\n"
+            "/dev/sdb1\tpartition\t4194304\t\t0\t\t-1\n"
+        )
+        rotational_values = {"/dev/sda2": 0, "/dev/sdb1": 1}
+
+        def mock_rotational(device):
+            return rotational_values.get(device)
+
+        with patch("builtins.open", return_value=StringIO(proc_swaps)):
+            with patch("thrash_protect._get_device_rotational", side_effect=mock_rotational):
+                result = _real_detect_swap_storage_type()
+                assert result == "hdd"
+
+    def test_detect_no_swap(self):
+        """Test detection with no swap devices."""
+        proc_swaps = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+        with patch("builtins.open", return_value=StringIO(proc_swaps)):
+            result = _real_detect_swap_storage_type()
+            assert result is None
+
+    def test_detect_proc_swaps_missing(self):
+        """Test detection when /proc/swaps is not available."""
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            result = _real_detect_swap_storage_type()
+            assert result is None
+
+    def test_detect_unresolvable_device(self):
+        """Test detection when device rotational info is unavailable."""
+        proc_swaps = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/zram0\tpartition\t8388604\t\t0\t\t-2\n"
+        with patch("builtins.open", return_value=StringIO(proc_swaps)):
+            with patch("thrash_protect._get_device_rotational", return_value=None):
+                result = _real_detect_swap_storage_type()
+                assert result is None
+
+    def test_ssd_auto_adjusts_threshold(self):
+        """Test that SSD detection auto-adjusts swap_page_threshold to 64."""
+        with patch("thrash_protect.detect_swap_storage_type", return_value="ssd"):
+            args = argparse.Namespace(config=None)
+            thrash_protect.init_config(args)
+            assert thrash_protect.config.swap_page_threshold == 64
+            assert thrash_protect.config.pgmajfault_scan_threshold == 64 * 4
+
+    def test_hdd_keeps_default_threshold(self):
+        """Test that HDD detection keeps default swap_page_threshold."""
+        with patch("thrash_protect.detect_swap_storage_type", return_value="hdd"):
+            args = argparse.Namespace(config=None)
+            thrash_protect.init_config(args)
+            assert thrash_protect.config.swap_page_threshold == 4
+
+    def test_explicit_threshold_not_overridden_by_ssd(self):
+        """Test that explicitly set swap_page_threshold is not overridden by SSD detection."""
+        with patch("thrash_protect.detect_swap_storage_type", return_value="ssd"):
+            args = argparse.Namespace(config=None, swap_page_threshold=16)
+            thrash_protect.init_config(args)
+            assert thrash_protect.config.swap_page_threshold == 16
+
+    def test_storage_type_cli_override(self):
+        """Test --storage-type CLI flag overrides auto-detection."""
+        parser = thrash_protect.create_argument_parser()
+        args = parser.parse_args(["--storage-type", "hdd"])
+        assert args.storage_type == "hdd"
+
+    def test_load_config_tracks_explicitly_set_keys(self):
+        """Test that load_config returns explicitly set keys."""
+        args = argparse.Namespace(config=None, interval=2.0, swap_page_threshold=None)
+        _, explicitly_set = thrash_protect.load_config(args)
+        assert "interval" in explicitly_set
+        assert "swap_page_threshold" not in explicitly_set

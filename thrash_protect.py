@@ -191,6 +191,7 @@ CONFIG_SCHEMA = {
     ),
     "date_human_readable": (_parse_bool, "THRASH_PROTECT_DATE_HUMAN_READABLE", ["date-human-readable"]),
     "diagnostic_logging": (_parse_bool, "THRASH_PROTECT_DIAGNOSTIC_LOGGING", ["diagnostic-logging"]),
+    "storage_type": (str, "THRASH_PROTECT_STORAGE_TYPE", ["storage-type"]),
 }
 
 
@@ -293,6 +294,7 @@ def get_defaults():
         "log_user_data_on_unfreeze": True,
         "date_human_readable": True,
         "diagnostic_logging": False,
+        "storage_type": "auto",
     }
 
 
@@ -334,25 +336,32 @@ def load_config(args):
     2. Environment variables
     3. Config file
     4. Defaults
+
+    Returns (config_dict, explicitly_set_keys) where explicitly_set_keys
+    tracks which keys were set by file, env, or CLI (not just defaults).
     """
     # 1. Defaults
     final = get_defaults()
+    explicitly_set = set()
 
     # 2. Config file
     config_path = getattr(args, "config", None)
     file_config = load_from_file(config_path)
     if file_config:
         normalized = normalize_file_config(file_config)
+        explicitly_set.update(normalized.keys())
         final.update(normalized)
 
     # 3. Environment variables
     env_config = load_from_env()
+    explicitly_set.update(env_config.keys())
     final.update(env_config)
 
     # 4. CLI arguments (non-None values only)
     for config_key in CONFIG_SCHEMA:
         value = getattr(args, config_key, None)
         if value is not None:
+            explicitly_set.add(config_key)
             final[config_key] = value
 
     # Compute derived values
@@ -361,7 +370,7 @@ def load_config(args):
 
     final["max_acceptable_time_delta"] = final["interval"] / 8.0
 
-    return final
+    return final, explicitly_set
 
 
 def create_argument_parser():
@@ -560,6 +569,15 @@ Example usage:
         help="Enable diagnostic logging (logs selector decisions, scores, and PSI weights)",
     )
 
+    # Storage type
+    p.add_argument(
+        "--storage-type",
+        dest="storage_type",
+        choices=["auto", "ssd", "hdd"],
+        default=None,
+        help="Swap storage type for threshold tuning (default: auto-detect)",
+    )
+
     return p
 
 
@@ -736,6 +754,90 @@ def get_memory_pressure():
         return None
 
 
+#########################
+## Swap Storage Detection
+#########################
+
+
+def detect_swap_storage_type():
+    """Detect whether swap storage is SSD or HDD.
+
+    Reads /proc/swaps for active swap devices, resolves each to a block device,
+    and checks /sys/block/<dev>/queue/rotational (0=SSD, 1=HDD).
+
+    Returns "ssd", "hdd", or None if detection fails.
+    If any swap is on HDD, returns "hdd" (conservative).
+    """
+    try:
+        with open("/proc/swaps") as f:
+            lines = f.readlines()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+
+    found_ssd = False
+    for line in lines[1:]:  # skip header
+        parts = line.split()
+        if not parts:
+            continue
+        device = parts[0]
+
+        rotational = _get_device_rotational(device)
+        if rotational is None:
+            continue
+        if rotational == 1:
+            return "hdd"
+        if rotational == 0:
+            found_ssd = True
+
+    return "ssd" if found_ssd else None
+
+
+def _get_device_rotational(device):
+    """Check if a device is rotational (1=HDD) or not (0=SSD).
+
+    Resolves the device path to a block device and checks
+    /sys/block/<dev>/queue/rotational.
+    Returns 0, 1, or None if detection fails.
+    """
+    try:
+        # Resolve symlinks (e.g. /dev/dm-0 -> real device)
+        real_path = os.path.realpath(device)
+        st = os.stat(real_path)
+    except (OSError, ValueError):
+        return None
+
+    # Get major:minor from the device
+    import stat as stat_mod
+
+    if not stat_mod.S_ISBLK(st.st_mode):
+        # Not a block device (e.g. swap file on tmpfs)
+        return None
+
+    major = os.major(st.st_rdev)
+    minor = os.minor(st.st_rdev)
+
+    # Try /sys/dev/block/major:minor -> resolve to find the parent disk
+    sys_path = f"/sys/dev/block/{major}:{minor}"
+    try:
+        real_sys_path = os.path.realpath(sys_path)
+    except OSError:
+        return None
+
+    # Walk up to find the disk (parent of partition)
+    # e.g. /sys/devices/.../sda/sda1 -> we want /sys/devices/.../sda
+    path = real_sys_path
+    while path and path != "/":
+        rotational_file = os.path.join(path, "queue", "rotational")
+        try:
+            with open(rotational_file) as f:
+                return int(f.read().strip())
+        except (FileNotFoundError, PermissionError, OSError, ValueError):
+            pass
+        path = os.path.dirname(path)
+
+    return None
+
+
 class config:
     """
     Configuration namespace - populated at startup by init_config().
@@ -755,7 +857,19 @@ def init_config(args=None):
         # Create a minimal args namespace if none provided
         args = argparse.Namespace()
 
-    cfg = load_config(args)
+    cfg, explicitly_set = load_config(args)
+
+    # SSD auto-detection: adjust swap_page_threshold if user didn't set it explicitly
+    resolved_storage = cfg["storage_type"]
+    if resolved_storage == "auto":
+        resolved_storage = detect_swap_storage_type()
+    if resolved_storage == "ssd" and "swap_page_threshold" not in explicitly_set:
+        cfg["swap_page_threshold"] = 64
+        # Recompute derived pgmajfault threshold if also not explicit
+        if "pgmajfault_scan_threshold" not in explicitly_set:
+            cfg["pgmajfault_scan_threshold"] = cfg["swap_page_threshold"] * 4
+        logging.debug("SSD detected: swap_page_threshold adjusted to 64")
+    cfg["_resolved_storage_type"] = resolved_storage
 
     # Set all config values as attributes on the config class
     for key, value in cfg.items():
