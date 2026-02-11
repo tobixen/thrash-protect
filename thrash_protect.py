@@ -701,12 +701,11 @@ def unfreeze_cgroup(cgroup_path: str) -> bool:
         return False
 
 
-def get_own_cgroup_path():
+def get_own_cgroup_path() -> str | None:
     """Get the cgroup path for thrash-protect's own process, lazily cached."""
-    global _own_cgroup_path
-    if _own_cgroup_path == "_unset":
-        _own_cgroup_path = get_cgroup_path(getpid())
-    return _own_cgroup_path
+    if _tp._own_cgroup_path == "_unset":
+        _tp._own_cgroup_path = get_cgroup_path(getpid())
+    return _tp._own_cgroup_path
 
 
 def should_use_cgroup_freeze(pid: int) -> str | None:
@@ -1798,9 +1797,9 @@ def _update_frozen_pid_file(all_frozen: list[tuple[int, ...]]) -> None:
         except (FileNotFoundError, OSError):
             pass
     # Also persist frozen cgroup paths for crash recovery
-    if frozen_cgroup_paths:
+    if _tp.frozen_cgroup_paths:
         with open(FROZEN_CGROUP_FILE, "w") as f:
-            for path in frozen_cgroup_paths:
+            for path in _tp.frozen_cgroup_paths:
                 f.write(path + "\n")
     else:
         try:
@@ -1867,6 +1866,9 @@ class ThrashProtectState:
         self.num_unfreezes: int = 0
         self.process_selector: GlobalProcessSelector = GlobalProcessSelector()
         self.memory_predictor: MemoryExhaustionPredictor | None = None
+        # Lazily cached cgroup path for our own process.
+        # Sentinel "_unset" distinguishes "not computed" from None (no cgroup).
+        self._own_cgroup_path: str | None = "_unset"
 
     def reset(self) -> None:
         """Reset all state (useful for testing)."""
@@ -1875,6 +1877,7 @@ class ThrashProtectState:
         self.num_unfreezes = 0
         self.process_selector = GlobalProcessSelector()
         self.memory_predictor = None
+        self._own_cgroup_path = "_unset"
 
     def get_all_frozen_pids(self) -> list[tuple[int, ...]]:
         """Get combined list of all frozen pids (both SIGSTOP and cgroup frozen)."""
@@ -1897,6 +1900,14 @@ class ThrashProtectState:
             cgroup_path = should_use_cgroup_freeze(pid)
             if cgroup_path:
                 break
+
+        # Prevent self-freezing deadlock: if the target cgroup contains
+        # thrash-protect itself, fall back to SIGSTOP for the individual process.
+        if cgroup_path and cgroup_path == get_own_cgroup_path():
+            logging.warning(
+                "target cgroup %s contains thrash-protect's own process, falling back to SIGSTOP" % cgroup_path
+            )
+            cgroup_path = None
 
         if cgroup_path and freeze_cgroup(cgroup_path):
             # Cgroup freezing succeeded - freezes all processes atomically
@@ -1935,9 +1946,10 @@ class ThrashProtectState:
 
         ## queue or stack?  Seems like both approaches are problematic
         if self.num_unfreezes % config.unfreeze_pop_ratio:
-            item = self.frozen_items.pop()
+            pop_index = -1
         else:
-            item = self.frozen_items.pop(0)
+            pop_index = 0
+        item = self.frozen_items.pop(pop_index)
 
         item_type, cgroup_path, pids_to_unfreeze = unpack_frozen_item(item)
         pids_to_unfreeze = list(normalize_pids(pids_to_unfreeze))
@@ -1945,7 +1957,10 @@ class ThrashProtectState:
         if cgroup_path:
             # Unfreeze via cgroup
             logging.debug("pids to unfreeze (via cgroup): %s" % pids_to_unfreeze)
-            unfreeze_cgroup(cgroup_path)
+            if not unfreeze_cgroup(cgroup_path):
+                logging.warning("failed to unfreeze cgroup %s, re-inserting" % cgroup_path)
+                self.frozen_items.insert(pop_index if pop_index == 0 else len(self.frozen_items), item)
+                return None
             self.frozen_cgroup_paths.discard(cgroup_path)
         else:
             # Unfreeze via SIGCONT
@@ -1981,7 +1996,11 @@ class ThrashProtectState:
                     except ProcessLookupError:
                         pass
         try:
-            unlink("/tmp/thrash-protect-frozen-pid-list")
+            unlink(FROZEN_PID_FILE)
+        except FileNotFoundError:
+            pass
+        try:
+            unlink(FROZEN_CGROUP_FILE)
         except FileNotFoundError:
             pass
 
