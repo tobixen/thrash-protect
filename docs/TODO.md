@@ -14,58 +14,16 @@ It should be considered if those ideas are sane, and the details should be flesh
 
 ## High Priority
 
-### SSD/ZRAM Default Settings (GitHub #27)
-
-**Update**: I'm not sure if this is really a problem.  More research should probably be done.  Perhaps spin up a VM in OpenStack with local SSD storage, minimum memory and play with memory-hogging processes there.
-
-The default `swap_page_threshold=4` was tuned for spinning magnetic disks. SSDs are orders of magnitude faster, so this threshold causes false positives - thrash-protect may suspend processes unnecessarily when the system is handling swap I/O just fine.  ZRAM swap has similar issues since compression/decompression is CPU-bound rather than I/O-bound.
-
-**Problem**: On SSD-based and ZRAM-based systems, thrash-protect can cause performance degradation by suspending processes that aren't actually causing problems.
-
-**Current workaround**: Set `THRASH_PROTECT_SWAP_PAGE_THRESHOLD=64` (or higher) in the environment.
-
-**Proposed solutions**:
-1. Auto-detect if swap is on SSD and adjust threshold automatically
-2. Change default to a higher value (e.g., 32 or 64) since SSDs are now common
-3. Add a configuration option like `THRASH_PROTECT_STORAGE_TYPE=ssd|hdd|auto`
-
-**Investigation needed**:
-- How to reliably detect SSD vs HDD for the swap partition(s)
-- What threshold values work well for SSDs and ZRAM
-- Whether the page fault metrics also need adjustment for SSDs
-- Whether thrash-protect is useful at all on SSD/ZRAM systems, or should the README recommend against it
-
-See README.rst "Drawbacks and problems" section for more context.
-
-### ~~Use /proc/pressure for Thrash Detection (GitHub #28)~~ ✅ Done
-
-Implemented as PSI amplification on swap-based detection. Configurable via `--use-psi`/`--no-psi` and `--psi-threshold`. Falls back to swap counting on older kernels.
-
-### Fork Bomb Protection (GitHub #39)
-
-Thrash-protect does not protect sufficiently against fork bombs.  It should be more aggressive in suspending parent processes when a fork bomb is detected (rapid process creation from the same parent).
-
-Related to #12 (parent process freezing).
-
-### Parent Process Freezing / Job Control (GitHub #12)
-
-Suspending a child process causes side-effects for the parent sometimes (notably, bash job control and sudo).  Current workarounds exist (resuming session/group process IDs, freezing parent before child for bash/sudo), but a more general solution is needed.
-
-**Possible approach**: Always freeze the parent process before suspending a child (possibly recursively, but never freezing PID 1).  Needs more research and testing.
+(None currently - see Completed section for recently addressed items)
 
 ## Medium Priority
 
-### Add Type Annotations
+### OOM Protection Tuning
 
-Add type hints to improve code maintainability and enable static analysis with mypy.
-
-### Bare Except Clauses
-
-Several places use bare `except:` which catches all exceptions including `KeyboardInterrupt` and `SystemExit`. Should use `except Exception:` or specific exceptions.
-
-### Global Variables
-
-Consider encapsulating the global variables (`frozen_pids`, `num_unfreezes`, `global_process_selector`) in a `ThrashProtect` class for better testability.
+The v1.1 OOM protection uses a simple two-point linear projection. Future improvements:
+- Exponential smoothing or weighted moving average for more stable predictions
+- Adaptive horizon based on system memory size
+- Per-cgroup memory tracking for targeted predictions
 
 ### Visual Feedback When Throttling (GitHub #38)
 
@@ -120,6 +78,12 @@ Consider adding:
 
 ## Completed
 
+- ✅ SSD auto-detection for swap threshold (done in v1.1)
+- ✅ OOM protection / memory exhaustion prediction (done in v1.1)
+- ✅ Add type annotations (done in v1.1)
+- ✅ Fix bare except clauses (done in v1.1)
+- ✅ Encapsulate globals into ThrashProtectState class (done in v1.1)
+- ✅ PSI-based thrash detection (done in v1.0)
 - ✅ Remove Python 2 compatibility code (done in 0.15.x)
 - ✅ Migrate tests from nose to pytest (done in 0.15.x)
 - ✅ Add pyproject.toml with modern build system (done in 0.15.x)
