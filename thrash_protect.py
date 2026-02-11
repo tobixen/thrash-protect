@@ -197,6 +197,7 @@ CONFIG_SCHEMA = {
     "oom_protection": (_parse_bool, "THRASH_PROTECT_OOM_PROTECTION", ["oom-protection"]),
     "oom_horizon": (int, "THRASH_PROTECT_OOM_HORIZON", ["oom-horizon"]),
     "oom_swap_weight": (float, "THRASH_PROTECT_OOM_SWAP_WEIGHT", ["oom-swap-weight"]),
+    "oom_low_pct": (float, "THRASH_PROTECT_OOM_LOW_PCT", ["oom-low-pct"]),
 }
 
 
@@ -301,8 +302,9 @@ def get_defaults() -> dict[str, Any]:
         "diagnostic_logging": False,
         "storage_type": "auto",
         "oom_protection": True,
-        "oom_horizon": 3600,
+        "oom_horizon": 120,
         "oom_swap_weight": None,  # Auto-set based on storage type
+        "oom_low_pct": 10.0,  # Only predict when available < this % of total
     }
 
 
@@ -605,7 +607,7 @@ Example usage:
         dest="oom_horizon",
         type=int,
         metavar="SECONDS",
-        help="Time horizon for OOM prediction in seconds (default: 3600)",
+        help="Time horizon for OOM prediction in seconds (default: 120)",
     )
     p.add_argument(
         "--oom-swap-weight",
@@ -613,6 +615,13 @@ Example usage:
         type=float,
         metavar="WEIGHT",
         help="Weight for swap in OOM prediction (default: auto based on storage type, SSD=2.0 HDD=4.0)",
+    )
+    p.add_argument(
+        "--oom-low-pct",
+        dest="oom_low_pct",
+        type=float,
+        metavar="PERCENT",
+        help="Only predict OOM when available resources are below this percentage of total (default: 10.0)",
     )
 
     return p
@@ -880,13 +889,15 @@ def _get_device_rotational(device: str) -> int | None:
 #########################
 
 
-def read_meminfo() -> tuple[int, int] | None:
-    """Read MemAvailable and SwapFree from /proc/meminfo (in kB).
+def read_meminfo() -> tuple[int, int, int, int] | None:
+    """Read memory stats from /proc/meminfo (in kB).
 
-    Returns (mem_available_kb, swap_free_kb) or None if unavailable.
+    Returns (mem_available, swap_free, mem_total, swap_total) or None if unavailable.
     """
     mem_available = None
     swap_free = None
+    mem_total = None
+    swap_total = None
     try:
         with open("/proc/meminfo") as f:
             for line in f:
@@ -894,8 +905,12 @@ def read_meminfo() -> tuple[int, int] | None:
                     mem_available = int(line.split()[1])
                 elif line.startswith("SwapFree:"):
                     swap_free = int(line.split()[1])
-                if mem_available is not None and swap_free is not None:
-                    return (mem_available, swap_free)
+                elif line.startswith("MemTotal:"):
+                    mem_total = int(line.split()[1])
+                elif line.startswith("SwapTotal:"):
+                    swap_total = int(line.split()[1])
+                if all(v is not None for v in (mem_available, swap_free, mem_total, swap_total)):
+                    return (mem_available, swap_free, mem_total, swap_total)
     except (FileNotFoundError, PermissionError, OSError, ValueError):
         pass
     return None
@@ -911,13 +926,18 @@ class MemoryExhaustionPredictor:
     (SSD: 2.0, HDD: 4.0).
 
     Uses two consecutive observations to project when resources will hit zero.
-    If the projected time-to-exhaustion is less than oom_horizon seconds,
+    If the projected time-to-exhaustion is less than oom_horizon seconds
+    AND available resources are already below low_pct% of total,
     triggers proactive freezing to prevent OOM kills.
+
+    The low_pct threshold prevents false positives from normal memory
+    fluctuations when the system has plenty of resources available.
     """
 
-    def __init__(self, swap_weight: float = 2.0, horizon: int = 3600) -> None:
+    def __init__(self, swap_weight: float = 2.0, horizon: int = 120, low_pct: float = 10.0) -> None:
         self.swap_weight = swap_weight
         self.horizon = horizon
+        self.low_pct = low_pct
         self._prev_time: float | None = None
         self._prev_available: float | None = None
 
@@ -926,6 +946,7 @@ class MemoryExhaustionPredictor:
 
         Returns estimated seconds until exhaustion, or None if:
         - Resources are not declining
+        - Available resources are above low_pct% of total (not under pressure)
         - Not enough observations yet
         - /proc/meminfo is unavailable
         """
@@ -933,8 +954,9 @@ class MemoryExhaustionPredictor:
         if meminfo is None:
             return None
 
-        mem_available, swap_free = meminfo
+        mem_available, swap_free, mem_total, swap_total = meminfo
         available = mem_available + swap_free * self.swap_weight
+        total = mem_total + swap_total * self.swap_weight
         now = time.time()
 
         if self._prev_time is None:
@@ -949,6 +971,12 @@ class MemoryExhaustionPredictor:
         # Update stored state for next call
         self._prev_time = now
         self._prev_available = available
+
+        # Only predict when available resources are below threshold.
+        # This prevents false positives from normal cache/allocation patterns
+        # when the system has plenty of memory.
+        if total > 0 and (available / total * 100) >= self.low_pct:
+            return None
 
         # Not declining -> no exhaustion predicted
         if available >= prev_available:
@@ -1030,6 +1058,7 @@ def init_config(args: argparse.Namespace | None = None) -> None:
         _tp.memory_predictor = MemoryExhaustionPredictor(
             swap_weight=config.oom_swap_weight,
             horizon=config.oom_horizon,
+            low_pct=config.oom_low_pct,
         )
     else:
         _tp.memory_predictor = None

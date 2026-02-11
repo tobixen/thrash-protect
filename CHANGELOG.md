@@ -14,7 +14,7 @@ For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 - **OOM protection**: Proactive memory exhaustion prediction using two-point linear
   projection on weighted MemAvailable + SwapFree. Freezes processes before the OOM
   killer activates. Configurable via `--oom-protection`/`--no-oom-protection`,
-  `--oom-horizon` (default 3600s), `--oom-swap-weight`.
+  `--oom-horizon` (default 120s), `--oom-swap-weight`, `--oom-low-pct` (default 10%).
 - **SSD auto-detection**: Automatically detects if swap is on SSD via
   `/proc/swaps` + `/sys/block/*/queue/rotational`. When SSD is detected,
   `swap_page_threshold` is raised from 4 to 64 to avoid false positives.
@@ -32,6 +32,10 @@ For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
 ### Fixed
 
+- **OOM predictor false positives**: The initial OOM predictor was far too aggressive,
+  freezing processes during normal operation with zero swap activity. Two fixes:
+  reduced default `oom_horizon` from 3600s to 120s, and added `oom_low_pct` threshold
+  (default 10%) so predictions only trigger when available resources are already low.
 - Bare `except:` clauses replaced with `except Exception:` (4 occurrences).
   E722 now enforced via ruff.
 
