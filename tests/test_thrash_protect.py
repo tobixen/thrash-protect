@@ -26,17 +26,11 @@ def reset_global_state():
     doesn't change swap_page_threshold during tests (tests are calibrated
     for the default threshold=4).
     """
-    thrash_protect.frozen_items = []
-    thrash_protect.frozen_cgroup_paths = set()
-    thrash_protect.num_unfreezes = 0
-    thrash_protect.memory_predictor = None
+    thrash_protect._tp.reset()
     with patch("thrash_protect.detect_swap_storage_type", return_value=None):
         yield
     # Clean up after test
-    thrash_protect.frozen_items = []
-    thrash_protect.frozen_cgroup_paths = set()
-    thrash_protect.num_unfreezes = 0
-    thrash_protect.memory_predictor = None
+    thrash_protect._tp.reset()
 
 
 class FileMockup:
@@ -215,7 +209,7 @@ class TestUnitTest:
             assert not ps._is_frozen(100, procstat(cmd="cat", state="S", majflt=0, ppid=1))
 
         # Frozen when cgroup is in frozen_cgroup_paths
-        thrash_protect.frozen_cgroup_paths.add(cgroup_path)
+        thrash_protect._tp.frozen_cgroup_paths.add(cgroup_path)
         with patch("thrash_protect.get_cgroup_path", return_value=cgroup_path):
             assert ps._is_frozen(100, procstat(cmd="cat", state="S", majflt=0, ppid=1))
 
@@ -245,7 +239,7 @@ class TestUnitTest:
     @patch("thrash_protect.unlink")
     def test_cleanup(self, unlink, kill):
         # Use the unified frozen_items format: ('sigstop', pids) tuples
-        thrash_protect.frozen_items = [
+        thrash_protect._tp.frozen_items = [
             ("sigstop", (10,)),
             ("sigstop", (20, 30)),
             ("sigstop", (40,)),
@@ -330,7 +324,7 @@ class TestRootFuncTest:
         time.sleep(1)
         current = thrash_protect.SystemState()
         for i in range(0, 6):
-            thrash_protect.global_process_selector.update(prev, current)
+            thrash_protect._tp.process_selector.update(prev, current)
             my_frozen_pids.append(thrash_protect.freeze_something())
 
         frozen_calls = log_frozen.call_args_list
@@ -350,7 +344,7 @@ class TestRootFuncTest:
         assert log_frozen.call_args_list == frozen_calls
         assert len(log_unfrozen.call_args_list) == len(log_frozen.call_args_list)
 
-        thrash_protect.global_process_selector.update(current, thrash_protect.SystemState())
+        thrash_protect._tp.process_selector.update(current, thrash_protect.SystemState())
 
         ## once again, to make sure the "unfreeze_last_frozen" also gets excersised
         for i in range(0, 6):
@@ -1073,7 +1067,7 @@ class TestCgroupFreezing:
     def test_get_all_frozen_pids_with_frozen(self):
         """Test get_all_frozen_pids with frozen processes."""
         # Use unified frozen_items format
-        thrash_protect.frozen_items = [
+        thrash_protect._tp.frozen_items = [
             ("sigstop", (10,)),
             ("sigstop", (20, 30)),
             ("cgroup", "/cgroup/path", (40, 50)),
@@ -1091,7 +1085,7 @@ class TestCgroupFreezing:
     def test_cleanup_with_cgroups(self, mock_unfreeze_cgroup, unlink, open, kill):
         """Test cleanup unfreezes both cgroups and regular pids."""
         # Use unified frozen_items format
-        thrash_protect.frozen_items = [
+        thrash_protect._tp.frozen_items = [
             ("sigstop", (10,)),
             ("sigstop", (20, 30)),
             ("cgroup", "/cgroup/path1", (40,)),
@@ -1115,7 +1109,7 @@ class TestCgroupFreezing:
         thrash_protect.freeze_something((100,))
         thrash_protect.freeze_something((200,))
 
-        cgroup_entries = [item for item in thrash_protect.frozen_items if item[0] == "cgroup"]
+        cgroup_entries = [item for item in thrash_protect._tp.frozen_items if item[0] == "cgroup"]
         assert len(cgroup_entries) == 1
         assert cgroup_entries[0][1] == cgroup_path
 
@@ -1354,13 +1348,13 @@ class TestOOMProtection:
         assert thrash_protect.config.oom_protection is True
         assert thrash_protect.config.oom_horizon == 3600
         assert thrash_protect.config.oom_swap_weight == 2.0  # default (no HDD detected)
-        assert thrash_protect.memory_predictor is not None
+        assert thrash_protect._tp.memory_predictor is not None
 
     def test_oom_disabled(self):
         """Test that --no-oom-protection disables the predictor."""
         args = argparse.Namespace(config=None, oom_protection=False)
         thrash_protect.init_config(args)
-        assert thrash_protect.memory_predictor is None
+        assert thrash_protect._tp.memory_predictor is None
 
     def test_oom_swap_weight_hdd(self):
         """Test that HDD storage type sets swap_weight=4.0."""
@@ -1368,7 +1362,7 @@ class TestOOMProtection:
             args = argparse.Namespace(config=None)
             thrash_protect.init_config(args)
             assert thrash_protect.config.oom_swap_weight == 4.0
-            assert thrash_protect.memory_predictor.swap_weight == 4.0
+            assert thrash_protect._tp.memory_predictor.swap_weight == 4.0
 
     def test_oom_cli_arguments(self):
         """Test OOM-related CLI arguments."""

@@ -1023,15 +1023,14 @@ def init_config(args=None):
     for key, value in cfg.items():
         setattr(config, key, value)
 
-    # Set up memory exhaustion predictor
-    global memory_predictor
+    # Set up memory exhaustion predictor on the singleton
     if config.oom_protection:
-        memory_predictor = MemoryExhaustionPredictor(
+        _tp.memory_predictor = MemoryExhaustionPredictor(
             swap_weight=config.oom_swap_weight,
             horizon=config.oom_horizon,
         )
     else:
-        memory_predictor = None
+        _tp.memory_predictor = None
 
     # Set up debug_check_state function based on config
     global debug_check_state
@@ -1240,9 +1239,9 @@ class ProcessSelector:
         """
         if "T" in stats.state:
             return True
-        if frozen_cgroup_paths:
+        if _tp.frozen_cgroup_paths:
             cgroup_path = get_cgroup_path(pid)
-            if cgroup_path in frozen_cgroup_paths:
+            if cgroup_path in _tp.frozen_cgroup_paths:
                 return True
         return False
 
@@ -1662,11 +1661,6 @@ def ignore_failure(method):
 ## state file can be monitored, i.e. through nagios.  todo: advanced logging
 
 
-def get_all_frozen_pids():
-    """Get combined list of all frozen pids (both SIGSTOP and cgroup frozen)."""
-    return [unpack_frozen_item(item)[2] for item in frozen_items]
-
-
 FROZEN_PID_FILE = "/tmp/thrash-protect-frozen-pid-list"
 LOG_FILE = "/var/log/thrash-protect.log"
 
@@ -1743,144 +1737,180 @@ def _diagnostic_log(msg):
 diagnostic_log = None
 
 
-def freeze_something(pids_to_freeze=None):
-    global frozen_items
-    global global_process_selector
-    pids_to_freeze = normalize_pids(pids_to_freeze or global_process_selector.scan())
-    if not pids_to_freeze:
-        ## process disappeared. ignore failure
-        logging.info("nothing to freeze found, or the process we were going to suspend has already exited")
-        return ()
-    if getpid() in pids_to_freeze:
-        logging.error("Oups.  Own pid is next on the list of processes to freeze.  This is very bad.  Skipping.")
-        return ()
+class ThrashProtectState:
+    """Encapsulates the runtime state of thrash-protect.
 
-    # Check if any process in the chain should use cgroup freezing
-    # (for tmux/screen sessions where SIGSTOP doesn't work properly)
-    cgroup_path = None
-    for pid in pids_to_freeze:
-        cgroup_path = should_use_cgroup_freeze(pid)
-        if cgroup_path:
-            break
+    Holds frozen process tracking, process selectors, and the OOM predictor.
+    Provides freeze/unfreeze/cleanup methods that operate on this state.
+    """
 
-    if cgroup_path and freeze_cgroup(cgroup_path):
-        # Cgroup freezing succeeded - freezes all processes atomically
-        # Check if already frozen (avoid duplicates) - keyed on cgroup_path
-        if not any(item[0] == "cgroup" and item[1] == cgroup_path for item in frozen_items):
-            frozen_items.append(("cgroup", cgroup_path, pids_to_freeze))
-        frozen_cgroup_paths.add(cgroup_path)
+    def __init__(self):
+        self.frozen_items = []
+        self.frozen_cgroup_paths = set()
+        self.num_unfreezes = 0
+        self.process_selector = GlobalProcessSelector()
+        self.memory_predictor = None
+
+    def reset(self):
+        """Reset all state (useful for testing)."""
+        self.frozen_items = []
+        self.frozen_cgroup_paths.clear()
+        self.num_unfreezes = 0
+        self.process_selector = GlobalProcessSelector()
+        self.memory_predictor = None
+
+    def get_all_frozen_pids(self):
+        """Get combined list of all frozen pids (both SIGSTOP and cgroup frozen)."""
+        return [unpack_frozen_item(item)[2] for item in self.frozen_items]
+
+    def freeze_something(self, pids_to_freeze=None):
+        pids_to_freeze = normalize_pids(pids_to_freeze or self.process_selector.scan())
+        if not pids_to_freeze:
+            ## process disappeared. ignore failure
+            logging.info("nothing to freeze found, or the process we were going to suspend has already exited")
+            return ()
+        if getpid() in pids_to_freeze:
+            logging.error("Oups.  Own pid is next on the list of processes to freeze.  This is very bad.  Skipping.")
+            return ()
+
+        # Check if any process in the chain should use cgroup freezing
+        # (for tmux/screen sessions where SIGSTOP doesn't work properly)
+        cgroup_path = None
+        for pid in pids_to_freeze:
+            cgroup_path = should_use_cgroup_freeze(pid)
+            if cgroup_path:
+                break
+
+        if cgroup_path and freeze_cgroup(cgroup_path):
+            # Cgroup freezing succeeded - freezes all processes atomically
+            # Check if already frozen (avoid duplicates) - keyed on cgroup_path
+            if not any(item[0] == "cgroup" and item[1] == cgroup_path for item in self.frozen_items):
+                self.frozen_items.append(("cgroup", cgroup_path, pids_to_freeze))
+            self.frozen_cgroup_paths.add(cgroup_path)
+            for pid_to_freeze in pids_to_freeze:
+                logging.debug("froze pid %s (via cgroup)" % str(pid_to_freeze))
+                log_frozen(pid_to_freeze)
+            return pids_to_freeze
+
+        # Use SIGSTOP (original behavior)
         for pid_to_freeze in pids_to_freeze:
-            logging.debug("froze pid %s (via cgroup)" % str(pid_to_freeze))
+            try:
+                debug_check_state(pid_to_freeze, 0)
+                kill(pid_to_freeze, signal.SIGSTOP)
+                if len(pids_to_freeze) > 1:
+                    time.sleep(config.max_acceptable_time_delta / 3)
+            except ProcessLookupError:
+                continue
+        # Check if already frozen (avoid duplicates)
+        if not any(item[0] == "sigstop" and item[1] == pids_to_freeze for item in self.frozen_items):
+            self.frozen_items.append(("sigstop", pids_to_freeze))
+
+        for pid_to_freeze in pids_to_freeze:
+            ## Logging after freezing - as logging itself may be resource- and timeconsuming.
+            ## Perhaps we should even fork it out.
+            logging.debug("froze pid %s" % str(pid_to_freeze))
             log_frozen(pid_to_freeze)
         return pids_to_freeze
 
-    # Use SIGSTOP (original behavior)
-    for pid_to_freeze in pids_to_freeze:
+    def unfreeze_something(self):
+        if not self.frozen_items:
+            return None
+
+        ## queue or stack?  Seems like both approaches are problematic
+        if self.num_unfreezes % config.unfreeze_pop_ratio:
+            item = self.frozen_items.pop()
+        else:
+            item = self.frozen_items.pop(0)
+
+        item_type, cgroup_path, pids_to_unfreeze = unpack_frozen_item(item)
+        pids_to_unfreeze = list(normalize_pids(pids_to_unfreeze))
+
+        if cgroup_path:
+            # Unfreeze via cgroup
+            logging.debug("pids to unfreeze (via cgroup): %s" % pids_to_unfreeze)
+            unfreeze_cgroup(cgroup_path)
+            self.frozen_cgroup_paths.discard(cgroup_path)
+        else:
+            # Unfreeze via SIGCONT
+            logging.debug("pids to unfreeze: %s" % pids_to_unfreeze)
+            for pid_to_unfreeze in reversed(pids_to_unfreeze):
+                try:
+                    logging.debug("going to unfreeze %s" % str(pid_to_unfreeze))
+                    debug_check_state(pid_to_unfreeze, 1)
+                    kill(pid_to_unfreeze, signal.SIGCONT)
+                    if len(pids_to_unfreeze) > 1:
+                        time.sleep(config.max_acceptable_time_delta)
+                except ProcessLookupError:
+                    ## ignore failure
+                    pass
+
+        for pid_to_unfreeze in pids_to_unfreeze:
+            log_unfrozen(pid_to_unfreeze)
+
+        self.num_unfreezes += 1
+        return pids_to_unfreeze
+
+    def cleanup(self):
+        """Clean up if exiting due to an exception."""
+        self.frozen_cgroup_paths.clear()
+        for item in self.frozen_items:
+            item_type, cgroup_path, pids = unpack_frozen_item(item)
+            if item_type == "cgroup":
+                unfreeze_cgroup(cgroup_path)
+            else:  # sigstop
+                for pid_to_unfreeze in reversed(normalize_pids(pids)):
+                    try:
+                        kill(pid_to_unfreeze, signal.SIGCONT)
+                    except ProcessLookupError:
+                        pass
         try:
-            debug_check_state(pid_to_freeze, 0)
-            kill(pid_to_freeze, signal.SIGSTOP)
-            if len(pids_to_freeze) > 1:
-                time.sleep(config.max_acceptable_time_delta / 3)
-        except ProcessLookupError:
-            continue
-    # Check if already frozen (avoid duplicates)
-    if not any(item[0] == "sigstop" and item[1] == pids_to_freeze for item in frozen_items):
-        frozen_items.append(("sigstop", pids_to_freeze))
+            unlink("/tmp/thrash-protect-frozen-pid-list")
+        except FileNotFoundError:
+            pass
 
-    for pid_to_freeze in pids_to_freeze:
-        ## Logging after freezing - as logging itself may be resource- and timeconsuming.
-        ## Perhaps we should even fork it out.
-        logging.debug("froze pid %s" % str(pid_to_freeze))
-        log_frozen(pid_to_freeze)
-    return pids_to_freeze
-
-
-def unfreeze_something():
-    global frozen_items
-    global num_unfreezes
-
-    if not frozen_items:
-        return None
-
-    ## queue or stack?  Seems like both approaches are problematic
-    if num_unfreezes % config.unfreeze_pop_ratio:
-        item = frozen_items.pop()
-    else:
-        item = frozen_items.pop(0)
-
-    item_type, cgroup_path, pids_to_unfreeze = unpack_frozen_item(item)
-    pids_to_unfreeze = list(normalize_pids(pids_to_unfreeze))
-
-    if cgroup_path:
-        # Unfreeze via cgroup
-        logging.debug("pids to unfreeze (via cgroup): %s" % pids_to_unfreeze)
-        unfreeze_cgroup(cgroup_path)
-        frozen_cgroup_paths.discard(cgroup_path)
-    else:
-        # Unfreeze via SIGCONT
-        logging.debug("pids to unfreeze: %s" % pids_to_unfreeze)
-        for pid_to_unfreeze in reversed(pids_to_unfreeze):
-            try:
-                logging.debug("going to unfreeze %s" % str(pid_to_unfreeze))
-                debug_check_state(pid_to_unfreeze, 1)
-                kill(pid_to_unfreeze, signal.SIGCONT)
-                if len(pids_to_unfreeze) > 1:
-                    time.sleep(config.max_acceptable_time_delta)
-            except ProcessLookupError:
-                ## ignore failure
-                pass
-
-    for pid_to_unfreeze in pids_to_unfreeze:
-        log_unfrozen(pid_to_unfreeze)
-
-    num_unfreezes += 1
-    return pids_to_unfreeze
-
-
-def thrash_protect(args=None):
-    current = SystemState()
-    global frozen_items
-    global global_process_selector
-
-    ## A best-effort attempt on running mlockall()
-    try:
-        import ctypes
-
-        try:
-            assert not ctypes.cdll.LoadLibrary("libc.so.6").mlockall(ctypes.c_int(7))
-        except Exception:
-            assert not ctypes.cdll.LoadLibrary("libc.so.6").mlockall(ctypes.c_int(3))
-    except Exception:
-        logging.warning(
-            "failed to do mlockall() - this makes the program vulnerable of being swapped out in an extreme thrashing event (maybe you're not running the script as root?)",
-            exc_info=False,
-        )
-
-    while True:
-        prev = current
+    def run(self, args=None):
+        """Main thrash-protect loop."""
         current = SystemState()
-        busy = current.check_thrashing(prev)
 
-        ## Check OOM prediction (proactive memory exhaustion protection)
-        oom_predicted = False
-        if memory_predictor and not busy:
-            oom_predicted = memory_predictor.should_freeze()
+        ## A best-effort attempt on running mlockall()
+        try:
+            import ctypes
 
-        ## If we're thrashing or OOM is predicted, then freeze something.
-        if busy or oom_predicted:
-            freeze_something()
-        elif not current.cooldown_counter:
-            ## If no swapping has been observed for a while and no OOM predicted,
-            ## then unfreeze something.
-            current.unfrozen_pid = unfreeze_something()
+            try:
+                assert not ctypes.cdll.LoadLibrary("libc.so.6").mlockall(ctypes.c_int(7))
+            except Exception:
+                assert not ctypes.cdll.LoadLibrary("libc.so.6").mlockall(ctypes.c_int(3))
+        except Exception:
+            logging.warning(
+                "failed to do mlockall() - this makes the program vulnerable of being swapped out in an extreme thrashing event (maybe you're not running the script as root?)",
+                exc_info=False,
+            )
 
-        global_process_selector.update(prev, current)
+        while True:
+            prev = current
+            current = SystemState()
+            busy = current.check_thrashing(prev)
 
-        if current.check_delay() and not busy:
-            sleep_interval = current.get_sleep_interval()
-            logging.debug("going to sleep %s" % sleep_interval)
-            time.sleep(sleep_interval)
-            current.check_delay(sleep_interval)
+            ## Check OOM prediction (proactive memory exhaustion protection)
+            oom_predicted = False
+            if self.memory_predictor and not busy:
+                oom_predicted = self.memory_predictor.should_freeze()
+
+            ## If we're thrashing or OOM is predicted, then freeze something.
+            if busy or oom_predicted:
+                self.freeze_something()
+            elif not current.cooldown_counter:
+                ## If no swapping has been observed for a while and no OOM predicted,
+                ## then unfreeze something.
+                current.unfrozen_pid = self.unfreeze_something()
+
+            self.process_selector.update(prev, current)
+
+            if current.check_delay() and not busy:
+                sleep_interval = current.get_sleep_interval()
+                logging.debug("going to sleep %s" % sleep_interval)
+                time.sleep(sleep_interval)
+                current.check_delay(sleep_interval)
 
 
 def unfreeze_from_tmpfile():
@@ -1904,41 +1934,40 @@ def unfreeze_from_tmpfile():
         pass
 
 
+## Module-level singleton instance
+_tp = ThrashProtectState()
+
+# Backward-compatible module-level aliases for globals.
+# These are references to the mutable containers in _tp, so mutations
+# (append, pop, add, discard) work through the alias. However,
+# reassignment (e.g. `frozen_items = []`) replaces the module attribute
+# only - use _tp.reset() or _tp.frozen_items = [] for that.
+frozen_items = _tp.frozen_items
+frozen_cgroup_paths = _tp.frozen_cgroup_paths
+num_unfreezes = _tp.num_unfreezes
+global_process_selector = _tp.process_selector
+memory_predictor = _tp.memory_predictor
+
+
+# Backward-compatible module-level functions that delegate to singleton
+def get_all_frozen_pids():
+    return _tp.get_all_frozen_pids()
+
+
+def freeze_something(pids_to_freeze=None):
+    return _tp.freeze_something(pids_to_freeze)
+
+
+def unfreeze_something():
+    return _tp.unfreeze_something()
+
+
 def cleanup():
-    ## Clean up if exiting due to an exception.
-    global frozen_items
-
-    frozen_cgroup_paths.clear()
-    for item in frozen_items:
-        item_type, cgroup_path, pids = unpack_frozen_item(item)
-        if item_type == "cgroup":
-            unfreeze_cgroup(cgroup_path)
-        else:  # sigstop
-            for pid_to_unfreeze in reversed(normalize_pids(pids)):
-                try:
-                    kill(pid_to_unfreeze, signal.SIGCONT)
-                except ProcessLookupError:
-                    pass
-    try:
-        unlink("/tmp/thrash-protect-frozen-pid-list")
-    except FileNotFoundError:
-        pass
+    return _tp.cleanup()
 
 
-## Globals ... we've refactored most of them away, but some still remains ...
-# Unified list of frozen items - each entry is one of:
-#   ('cgroup', cgroup_path, pids) - frozen via cgroup freezer
-#   ('sigstop', pids)             - frozen via SIGSTOP
-frozen_items = []
-# Set of currently frozen cgroup paths, for fast lookup in selectors.
-# Cgroup-frozen processes don't show state "T" in /proc/pid/stat, so
-# selectors need this to skip already-frozen processes.
-frozen_cgroup_paths = set()
-num_unfreezes = 0
-## A singleton ...
-global_process_selector = GlobalProcessSelector()
-# OOM predictor - set up by init_config() when oom_protection is enabled
-memory_predictor = None
+def thrash_protect(args=None):
+    return _tp.run(args)
 
 
 def main():
