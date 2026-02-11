@@ -1438,6 +1438,39 @@ class TestOOMProtection:
         # The t=0 observation should have been pruned
         assert len(predictor._observations) == 1
 
+    def test_predictor_no_false_positive_at_startup(self):
+        """Test that observations 0.5s apart don't trigger predictions.
+
+        This is the critical regression test: on startup, the deque only has
+        recent observations.  The tolerance check must reject them because
+        they're too recent to match either the 60s or 5s observation windows.
+        """
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+
+        # Simulate the first few seconds of startup with declining memory
+        # (normal cache/allocation activity)
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+
+        # 0.5s later - moderate decline
+        with patch("thrash_protect.read_meminfo", return_value=(3900000, 5990000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.5):
+                eta = predictor.update_and_predict()
+                assert eta is None  # Must not trigger!
+
+        # 1.0s later - still declining
+        with patch("thrash_protect.read_meminfo", return_value=(3800000, 5980000, 16000000, 8000000)):
+            with patch("time.time", return_value=1001.0):
+                eta = predictor.update_and_predict()
+                assert eta is None  # Must not trigger!
+
+        # 2.0s later - still declining
+        with patch("thrash_protect.read_meminfo", return_value=(3600000, 5960000, 16000000, 8000000)):
+            with patch("time.time", return_value=1002.0):
+                eta = predictor.update_and_predict()
+                assert eta is None  # Must not trigger! 2s < 2.5s tolerance
+
     def test_predictor_low_pct_filters_high_memory(self):
         """Test that low_pct prevents prediction when memory is plentiful."""
         predictor = thrash_protect.MemoryExhaustionPredictor(

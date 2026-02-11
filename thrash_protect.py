@@ -966,13 +966,18 @@ class MemoryExhaustionPredictor:
         self._observations: deque[tuple[float, float]] = deque()
         self._max_age = observation_window * 1.5
 
-    def _find_observation_at(self, target_time: float) -> tuple[float, float] | None:
-        """Find the observation closest to target_time."""
+    def _find_observation_at(self, target_time: float, tolerance: float) -> tuple[float, float] | None:
+        """Find the observation closest to target_time within tolerance.
+
+        Returns None if no observation falls within [target_time - tolerance,
+        target_time + tolerance].  This prevents using a 0.5s-old observation
+        when we need one from 60s ago.
+        """
         best: tuple[float, float] | None = None
         best_diff = float("inf")
         for obs_time, obs_available in self._observations:
             diff = abs(obs_time - target_time)
-            if diff < best_diff:
+            if diff <= tolerance and diff < best_diff:
                 best_diff = diff
                 best = (obs_time, obs_available)
         return best
@@ -1012,7 +1017,10 @@ class MemoryExhaustionPredictor:
             target_horizon = target_window * self._horizon_ratio
 
             target_time = now - target_window
-            past = self._find_observation_at(target_time)
+            # Tolerance: accept observations within half the target window.
+            # This prevents using a 0.5s-old sample for a 60s window.
+            tolerance = target_window * 0.5
+            past = self._find_observation_at(target_time, tolerance)
             if past is None:
                 continue
 
