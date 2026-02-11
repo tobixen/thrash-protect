@@ -7,6 +7,34 @@ and this project should adhere to [Semantic Versioning](https://semver.org/spec/
 
 For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
+## [1.1.0] - Unreleased
+
+### Added
+
+- **OOM protection**: Proactive memory exhaustion prediction using two-point linear
+  projection on weighted MemAvailable + SwapFree. Freezes processes before the OOM
+  killer activates. Configurable via `--oom-protection`/`--no-oom-protection`,
+  `--oom-horizon` (default 3600s), `--oom-swap-weight`.
+- **SSD auto-detection**: Automatically detects if swap is on SSD via
+  `/proc/swaps` + `/sys/block/*/queue/rotational`. When SSD is detected,
+  `swap_page_threshold` is raised from 4 to 64 to avoid false positives.
+  Configurable via `--storage-type auto|ssd|hdd`.
+- **Type annotations**: Full type hints throughout with `from __future__ import annotations`.
+
+### Changed
+
+- **ThrashProtectState class**: Encapsulated global state (`frozen_items`,
+  `frozen_cgroup_paths`, `num_unfreezes`, process selector, memory predictor)
+  into a `ThrashProtectState` class with a module-level singleton. Module-level
+  backward-compatible functions still available.
+- `load_config()` now returns `(config_dict, explicitly_set_keys)` to support
+  SSD auto-detection without overriding explicit user settings.
+
+### Fixed
+
+- Bare `except:` clauses replaced with `except Exception:` (4 occurrences).
+  E722 now enforced via ruff.
+
 ## [1.0.2] - 2026-02-11
 
 My priority now is to produce rpm and deb packages.  I may need to change version numbers frequently until it works.
