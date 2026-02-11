@@ -192,6 +192,9 @@ CONFIG_SCHEMA = {
     "date_human_readable": (_parse_bool, "THRASH_PROTECT_DATE_HUMAN_READABLE", ["date-human-readable"]),
     "diagnostic_logging": (_parse_bool, "THRASH_PROTECT_DIAGNOSTIC_LOGGING", ["diagnostic-logging"]),
     "storage_type": (str, "THRASH_PROTECT_STORAGE_TYPE", ["storage-type"]),
+    "oom_protection": (_parse_bool, "THRASH_PROTECT_OOM_PROTECTION", ["oom-protection"]),
+    "oom_horizon": (int, "THRASH_PROTECT_OOM_HORIZON", ["oom-horizon"]),
+    "oom_swap_weight": (float, "THRASH_PROTECT_OOM_SWAP_WEIGHT", ["oom-swap-weight"]),
 }
 
 
@@ -295,6 +298,9 @@ def get_defaults():
         "date_human_readable": True,
         "diagnostic_logging": False,
         "storage_type": "auto",
+        "oom_protection": True,
+        "oom_horizon": 3600,
+        "oom_swap_weight": None,  # Auto-set based on storage type
     }
 
 
@@ -578,6 +584,35 @@ Example usage:
         help="Swap storage type for threshold tuning (default: auto-detect)",
     )
 
+    # OOM protection
+    p.add_argument(
+        "--oom-protection",
+        dest="oom_protection",
+        action="store_true",
+        default=None,
+        help="Enable proactive OOM protection via memory exhaustion prediction (default: true)",
+    )
+    p.add_argument(
+        "--no-oom-protection",
+        dest="oom_protection",
+        action="store_false",
+        help="Disable proactive OOM protection",
+    )
+    p.add_argument(
+        "--oom-horizon",
+        dest="oom_horizon",
+        type=int,
+        metavar="SECONDS",
+        help="Time horizon for OOM prediction in seconds (default: 3600)",
+    )
+    p.add_argument(
+        "--oom-swap-weight",
+        dest="oom_swap_weight",
+        type=float,
+        metavar="WEIGHT",
+        help="Weight for swap in OOM prediction (default: auto based on storage type, SSD=2.0 HDD=4.0)",
+    )
+
     return p
 
 
@@ -838,6 +873,112 @@ def _get_device_rotational(device):
     return None
 
 
+#########################
+## OOM Protection
+#########################
+
+
+def read_meminfo():
+    """Read MemAvailable and SwapFree from /proc/meminfo (in kB).
+
+    Returns (mem_available_kb, swap_free_kb) or None if unavailable.
+    """
+    mem_available = None
+    swap_free = None
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    mem_available = int(line.split()[1])
+                elif line.startswith("SwapFree:"):
+                    swap_free = int(line.split()[1])
+                if mem_available is not None and swap_free is not None:
+                    return (mem_available, swap_free)
+    except (FileNotFoundError, PermissionError, OSError, ValueError):
+        pass
+    return None
+
+
+class MemoryExhaustionPredictor:
+    """Predicts memory exhaustion using two-point linear projection.
+
+    Tracks a weighted "available resources" metric:
+        available = mem_available + swap_free * swap_weight
+
+    Where swap_weight reflects that swap depletion is more dangerous
+    (SSD: 2.0, HDD: 4.0).
+
+    Uses two consecutive observations to project when resources will hit zero.
+    If the projected time-to-exhaustion is less than oom_horizon seconds,
+    triggers proactive freezing to prevent OOM kills.
+    """
+
+    def __init__(self, swap_weight=2.0, horizon=3600):
+        self.swap_weight = swap_weight
+        self.horizon = horizon
+        self._prev_time = None
+        self._prev_available = None
+
+    def update_and_predict(self):
+        """Read current memory state, project time to exhaustion.
+
+        Returns estimated seconds until exhaustion, or None if:
+        - Resources are not declining
+        - Not enough observations yet
+        - /proc/meminfo is unavailable
+        """
+        meminfo = read_meminfo()
+        if meminfo is None:
+            return None
+
+        mem_available, swap_free = meminfo
+        available = mem_available + swap_free * self.swap_weight
+        now = time.time()
+
+        if self._prev_time is None:
+            # First observation - store and return
+            self._prev_time = now
+            self._prev_available = available
+            return None
+
+        prev_time = self._prev_time
+        prev_available = self._prev_available
+
+        # Update stored state for next call
+        self._prev_time = now
+        self._prev_available = available
+
+        # Not declining -> no exhaustion predicted
+        if available >= prev_available:
+            return None
+
+        # Two-point projection: when will available hit zero?
+        dt = now - prev_time
+        if dt <= 0:
+            return None
+
+        decline_rate = (prev_available - available) / dt  # kB/sec declining
+        if decline_rate <= 0:
+            return None
+
+        eta = available / decline_rate
+        return eta
+
+    def should_freeze(self):
+        """Check if proactive freezing should be triggered.
+
+        Returns True if projected time to exhaustion is within horizon.
+        """
+        eta = self.update_and_predict()
+        if eta is not None and eta < self.horizon:
+            logging.info(
+                "OOM protection: memory exhaustion predicted in %.0f seconds "
+                "(horizon: %d seconds)" % (eta, self.horizon)
+            )
+            return True
+        return False
+
+
 class config:
     """
     Configuration namespace - populated at startup by init_config().
@@ -871,9 +1012,26 @@ def init_config(args=None):
         logging.debug("SSD detected: swap_page_threshold adjusted to 64")
     cfg["_resolved_storage_type"] = resolved_storage
 
+    # Resolve OOM swap weight based on storage type if not explicitly set
+    if cfg["oom_swap_weight"] is None:
+        if resolved_storage == "hdd":
+            cfg["oom_swap_weight"] = 4.0
+        else:
+            cfg["oom_swap_weight"] = 2.0  # SSD or unknown
+
     # Set all config values as attributes on the config class
     for key, value in cfg.items():
         setattr(config, key, value)
+
+    # Set up memory exhaustion predictor
+    global memory_predictor
+    if config.oom_protection:
+        memory_predictor = MemoryExhaustionPredictor(
+            swap_weight=config.oom_swap_weight,
+            horizon=config.oom_horizon,
+        )
+    else:
+        memory_predictor = None
 
     # Set up debug_check_state function based on config
     global debug_check_state
@@ -1703,11 +1861,17 @@ def thrash_protect(args=None):
         current = SystemState()
         busy = current.check_thrashing(prev)
 
-        ## If we're thrashing, then freeze something.
-        if busy:
+        ## Check OOM prediction (proactive memory exhaustion protection)
+        oom_predicted = False
+        if memory_predictor and not busy:
+            oom_predicted = memory_predictor.should_freeze()
+
+        ## If we're thrashing or OOM is predicted, then freeze something.
+        if busy or oom_predicted:
             freeze_something()
         elif not current.cooldown_counter:
-            ## If no swapping has been observed for a while then unfreeze something.
+            ## If no swapping has been observed for a while and no OOM predicted,
+            ## then unfreeze something.
             current.unfrozen_pid = unfreeze_something()
 
         global_process_selector.update(prev, current)
@@ -1773,6 +1937,8 @@ frozen_cgroup_paths = set()
 num_unfreezes = 0
 ## A singleton ...
 global_process_selector = GlobalProcessSelector()
+# OOM predictor - set up by init_config() when oom_protection is enabled
+memory_predictor = None
 
 
 def main():
