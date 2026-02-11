@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+from __future__ import annotations
 
 ### Simple-Stupid user-space program protecting a linux host from thrashing.
 ### See the README for details.
@@ -32,6 +33,7 @@ from collections import namedtuple
 from datetime import datetime
 from os import getenv, getpid, getppid, kill, unlink
 from subprocess import check_output
+from typing import Any, Callable
 
 # Optional imports with graceful fallback
 try:
@@ -113,7 +115,7 @@ STATIC_WHITELIST = [
 ]
 
 
-def get_shells_from_etc():
+def get_shells_from_etc() -> list[str]:
     """Read shell basenames from /etc/shells."""
     try:
         shells = set()
@@ -130,13 +132,13 @@ def get_shells_from_etc():
         return ["bash", "sh", "zsh", "fish"]
 
 
-def get_default_whitelist():
+def get_default_whitelist() -> list[str]:
     """Static whitelist + all shells from /etc/shells."""
     shells = get_shells_from_etc()
     return list(set(STATIC_WHITELIST + shells))
 
 
-def get_default_jobctrllist():
+def get_default_jobctrllist() -> list[str]:
     """Shells from /etc/shells plus sudo."""
     shells = get_shells_from_etc()
     if "sudo" not in shells:
@@ -144,7 +146,7 @@ def get_default_jobctrllist():
     return shells
 
 
-def _parse_bool(value):
+def _parse_bool(value: bool | int | str) -> bool:
     """Parse boolean from string."""
     if isinstance(value, bool):
         return value
@@ -153,7 +155,7 @@ def _parse_bool(value):
     return str(value).lower() in ("true", "yes", "1", "on")
 
 
-def _parse_list(value):
+def _parse_list(value: list[str] | str | None) -> list[str]:
     """Parse space-separated list."""
     if isinstance(value, list):
         return value
@@ -198,7 +200,7 @@ CONFIG_SCHEMA = {
 }
 
 
-def load_from_file(path=None):
+def load_from_file(path: str | None = None) -> dict[str, Any]:
     """Load configuration from file (auto-detect format by extension)."""
     if path:
         paths = [path]
@@ -227,7 +229,7 @@ def load_from_file(path=None):
     return {}
 
 
-def _load_yaml(path):
+def _load_yaml(path: str) -> dict[str, Any]:
     """Load YAML config file."""
     if not HAS_YAML:
         raise ImportError("PyYAML not installed - install with: pip install PyYAML")
@@ -236,7 +238,7 @@ def _load_yaml(path):
     return data.get("thrash-protect", data)
 
 
-def _load_toml(path):
+def _load_toml(path: str) -> dict[str, Any]:
     """Load TOML config file."""
     if not HAS_TOML:
         raise ImportError("TOML support not available - install tomli (Python <3.11) or use Python 3.11+")
@@ -245,14 +247,14 @@ def _load_toml(path):
     return data.get("thrash-protect", data)
 
 
-def _load_json(path):
+def _load_json(path: str) -> dict[str, Any]:
     """Load JSON config file."""
     with open(path) as f:
         data = json.load(f)
     return data.get("thrash-protect", data)
 
 
-def _load_ini(path):
+def _load_ini(path: str) -> dict[str, Any]:
     """Load INI config file."""
     parser = configparser.ConfigParser()
     parser.read(path)
@@ -261,7 +263,7 @@ def _load_ini(path):
     return dict(parser["thrash-protect"])
 
 
-def load_from_env():
+def load_from_env() -> dict[str, Any]:
     """Load configuration from environment variables."""
     env_config = {}
 
@@ -276,7 +278,7 @@ def load_from_env():
     return env_config
 
 
-def get_defaults():
+def get_defaults() -> dict[str, Any]:
     """Get default configuration values."""
     return {
         "debug_logging": False,
@@ -304,7 +306,7 @@ def get_defaults():
     }
 
 
-def normalize_file_config(file_config):
+def normalize_file_config(file_config: dict[str, Any]) -> dict[str, Any]:
     """Normalize config keys and values from file config.
 
     Handles underscore/hyphen differences and type conversions.
@@ -334,7 +336,7 @@ def normalize_file_config(file_config):
     return normalized
 
 
-def load_config(args):
+def load_config(args: argparse.Namespace) -> tuple[dict[str, Any], set[str]]:
     """Merge config from defaults <- file <- env <- CLI.
 
     Priority order (highest to lowest):
@@ -379,7 +381,7 @@ def load_config(args):
     return final, explicitly_set
 
 
-def create_argument_parser():
+def create_argument_parser() -> argparse.ArgumentParser:
     """Create argument parser with all configuration options."""
     p = argparse.ArgumentParser(
         description="Protect a Linux host from thrashing by temporarily suspending processes",
@@ -621,7 +623,7 @@ Example usage:
 #########################
 
 
-def get_cgroup_path(pid):
+def get_cgroup_path(pid: int) -> str | None:
     """Get the cgroup v2 path for a process, returns None if not available."""
     try:
         with open(f"/proc/{pid}/cgroup") as f:
@@ -639,7 +641,7 @@ def get_cgroup_path(pid):
     return None
 
 
-def is_cgroup_freezable(cgroup_path):
+def is_cgroup_freezable(cgroup_path: str | None) -> bool:
     """Check if cgroup supports freezing."""
     if not cgroup_path:
         return False
@@ -647,7 +649,7 @@ def is_cgroup_freezable(cgroup_path):
     return os.path.exists(freeze_file)
 
 
-def freeze_cgroup(cgroup_path):
+def freeze_cgroup(cgroup_path: str) -> bool:
     """Freeze all processes in a cgroup. Returns True on success."""
     try:
         freeze_file = os.path.join(cgroup_path, "cgroup.freeze")
@@ -660,7 +662,7 @@ def freeze_cgroup(cgroup_path):
         return False
 
 
-def unfreeze_cgroup(cgroup_path):
+def unfreeze_cgroup(cgroup_path: str) -> bool:
     """Unfreeze all processes in a cgroup. Returns True on success."""
     try:
         freeze_file = os.path.join(cgroup_path, "cgroup.freeze")
@@ -673,7 +675,7 @@ def unfreeze_cgroup(cgroup_path):
         return False
 
 
-def should_use_cgroup_freeze(pid):
+def should_use_cgroup_freeze(pid: int) -> str | None:
     """Check if we should use cgroup freezing for this process.
 
     Returns cgroup_path if cgroup freezing should be used, None otherwise.
@@ -701,7 +703,7 @@ def should_use_cgroup_freeze(pid):
 #########################
 
 
-def normalize_pids(pids):
+def normalize_pids(pids: tuple[int, ...] | list[int] | int | None) -> tuple[int, ...]:
     """Normalize pids to a tuple.
 
     Handles single pids, tuples, lists, and other iterables consistently.
@@ -713,7 +715,7 @@ def normalize_pids(pids):
     return tuple(pids)
 
 
-def apply_score_adjustments(score, cmd):
+def apply_score_adjustments(score: float, cmd: str) -> float:
     """Apply whitelist/blacklist score adjustments.
 
     Divides score for whitelisted commands, multiplies for blacklisted.
@@ -726,7 +728,7 @@ def apply_score_adjustments(score, cmd):
     return score
 
 
-def unpack_frozen_item(item):
+def unpack_frozen_item(item: tuple[str, ...]) -> tuple[str, str | None, tuple[int, ...]]:
     """Unpack a frozen_items entry into (item_type, cgroup_path, pids).
 
     For cgroup items: returns ('cgroup', cgroup_path, pids)
@@ -746,7 +748,7 @@ def unpack_frozen_item(item):
 _psi_available = None
 
 
-def is_psi_available():
+def is_psi_available() -> bool:
     """Check if PSI is available on this system (Linux 4.20+)."""
     global _psi_available
     if _psi_available is None:
@@ -754,7 +756,7 @@ def is_psi_available():
     return _psi_available
 
 
-def get_memory_pressure():
+def get_memory_pressure() -> dict[str, dict[str, float | int]] | None:
     """Read memory pressure from /proc/pressure/memory.
 
     Returns a dict with 'some' and 'full' pressure metrics, each containing
@@ -794,7 +796,7 @@ def get_memory_pressure():
 #########################
 
 
-def detect_swap_storage_type():
+def detect_swap_storage_type() -> str | None:
     """Detect whether swap storage is SSD or HDD.
 
     Reads /proc/swaps for active swap devices, resolves each to a block device,
@@ -827,7 +829,7 @@ def detect_swap_storage_type():
     return "ssd" if found_ssd else None
 
 
-def _get_device_rotational(device):
+def _get_device_rotational(device: str) -> int | None:
     """Check if a device is rotational (1=HDD) or not (0=SSD).
 
     Resolves the device path to a block device and checks
@@ -878,7 +880,7 @@ def _get_device_rotational(device):
 #########################
 
 
-def read_meminfo():
+def read_meminfo() -> tuple[int, int] | None:
     """Read MemAvailable and SwapFree from /proc/meminfo (in kB).
 
     Returns (mem_available_kb, swap_free_kb) or None if unavailable.
@@ -913,13 +915,13 @@ class MemoryExhaustionPredictor:
     triggers proactive freezing to prevent OOM kills.
     """
 
-    def __init__(self, swap_weight=2.0, horizon=3600):
+    def __init__(self, swap_weight: float = 2.0, horizon: int = 3600) -> None:
         self.swap_weight = swap_weight
         self.horizon = horizon
-        self._prev_time = None
-        self._prev_available = None
+        self._prev_time: float | None = None
+        self._prev_available: float | None = None
 
-    def update_and_predict(self):
+    def update_and_predict(self) -> float | None:
         """Read current memory state, project time to exhaustion.
 
         Returns estimated seconds until exhaustion, or None if:
@@ -964,7 +966,7 @@ class MemoryExhaustionPredictor:
         eta = available / decline_rate
         return eta
 
-    def should_freeze(self):
+    def should_freeze(self) -> bool:
         """Check if proactive freezing should be triggered.
 
         Returns True if projected time to exhaustion is within horizon.
@@ -989,7 +991,7 @@ class config:
     pass
 
 
-def init_config(args=None):
+def init_config(args: argparse.Namespace | None = None) -> None:
     """Initialize the config namespace from all configuration sources.
 
     This should be called once at startup, after argument parsing.
@@ -1050,7 +1052,7 @@ def init_config(args=None):
 
 # Initialize with defaults immediately so the module can be imported
 # (will be re-initialized in main() with proper args)
-def _init_default_config():
+def _init_default_config() -> None:
     """Initialize config with defaults for module import compatibility."""
     defaults = get_defaults()
     for key, value in defaults.items():
@@ -1073,16 +1075,16 @@ class SystemState:
     collection will be insignificant)
     """
 
-    def __init__(self):
-        self.timestamp = time.time()
-        self.pagefaults = self.get_pagefaults()
-        self.swapcount = self.get_swapcount()
-        self.psi = get_memory_pressure()  # None if PSI not available
-        self.cooldown_counter = 0
-        self.unfrozen_pid = None
-        self.timer_alert = False
+    def __init__(self) -> None:
+        self.timestamp: float = time.time()
+        self.pagefaults: int | None = self.get_pagefaults()
+        self.swapcount: tuple[int, ...] = self.get_swapcount()
+        self.psi: dict[str, dict[str, float | int]] | None = get_memory_pressure()  # None if PSI not available
+        self.cooldown_counter: int = 0
+        self.unfrozen_pid: tuple[int, ...] | list[int] | None = None
+        self.timer_alert: bool = False
 
-    def get_pagefaults(self):
+    def get_pagefaults(self) -> int | None:
         with open("/proc/vmstat") as vmstat:
             line = ""
             while line is not None:
@@ -1090,7 +1092,7 @@ class SystemState:
                 if line.startswith("pgmajfault "):
                     return int(line[12:])
 
-    def get_swapcount(self):
+    def get_swapcount(self) -> tuple[int, ...]:
         ret = []
         with open("/proc/vmstat") as vmstat:
             line = True
@@ -1100,7 +1102,7 @@ class SystemState:
                     ret.append(int(line[7:]))
         return tuple(ret)
 
-    def check_swap_threshold(self, prev):
+    def check_swap_threshold(self, prev: SystemState) -> bool:
         self.cooldown_counter = prev.cooldown_counter
         if config.test_mode and not random.getrandbits(config.test_mode):
             self.cooldown_counter = prev.cooldown_counter + 1
@@ -1173,7 +1175,7 @@ class SystemState:
             ## (Hm - we risk that process A gets frozen but never unfrozen due to process B generating swap activity?)
         return ret
 
-    def check_thrashing(self, prev):
+    def check_thrashing(self, prev: SystemState) -> bool:
         """Check if the system is thrashing using swap page counting with PSI amplification.
 
         Returns True if thrashing is detected, False otherwise.
@@ -1183,10 +1185,10 @@ class SystemState:
         """
         return self.check_swap_threshold(prev)
 
-    def get_sleep_interval(self):
+    def get_sleep_interval(self) -> float:
         return config.interval / (self.cooldown_counter + 1.0)
 
-    def check_delay(self, expected_delay=0):
+    def check_delay(self, expected_delay: float = 0) -> bool:
         """
         If the code execution takes a too long time it may be that we're thrashing and this process has been swapped out.
         (TODO: detect possible problem: wrong tuning of max_acceptable_time_delta causes this to always trigger)
@@ -1219,19 +1221,19 @@ class ProcessSelector:
     object, if needed.  scan is required
     """
 
-    def scan(self):
+    def scan(self) -> tuple[int, ...] | None:
         raise NotImplementedError()
 
-    def update(self, prev, curr):
+    def update(self, prev: SystemState, curr: SystemState) -> None:
         pass
 
     @staticmethod
-    def _is_kernel_thread(pid, stats):
+    def _is_kernel_thread(pid: int, stats: ProcessSelector.procstat) -> bool:
         """Kernel threads have kthreadd (pid 2) as parent, or are kthreadd itself."""
         return pid == 2 or stats.ppid == 2
 
     @staticmethod
-    def _is_frozen(pid, stats):
+    def _is_frozen(pid: int, stats: ProcessSelector.procstat) -> bool:
         """Check if a process is already frozen (SIGSTOP or cgroup freeze).
 
         Cgroup-frozen processes don't show state "T" in /proc/pid/stat,
@@ -1247,13 +1249,13 @@ class ProcessSelector:
 
     procstat = namedtuple("procstat", ("cmd", "state", "majflt", "ppid"))
 
-    def readStat(self, sfn):
+    def readStat(self, sfn: int | str) -> ProcessSelector.procstat | None:
         try:
             return self.readStat_(sfn)
         except (FileNotFoundError, ProcessLookupError):
             return None
 
-    def readStat_(self, sfn):
+    def readStat_(self, sfn: int | str) -> ProcessSelector.procstat:
         """
         helper method - reads the stats file and returns a tuple (cmd, state,
         majflt, pids)
@@ -1270,7 +1272,7 @@ class ProcessSelector:
             stats.extend(stats_tx[1].split(" ")[1:])
         return self.procstat(stats[1], stats[2], int(stats[11]), int(stats[3]))
 
-    def checkParents(self, pid, ppid=None):
+    def checkParents(self, pid: int, ppid: int | None = None) -> tuple[int, ...]:
         """
         helper method - find a list of pids that should be suspended, given
         a pid (and for optimalization reasons, ppid if it's already
@@ -1303,7 +1305,7 @@ class OOMScoreProcessSelector(ProcessSelector):
     based on oom_score.  No stored state required.
     """
 
-    def scan(self):
+    def scan(self) -> tuple[int, ...] | None:
         oom_scores = glob.glob("/proc/*/oom_score")
         max = 0
         worstpid = None
@@ -1358,14 +1360,14 @@ class LastFrozenProcessSelector(ProcessSelector):
     selected all the time.
     """
 
-    def __init__(self):
-        self.last_unfrozen_pid = None
+    def __init__(self) -> None:
+        self.last_unfrozen_pid: tuple[int, ...] | list[int] | None = None
 
-    def update(self, prev, cur):
+    def update(self, prev: SystemState, cur: SystemState) -> None:
         if cur.unfrozen_pid:
             self.last_unfrozen_pid = cur.unfrozen_pid
 
-    def scan(self):
+    def scan(self) -> tuple[int, ...] | list[int] | None:
         """
         If a process was just resumed and the system start thrashing again, it would probably be smart to freeze that process again.  This is also a very cheap operation
         """
@@ -1394,11 +1396,11 @@ class CgroupPressureProcessSelector(ProcessSelector):
     actual source of memory pressure rather than just memory usage.
     """
 
-    def __init__(self):
-        self.cgroup_pressure_cache = {}  # cgroup_path -> (timestamp, pressure)
-        self.cache_ttl = 1.0  # Cache PSI readings for 1 second
+    def __init__(self) -> None:
+        self.cgroup_pressure_cache: dict[str, tuple[float, float]] = {}  # cgroup_path -> (timestamp, pressure)
+        self.cache_ttl: float = 1.0  # Cache PSI readings for 1 second
 
-    def get_cgroup_pressure(self, cgroup_path):
+    def get_cgroup_pressure(self, cgroup_path: str) -> float | None:
         """Get memory pressure for a cgroup, with caching."""
         now = time.time()
 
@@ -1426,7 +1428,7 @@ class CgroupPressureProcessSelector(ProcessSelector):
 
         return None
 
-    def scan(self):
+    def scan(self) -> tuple[int, ...] | None:
         """Find process in cgroup with highest memory pressure, weighted by OOM score.
 
         Combines cgroup pressure with per-process oom_score to avoid bias toward
@@ -1521,19 +1523,19 @@ class PageFaultingProcessSelector(ProcessSelector):
     yet are needed, it's also a "page fault")
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         ## TODO: garbage collection
-        self.pagefault_by_pid = {}
-        self.cooldown_counter = 0
+        self.pagefault_by_pid: dict[int, int] = {}
+        self.cooldown_counter: int = 0
 
-    def update(self, prev, cur):
+    def update(self, prev: SystemState, cur: SystemState) -> None:
         self.cooldown_counter = cur.cooldown_counter
         if cur.pagefaults - prev.pagefaults > config.pgmajfault_scan_threshold:
             ## If we've had a lot of major page faults, refresh our state
             ## on major page faults.
             self.scan()
 
-    def scan(self):
+    def scan(self) -> tuple[int, ...] | None:
         ## TODO: garbage collection
         stat_files = glob.glob("/proc/*/stat")
         max = 0
@@ -1576,7 +1578,7 @@ class GlobalProcessSelector(ProcessSelector):
     This is a collection of the various process selectors.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         ## Sets up a prioritized list of selectors:
         ## * LastFrozenProcessSelector is the cheapest and it's surely
         ##   smart to be quick on refreezing a recently unfrozen process
@@ -1590,21 +1592,21 @@ class GlobalProcessSelector(ProcessSelector):
         ##   positives, so it's last.
         ## I'm not sure if we need all of those.  Perhaps it would make sense
         ## to shed some of the older obsoleted selecting methods (TODO).
-        self.collection = [
+        self.collection: list[ProcessSelector] = [
             LastFrozenProcessSelector(),
             CgroupPressureProcessSelector(),
             OOMScoreProcessSelector(),
             PageFaultingProcessSelector(),
         ]
-        self.scan_method_count = 0
+        self.scan_method_count: int = 0
 
-    def update(self, prev, cur):
+    def update(self, prev: SystemState, cur: SystemState) -> None:
         if cur.unfrozen_pid:
             self.scan_method_count = 0
         for c in self.collection:
             c.update(prev, cur)
 
-    def scan(self):
+    def scan(self) -> tuple[int, ...] | None:
         logging.debug("scan_processes")
 
         ## a for loop here to make sure we fall back on the next method if the first method fails to find anything.
@@ -1623,7 +1625,7 @@ class GlobalProcessSelector(ProcessSelector):
     logging.debug("found nothing to stop!? :-(")
 
 
-def get_date_string():
+def get_date_string() -> str:
     if config.date_human_readable:
         now = datetime.now()
         return now.strftime("%Y-%m-%d %H:%M:%S") + f".{now.microsecond // 1000:03d}"
@@ -1632,7 +1634,7 @@ def get_date_string():
 
 
 ## returns string with detailed process information
-def get_process_info(pid):
+def get_process_info(pid: int) -> str:
     try:
         ## TODO: we should fetch this information from /proc filesystem instead of using ps
         info = check_output(["ps", "-p", str(pid), "uf"]).decode("utf-8", "ignore")
@@ -1647,8 +1649,8 @@ def get_process_info(pid):
         return "problem fetching process information"
 
 
-def ignore_failure(method):
-    def _try_except_pass(*args, **kwargs):
+def ignore_failure(method: Callable[..., Any]) -> Callable[..., None]:
+    def _try_except_pass(*args: Any, **kwargs: Any) -> None:
         try:
             method(*args, **kwargs)
         except Exception:
@@ -1665,7 +1667,7 @@ FROZEN_PID_FILE = "/tmp/thrash-protect-frozen-pid-list"
 LOG_FILE = "/var/log/thrash-protect.log"
 
 
-def _write_log_entry(action, pid, log_user_data, all_frozen):
+def _write_log_entry(action: str, pid: int, log_user_data: bool, all_frozen: list[tuple[int, ...]]) -> None:
     """Write a log entry to the thrash-protect log file."""
     with open(LOG_FILE, "ab") as logfile:
         if log_user_data:
@@ -1686,7 +1688,7 @@ def _write_log_entry(action, pid, log_user_data, all_frozen):
                 logfile.write(("%s - %s pid %s\n" % (get_date_string(), action, pid)).encode("utf-8"))
 
 
-def _update_frozen_pid_file(all_frozen):
+def _update_frozen_pid_file(all_frozen: list[tuple[int, ...]]) -> None:
     """Update or remove the frozen PID list file."""
     if all_frozen:
         with open(FROZEN_PID_FILE, "w") as f:
@@ -1698,20 +1700,20 @@ def _update_frozen_pid_file(all_frozen):
             pass
 
 
-def log_frozen(pid):
+def log_frozen(pid: int) -> None:
     all_frozen = get_all_frozen_pids()
     _write_log_entry("frozen", pid, config.log_user_data_on_freeze, all_frozen)
     _update_frozen_pid_file(all_frozen)
 
 
 @ignore_failure
-def log_unfrozen(pid):
+def log_unfrozen(pid: int) -> None:
     all_frozen = get_all_frozen_pids()
     _write_log_entry("unfrozen", pid, config.log_user_data_on_unfreeze, all_frozen)
     _update_frozen_pid_file(all_frozen)
 
 
-def _debug_check_state(pid, should_be_suspended=False):
+def _debug_check_state(pid: int, should_be_suspended: bool = False) -> None:
     procstate = ProcessSelector().readStat(pid)
     if not procstate and not should_be_suspended:
         return
@@ -1727,7 +1729,7 @@ def _debug_check_state(pid, should_be_suspended=False):
 debug_check_state = lambda a, b: None
 
 
-def _diagnostic_log(msg):
+def _diagnostic_log(msg: str) -> None:
     """Log diagnostic information at INFO level (only called when --diagnostic is enabled)."""
     logging.info("DIAGNOSTIC: %s" % msg)
 
@@ -1744,14 +1746,14 @@ class ThrashProtectState:
     Provides freeze/unfreeze/cleanup methods that operate on this state.
     """
 
-    def __init__(self):
-        self.frozen_items = []
-        self.frozen_cgroup_paths = set()
-        self.num_unfreezes = 0
-        self.process_selector = GlobalProcessSelector()
-        self.memory_predictor = None
+    def __init__(self) -> None:
+        self.frozen_items: list[tuple[str, ...]] = []
+        self.frozen_cgroup_paths: set[str] = set()
+        self.num_unfreezes: int = 0
+        self.process_selector: GlobalProcessSelector = GlobalProcessSelector()
+        self.memory_predictor: MemoryExhaustionPredictor | None = None
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset all state (useful for testing)."""
         self.frozen_items = []
         self.frozen_cgroup_paths.clear()
@@ -1759,11 +1761,11 @@ class ThrashProtectState:
         self.process_selector = GlobalProcessSelector()
         self.memory_predictor = None
 
-    def get_all_frozen_pids(self):
+    def get_all_frozen_pids(self) -> list[tuple[int, ...]]:
         """Get combined list of all frozen pids (both SIGSTOP and cgroup frozen)."""
         return [unpack_frozen_item(item)[2] for item in self.frozen_items]
 
-    def freeze_something(self, pids_to_freeze=None):
+    def freeze_something(self, pids_to_freeze: tuple[int, ...] | list[int] | int | None = None) -> tuple[int, ...]:
         pids_to_freeze = normalize_pids(pids_to_freeze or self.process_selector.scan())
         if not pids_to_freeze:
             ## process disappeared. ignore failure
@@ -1812,7 +1814,7 @@ class ThrashProtectState:
             log_frozen(pid_to_freeze)
         return pids_to_freeze
 
-    def unfreeze_something(self):
+    def unfreeze_something(self) -> list[int] | None:
         if not self.frozen_items:
             return None
 
@@ -1850,7 +1852,7 @@ class ThrashProtectState:
         self.num_unfreezes += 1
         return pids_to_unfreeze
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         """Clean up if exiting due to an exception."""
         self.frozen_cgroup_paths.clear()
         for item in self.frozen_items:
@@ -1868,7 +1870,7 @@ class ThrashProtectState:
         except FileNotFoundError:
             pass
 
-    def run(self, args=None):
+    def run(self, args: argparse.Namespace | None = None) -> None:
         """Main thrash-protect loop."""
         current = SystemState()
 
@@ -1913,7 +1915,7 @@ class ThrashProtectState:
                 current.check_delay(sleep_interval)
 
 
-def unfreeze_from_tmpfile():
+def unfreeze_from_tmpfile() -> None:
     """
     Cleanup - unfreezing pids from last run, if applicable
 
@@ -1950,27 +1952,27 @@ memory_predictor = _tp.memory_predictor
 
 
 # Backward-compatible module-level functions that delegate to singleton
-def get_all_frozen_pids():
+def get_all_frozen_pids() -> list[tuple[int, ...]]:
     return _tp.get_all_frozen_pids()
 
 
-def freeze_something(pids_to_freeze=None):
+def freeze_something(pids_to_freeze: tuple[int, ...] | list[int] | int | None = None) -> tuple[int, ...]:
     return _tp.freeze_something(pids_to_freeze)
 
 
-def unfreeze_something():
+def unfreeze_something() -> list[int] | None:
     return _tp.unfreeze_something()
 
 
-def cleanup():
+def cleanup() -> None:
     return _tp.cleanup()
 
 
-def thrash_protect(args=None):
+def thrash_protect(args: argparse.Namespace | None = None) -> None:
     return _tp.run(args)
 
 
-def main():
+def main() -> None:
     """Main entry point for thrash-protect."""
     p = create_argument_parser()
     args = p.parse_args()
