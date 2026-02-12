@@ -2,9 +2,21 @@
 
 Update 2026-02-10: I've forgotten completely to read and update this document, so it's probably already slightly outdated.
 
+## v1.1.0
+
+SSD-backed swap may go full rather quickly.  I want to extend the scope of thrash-protect to not only protect against heavy thrashing, but also to protect against OOM-situations.
+
+General idea: in addition to stopping processes when there are two-way swapping, thrash-protect should also stop processes when a linear projection of memory usage gives indications that all memory will be spent within (configurable value:) an hour.
+
+The devil is in the details here.  Memory usage may go pretty fast up and down.  A "linear prediction" needs two observations, and under ordinary circumstances (no thrashing, plenty of memory, no stopped processes) it's needed with some distance between those two observation points.  We should have shorter distance between the observation points when there is less memory available.  We should have very small observation intervals when we're actively stopping and resuming processes.
+
+It should be considered if those ideas are sane, and the details should be fleshed out before starting implementation.
+
 ## High Priority
 
 ### SSD Default Settings
+
+**Update**: I'm not sure if this is really a problem.  More research should probably be done.  Perhaps spin up a VM in OpenStack with local SSD storage, minimum memory and play with memory-hogging processes there.
 
 The default `swap_page_threshold=4` was tuned for spinning magnetic disks. SSDs are orders of magnitude faster, so this threshold causes false positives - thrash-protect may suspend processes unnecessarily when the system is handling swap I/O just fine.
 
