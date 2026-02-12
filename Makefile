@@ -9,6 +9,7 @@ ifneq ($(_detected_version),)
 version := $(_detected_version)
 endif
 endif
+export version
 
 .PHONY: build install clean distclean rpm archlinux dist release do-release ubuntu debian
 
@@ -73,8 +74,8 @@ release:
 		fi \
 	fi
 
-## Package targets require version=X.Y.Z on command line
-## Example: make archlinux version=0.15.0
+## Package targets use auto-detected version from .tag.* files,
+## or explicit version=X.Y.Z on command line.
 
 archlinux: archlinux/PKGBUILD_ thrash_protect.py
 ifndef version
