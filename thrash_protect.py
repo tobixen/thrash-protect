@@ -956,7 +956,9 @@ class MemoryExhaustionPredictor:
 
     # Observation scales relative to the main window.
     # Each scale checks a different time range with proportional horizon.
-    _SCALES = (1.0, 1 / 12)
+    # The 1/60 scale (~1s window, ~10s horizon) gives fast feedback after
+    # a reset — essential when freezing/unfreezing several processes per second.
+    _SCALES = (1.0, 1 / 12, 1 / 60)
 
     def __init__(
         self,
@@ -1054,6 +1056,17 @@ class MemoryExhaustionPredictor:
                 min_eta = eta
 
         return min_eta
+
+    def reset(self) -> None:
+        """Clear observation history.
+
+        Must be called after a freeze triggered by OOM prediction.
+        The old observations reflect pre-freeze memory trends that are
+        no longer representative.  After reset, the short scale (~5s)
+        will be the first to accumulate enough data to make predictions,
+        giving fast feedback on whether the freeze helped.
+        """
+        self._observations.clear()
 
     def should_freeze(self) -> bool:
         """Check if proactive freezing should be triggered.
@@ -2027,6 +2040,11 @@ class ThrashProtectState:
             ## If we're thrashing or OOM is predicted, then freeze something.
             if busy or oom_predicted:
                 self.freeze_something()
+                if oom_predicted and self.memory_predictor:
+                    # Old observations reflect pre-freeze memory trends and
+                    # would immediately re-trigger.  Reset so the short scale
+                    # can quickly assess whether the freeze helped.
+                    self.memory_predictor.reset()
             elif not current.cooldown_counter:
                 ## If no swapping has been observed for a while and no OOM predicted,
                 ## then unfreeze something.

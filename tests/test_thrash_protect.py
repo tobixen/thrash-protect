@@ -1553,6 +1553,103 @@ class TestOOMProtection:
         args = parser.parse_args(["--oom-low-pct", "15.0"])
         assert args.oom_low_pct == 15.0
 
+    def test_predictor_reset_clears_observations(self):
+        """Test that reset() clears the observation history."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+
+        # Add some observations
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+        with patch("thrash_protect.read_meminfo", return_value=(3000000, 5000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1005.0):
+                predictor.update_and_predict()
+
+        assert len(predictor._observations) == 2
+        predictor.reset()
+        assert len(predictor._observations) == 0
+
+    def test_predictor_reset_stops_prediction(self):
+        """After reset, predictor must not re-trigger on stale trends."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+
+        # Build up a declining trend that triggers OOM prediction
+        with patch("thrash_protect.read_meminfo", return_value=(2000000, 1000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+        with patch("thrash_protect.read_meminfo", return_value=(500000, 500000, 16000000, 8000000)):
+            with patch("time.time", return_value=1005.0):
+                assert predictor.should_freeze() is True
+
+        # Reset (simulating post-freeze reset)
+        predictor.reset()
+
+        # Next observation should NOT trigger — only 1 data point
+        with patch("thrash_protect.read_meminfo", return_value=(500000, 500000, 16000000, 8000000)):
+            with patch("time.time", return_value=1005.5):
+                assert predictor.should_freeze() is False
+
+    def test_predictor_rapid_scale_detects_catastrophic_decline(self):
+        """The 1/60 scale (~1s window, ~10s horizon) detects very rapid memory loss.
+
+        After a reset, this is the first scale to have matching observations,
+        giving fast feedback on whether a freeze helped.
+        """
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+
+        # Simulate post-reset: first observation
+        with patch("thrash_protect.read_meminfo", return_value=(500000, 200000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+
+        # 1s later: catastrophic decline, available going from 900k to 200k
+        # decline_rate = 700k/s, eta = 200k / 700k = 0.29s
+        # 1/60 scale horizon = 10s, 0.29 < 10 → triggers
+        with patch("thrash_protect.read_meminfo", return_value=(100000, 50000, 16000000, 8000000)):
+            with patch("time.time", return_value=1001.0):
+                eta = predictor.update_and_predict()
+                assert eta is not None
+                assert eta < 1  # sub-second ETA = emergency
+
+    def test_predictor_rapid_scale_no_false_positive(self):
+        """The 1/60 scale should NOT trigger on moderate memory fluctuations.
+
+        A moderate decline over 1s projects ETA well beyond the 10s horizon.
+        """
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+
+        # available = 4M + 6M*2 = 16M
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+
+        # 1s later: small decline of 100kB → eta = 15.9M / 100k = 159s >> 10s
+        with patch("thrash_protect.read_meminfo", return_value=(3950000, 5975000, 16000000, 8000000)):
+            with patch("time.time", return_value=1001.0):
+                eta = predictor.update_and_predict()
+                assert eta is None
+
+    def test_predictor_reset_then_stable_no_trigger(self):
+        """After reset, stable memory should not trigger any scale."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+
+        # Build trend, trigger, reset
+        with patch("thrash_protect.read_meminfo", return_value=(2000000, 1000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+        with patch("thrash_protect.read_meminfo", return_value=(500000, 500000, 16000000, 8000000)):
+            with patch("time.time", return_value=1005.0):
+                assert predictor.should_freeze() is True
+        predictor.reset()
+
+        # Post-freeze: memory stabilized (freeze helped)
+        with patch("thrash_protect.read_meminfo", return_value=(500000, 500000, 16000000, 8000000)):
+            with patch("time.time", return_value=1006.0):
+                predictor.update_and_predict()
+        with patch("thrash_protect.read_meminfo", return_value=(500000, 500000, 16000000, 8000000)):
+            with patch("time.time", return_value=1007.0):
+                assert predictor.should_freeze() is False
+
 
 class TestCgroupFreezeBugFixes:
     """Tests for cgroup freeze bug fixes: self-freeze prevention,
