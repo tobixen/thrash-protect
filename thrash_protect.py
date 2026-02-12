@@ -959,6 +959,9 @@ class MemoryExhaustionPredictor:
     # The 1/60 scale (~1s window, ~10s horizon) gives fast feedback after
     # a reset — essential when freezing/unfreezing several processes per second.
     _SCALES = (1.0, 1 / 12, 1 / 60)
+    ## I'm not sure if I like the idea with hard-coded "scales".
+    ## I think I would favor a way to algorithmically find an
+    ## appropriate "horizon".
 
     def __init__(
         self,
