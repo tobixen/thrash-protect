@@ -668,9 +668,10 @@ class TestDiagnosticLogging:
     """Tests for diagnostic logging functionality."""
 
     def test_diagnostic_disabled_by_default(self):
-        """Test that diagnostic_log is None (no-op) by default."""
-        thrash_protect.init_config(argparse.Namespace(config=None))
-        assert thrash_protect.diagnostic_log is None
+        """Test that diagnostic_log is None (no-op) by default for release versions."""
+        with patch.object(thrash_protect, "__version__", "1.2.0"):
+            thrash_protect.init_config(argparse.Namespace(config=None))
+            assert thrash_protect.diagnostic_log is None
 
     def test_diagnostic_enabled(self):
         """Test that diagnostic_log is set to _diagnostic_log when enabled."""
@@ -699,6 +700,28 @@ class TestDiagnosticLogging:
 
         args = parser.parse_args([])
         assert args.diagnostic_logging is None
+
+    def test_diagnostic_auto_enabled_for_dev_version(self):
+        """Test that diagnostic logging is auto-enabled for dev versions."""
+        with patch.object(thrash_protect, "__version__", "1.1.0.dev5+gabcdef"):
+            thrash_protect.init_config(argparse.Namespace(config=None))
+            assert thrash_protect.diagnostic_log is thrash_protect._diagnostic_log
+        # Reset
+        with patch.object(thrash_protect, "__version__", "1.2.0"):
+            thrash_protect.init_config(argparse.Namespace(config=None))
+
+    def test_diagnostic_not_auto_enabled_for_release_version(self):
+        """Test that diagnostic logging is not auto-enabled for release versions."""
+        with patch.object(thrash_protect, "__version__", "1.2.0"):
+            thrash_protect.init_config(argparse.Namespace(config=None))
+            assert thrash_protect.diagnostic_log is None
+
+    def test_diagnostic_explicit_disable_overrides_dev_version(self):
+        """Test that explicitly disabling diagnostic overrides dev auto-enable."""
+        with patch.object(thrash_protect, "__version__", "1.1.0.dev5"):
+            args = argparse.Namespace(config=None, diagnostic_logging=False)
+            thrash_protect.init_config(args)
+            assert thrash_protect.diagnostic_log is None
 
 
 class TestPSI:
@@ -1516,7 +1539,7 @@ class TestOOMProtection:
         assert thrash_protect.config.oom_protection is True
         assert thrash_protect.config.oom_observation_window == 60
         assert thrash_protect.config.oom_horizon == 600
-        assert thrash_protect.config.oom_low_pct == 100.0
+        assert thrash_protect.config.oom_low_pct == 0.0
         assert thrash_protect.config.oom_swap_weight == 2.0  # default (no HDD detected)
         assert thrash_protect._tp.memory_predictor is not None
 

@@ -316,7 +316,7 @@ def get_defaults() -> dict[str, Any]:
         "oom_observation_window": 60,
         "oom_horizon": 600,
         "oom_swap_weight": None,  # Auto-set based on storage type
-        "oom_low_pct": 100.0,  # Effectively disabled until algorithms are well-tuned
+        "oom_low_pct": 0.0,  # 0% = always predict; raise toward 75% once well-tuned
         "blacklist_expiry_time": 60.0,  # Seconds before a blacklist entry expires
         "blacklist_max_skip_count": 3,  # Unfreeze cycles a blacklisted item gets skipped
     }
@@ -1180,6 +1180,15 @@ def init_config(args: argparse.Namespace | None = None) -> None:
         debug_check_state = _debug_check_state
     else:
         debug_check_state = lambda a, b: None
+
+    # Auto-enable diagnostic logging for dev/pre-release versions unless explicitly disabled
+    if (
+        "diagnostic_logging" not in explicitly_set
+        and not config.diagnostic_logging
+        and any(tag in __version__ for tag in ("dev", "alpha", "beta", "rc", ".dirty"))
+    ):
+        config.diagnostic_logging = True
+        logging.info("diagnostic logging auto-enabled for dev version %s", __version__)
 
     # Set up diagnostic_log function based on config
     # When disabled, set to None so `if diagnostic_log:` guards skip string formatting
