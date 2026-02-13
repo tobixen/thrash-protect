@@ -199,6 +199,8 @@ CONFIG_SCHEMA = {
     "oom_horizon": (int, "THRASH_PROTECT_OOM_HORIZON", ["oom-horizon"]),
     "oom_swap_weight": (float, "THRASH_PROTECT_OOM_SWAP_WEIGHT", ["oom-swap-weight"]),
     "oom_low_pct": (float, "THRASH_PROTECT_OOM_LOW_PCT", ["oom-low-pct"]),
+    "blacklist_expiry_time": (float, "THRASH_PROTECT_BLACKLIST_EXPIRY_TIME", ["blacklist-expiry-time"]),
+    "blacklist_max_skip_count": (int, "THRASH_PROTECT_BLACKLIST_MAX_SKIP_COUNT", ["blacklist-max-skip-count"]),
 }
 
 
@@ -307,6 +309,8 @@ def get_defaults() -> dict[str, Any]:
         "oom_horizon": 600,
         "oom_swap_weight": None,  # Auto-set based on storage type
         "oom_low_pct": 100.0,  # Effectively disabled until algorithms are well-tuned
+        "blacklist_expiry_time": 60.0,  # Seconds before a blacklist entry expires
+        "blacklist_max_skip_count": 3,  # Unfreeze cycles a blacklisted item gets skipped
     }
 
 
@@ -631,6 +635,22 @@ Example usage:
         type=float,
         metavar="PERCENT",
         help="Only predict OOM when available resources are below this percentage of total (default: 100.0)",
+    )
+
+    # Repeat-offender blacklist
+    p.add_argument(
+        "--blacklist-expiry-time",
+        dest="blacklist_expiry_time",
+        type=float,
+        metavar="SECONDS",
+        help="Seconds before a repeat-offender blacklist entry expires (default: 60.0)",
+    )
+    p.add_argument(
+        "--blacklist-max-skip-count",
+        dest="blacklist_max_skip_count",
+        type=int,
+        metavar="N",
+        help="Number of unfreeze cycles a blacklisted process gets skipped (default: 3)",
     )
 
     return p
@@ -1128,6 +1148,13 @@ def init_config(args: argparse.Namespace | None = None) -> None:
     for key, value in cfg.items():
         setattr(config, key, value)
 
+    # Set up freeze blacklist on the singleton
+    _tp.freeze_blacklist = FreezeBlacklist(
+        expiry_time=config.blacklist_expiry_time,
+        max_skip_count=config.blacklist_max_skip_count,
+    )
+    _tp.process_selector = GlobalProcessSelector(blacklist=_tp.freeze_blacklist)
+
     # Set up memory exhaustion predictor on the singleton
     if config.oom_protection:
         _tp.memory_predictor = MemoryExhaustionPredictor(
@@ -1489,6 +1516,38 @@ class LastFrozenProcessSelector(ProcessSelector):
         return self.last_unfrozen_pid
 
 
+class BlacklistProcessSelector(ProcessSelector):
+    """Selects a blacklisted process that is alive and not currently frozen.
+
+    When a process has been identified as a repeat offender (unfrozen then
+    immediately causes re-thrashing), this selector prefers it as a freeze
+    target so it gets frozen quickly without waiting for expensive scoring.
+    """
+
+    def __init__(self, blacklist: FreezeBlacklist) -> None:
+        self.blacklist: FreezeBlacklist = blacklist
+
+    def scan(self) -> tuple[int, ...] | None:
+        for pids in list(self.blacklist.entries.keys()):
+            # Check if any PID in the tuple is alive
+            alive = False
+            for pid in pids:
+                stats = self.readStat(pid)
+                if stats is not None:
+                    alive = True
+                    # Skip if already frozen
+                    if self._is_frozen(pid, stats):
+                        alive = False
+                        break
+            if alive:
+                logging.debug("blacklist selector found alive unfrozen pids %s" % (pids,))
+                return pids
+        return None
+
+    def update(self, prev: SystemState, cur: SystemState) -> None:
+        pass
+
+
 class CgroupPressureProcessSelector(ProcessSelector):
     """
     Selects a process from the cgroup with highest memory pressure.
@@ -1683,12 +1742,14 @@ class GlobalProcessSelector(ProcessSelector):
     This is a collection of the various process selectors.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, blacklist: FreezeBlacklist | None = None) -> None:
         ## Sets up a prioritized list of selectors:
         ## * LastFrozenProcessSelector is the cheapest and it's surely
         ##   smart to be quick on refreezing a recently unfrozen process
         ##   if unfreezing it causes immediate swap problems.  So it's
         ##   the first method.
+        ## * BlacklistProcessSelector targets known repeat offenders that
+        ##   were previously identified by LastFrozenProcessSelector.
         ## * CgroupPressureProcessSelector is the best at targeting but
         ##   slightly more expensive
         ## * OOMScoreProcessSelector is cheaper than
@@ -1697,12 +1758,20 @@ class GlobalProcessSelector(ProcessSelector):
         ##   positives, so it's last.
         ## I'm not sure if we need all of those.  Perhaps it would make sense
         ## to shed some of the older obsoleted selecting methods (TODO).
-        self.collection: list[ProcessSelector] = [
+        self.blacklist: FreezeBlacklist | None = blacklist
+        selectors: list[ProcessSelector] = [
             LastFrozenProcessSelector(),
-            CgroupPressureProcessSelector(),
-            OOMScoreProcessSelector(),
-            PageFaultingProcessSelector(),
         ]
+        if blacklist is not None:
+            selectors.append(BlacklistProcessSelector(blacklist))
+        selectors.extend(
+            [
+                CgroupPressureProcessSelector(),
+                OOMScoreProcessSelector(),
+                PageFaultingProcessSelector(),
+            ]
+        )
+        self.collection: list[ProcessSelector] = selectors
         self.scan_method_count: int = 0
 
     def update(self, prev: SystemState, cur: SystemState) -> None:
@@ -1721,6 +1790,11 @@ class GlobalProcessSelector(ProcessSelector):
             ret = selector.scan()
             self.scan_method_count += 1
             if ret:
+                # When LastFrozenProcessSelector fires, it means the last
+                # unfrozen process is being re-selected because thrashing
+                # resumed immediately.  Record this as a repeat offender.
+                if isinstance(selector, LastFrozenProcessSelector) and self.blacklist is not None:
+                    self.blacklist.add(ret)
                 if diagnostic_log:
                     diagnostic_log(
                         f"selected pids {ret} via {type(selector).__name__} (method #{self.scan_method_count - 1})"
@@ -1861,6 +1935,69 @@ def _diagnostic_log(msg: str) -> None:
 diagnostic_log = None
 
 
+class _BlacklistEntry:
+    """A single entry in the freeze blacklist."""
+
+    __slots__ = ("last_refreshed", "skip_remaining")
+
+    def __init__(self, now: float, max_skip_count: int) -> None:
+        self.last_refreshed: float = now
+        self.skip_remaining: int = max_skip_count
+
+
+class FreezeBlacklist:
+    """Tracks processes that cause immediate re-thrashing after unfreeze.
+
+    When a process is unfrozen and immediately causes thrashing again,
+    it gets blacklisted. Blacklisted processes:
+    1. Are preferred targets for freezing (via BlacklistProcessSelector)
+    2. Stay frozen longer (skipped during unfreeze cycles)
+    """
+
+    def __init__(self, expiry_time: float = 60.0, max_skip_count: int = 3) -> None:
+        self.entries: dict[tuple[int, ...], _BlacklistEntry] = {}
+        self.expiry_time: float = expiry_time
+        self.max_skip_count: int = max_skip_count
+
+    def add(self, pids: tuple[int, ...] | list[int]) -> None:
+        """Add or refresh a blacklist entry, resetting skip_remaining."""
+        pids = tuple(pids)
+        now = time.time()
+        self.entries[pids] = _BlacklistEntry(now, self.max_skip_count)
+        logging.debug("blacklisted pids %s (skip_remaining=%d)" % (pids, self.max_skip_count))
+
+    def is_blacklisted(self, pids: tuple[int, ...] | list[int]) -> bool:
+        """Check if a PID tuple is currently blacklisted."""
+        return tuple(pids) in self.entries
+
+    def should_skip_unfreeze(self, pids: tuple[int, ...] | list[int]) -> bool:
+        """Check if this item should be skipped during unfreeze.
+
+        If blacklisted and skip_remaining > 0, decrements and returns True.
+        Otherwise returns False.
+        """
+        entry = self.entries.get(tuple(pids))
+        if entry is None:
+            return False
+        if entry.skip_remaining > 0:
+            entry.skip_remaining -= 1
+            logging.debug("skipping unfreeze of blacklisted pids %s (skip_remaining=%d)" % (pids, entry.skip_remaining))
+            return True
+        return False
+
+    def expire(self) -> None:
+        """Remove entries older than expiry_time."""
+        now = time.time()
+        expired = [pids for pids, entry in self.entries.items() if now - entry.last_refreshed > self.expiry_time]
+        for pids in expired:
+            del self.entries[pids]
+            logging.debug("blacklist entry expired for pids %s" % (pids,))
+
+    def clear(self) -> None:
+        """Remove all entries."""
+        self.entries.clear()
+
+
 class ThrashProtectState:
     """Encapsulates the runtime state of thrash-protect.
 
@@ -1872,7 +2009,8 @@ class ThrashProtectState:
         self.frozen_items: list[tuple[str, ...]] = []
         self.frozen_cgroup_paths: set[str] = set()
         self.num_unfreezes: int = 0
-        self.process_selector: GlobalProcessSelector = GlobalProcessSelector()
+        self.freeze_blacklist: FreezeBlacklist = FreezeBlacklist()
+        self.process_selector: GlobalProcessSelector = GlobalProcessSelector(blacklist=self.freeze_blacklist)
         self.memory_predictor: MemoryExhaustionPredictor | None = None
         # Lazily cached cgroup path for our own process.
         # Sentinel "_unset" distinguishes "not computed" from None (no cgroup).
@@ -1883,7 +2021,8 @@ class ThrashProtectState:
         self.frozen_items = []
         self.frozen_cgroup_paths.clear()
         self.num_unfreezes = 0
-        self.process_selector = GlobalProcessSelector()
+        self.freeze_blacklist = FreezeBlacklist()
+        self.process_selector = GlobalProcessSelector(blacklist=self.freeze_blacklist)
         self.memory_predictor = None
         self._own_cgroup_path = "_unset"
 
@@ -1948,17 +2087,61 @@ class ThrashProtectState:
             log_frozen(pid_to_freeze)
         return pids_to_freeze
 
-    def unfreeze_something(self) -> list[int] | None:
+    def _pick_unfreeze_item(self) -> tuple[tuple[str, ...], int] | None:
+        """Pick the next item to unfreeze, skipping blacklisted items.
+
+        Returns (item, pop_index) or None if nothing to unfreeze.
+        Blacklisted items with remaining skip budget are put back at the
+        opposite end of the list.  If all items are blacklisted, the first
+        candidate is unfrozen anyway to avoid deadlock.
+        """
         if not self.frozen_items:
             return None
 
-        ## queue or stack?  Seems like both approaches are problematic
+        # Expire old blacklist entries once per unfreeze cycle
+        self.freeze_blacklist.expire()
+
         if self.num_unfreezes % config.unfreeze_pop_ratio:
             pop_index = -1
         else:
             pop_index = 0
-        item = self.frozen_items.pop(pop_index)
 
+        first_skipped = None
+        tried = 0
+
+        while tried < len(self.frozen_items):
+            item = self.frozen_items.pop(pop_index)
+            tried += 1
+            _, _, pids = unpack_frozen_item(item)
+            pids = tuple(normalize_pids(pids))
+
+            if self.freeze_blacklist.should_skip_unfreeze(pids):
+                if first_skipped is None:
+                    first_skipped = item
+                # Put back at opposite end
+                if pop_index == -1:
+                    self.frozen_items.insert(0, item)
+                else:
+                    self.frozen_items.append(item)
+                continue
+
+            return item, pop_index
+
+        # All items were skipped — unfreeze the first one we skipped (deadlock guard)
+        if first_skipped is not None:
+            # It's already been re-inserted; remove and return it
+            self.frozen_items.remove(first_skipped)
+            logging.debug("all frozen items blacklisted, force-unfreezing one to avoid deadlock")
+            return first_skipped, pop_index
+
+        return None
+
+    def unfreeze_something(self) -> list[int] | None:
+        pick = self._pick_unfreeze_item()
+        if pick is None:
+            return None
+
+        item, pop_index = pick
         item_type, cgroup_path, pids_to_unfreeze = unpack_frozen_item(item)
         pids_to_unfreeze = list(normalize_pids(pids_to_unfreeze))
 
@@ -1992,6 +2175,7 @@ class ThrashProtectState:
 
     def cleanup(self) -> None:
         """Clean up if exiting due to an exception."""
+        self.freeze_blacklist.clear()
         self.frozen_cgroup_paths.clear()
         for item in self.frozen_items:
             item_type, cgroup_path, pids = unpack_frozen_item(item)

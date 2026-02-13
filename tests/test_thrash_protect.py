@@ -1794,3 +1794,237 @@ class TestCgroupFreezeBugFixes:
         # Should have opened both files for writing
         mock_open.assert_any_call(thrash_protect.FROZEN_PID_FILE, "w")
         mock_open.assert_any_call(thrash_protect.FROZEN_CGROUP_FILE, "w")
+
+
+class TestFreezeBlacklist:
+    """Tests for the FreezeBlacklist repeat-offender tracking."""
+
+    def test_add_and_is_blacklisted(self):
+        bl = thrash_protect.FreezeBlacklist()
+        pids = (100, 101)
+        assert not bl.is_blacklisted(pids)
+        bl.add(pids)
+        assert bl.is_blacklisted(pids)
+
+    def test_add_refreshes_skip_count(self):
+        bl = thrash_protect.FreezeBlacklist(max_skip_count=3)
+        pids = (100,)
+        bl.add(pids)
+        # Consume some skips
+        bl.should_skip_unfreeze(pids)
+        bl.should_skip_unfreeze(pids)
+        assert bl.entries[pids].skip_remaining == 1
+        # Re-add resets skip_remaining
+        bl.add(pids)
+        assert bl.entries[pids].skip_remaining == 3
+
+    def test_should_skip_unfreeze_decrements(self):
+        bl = thrash_protect.FreezeBlacklist(max_skip_count=3)
+        pids = (200,)
+        bl.add(pids)
+        assert bl.should_skip_unfreeze(pids)
+        assert bl.entries[pids].skip_remaining == 2
+        assert bl.should_skip_unfreeze(pids)
+        assert bl.entries[pids].skip_remaining == 1
+        assert bl.should_skip_unfreeze(pids)
+        assert bl.entries[pids].skip_remaining == 0
+
+    def test_should_skip_unfreeze_returns_false_at_zero(self):
+        bl = thrash_protect.FreezeBlacklist(max_skip_count=1)
+        pids = (300,)
+        bl.add(pids)
+        assert bl.should_skip_unfreeze(pids)  # skip_remaining: 1 -> 0
+        assert not bl.should_skip_unfreeze(pids)  # 0, no skip
+
+    def test_expire_removes_old_entries(self):
+        bl = thrash_protect.FreezeBlacklist(expiry_time=10.0)
+        pids = (400,)
+        bl.add(pids)
+        # Backdate the entry
+        bl.entries[pids].last_refreshed = time.time() - 20.0
+        bl.expire()
+        assert not bl.is_blacklisted(pids)
+
+    def test_expire_keeps_recent_entries(self):
+        bl = thrash_protect.FreezeBlacklist(expiry_time=60.0)
+        pids = (500,)
+        bl.add(pids)
+        bl.expire()
+        assert bl.is_blacklisted(pids)
+
+    def test_not_blacklisted_returns_false(self):
+        bl = thrash_protect.FreezeBlacklist()
+        assert not bl.is_blacklisted((999,))
+        assert not bl.should_skip_unfreeze((999,))
+
+    def test_clear(self):
+        bl = thrash_protect.FreezeBlacklist()
+        bl.add((1,))
+        bl.add((2,))
+        bl.clear()
+        assert not bl.is_blacklisted((1,))
+        assert not bl.is_blacklisted((2,))
+        assert len(bl.entries) == 0
+
+
+class TestBlacklistProcessSelector:
+    """Tests for BlacklistProcessSelector."""
+
+    def test_scan_finds_blacklisted_unfrozen_process(self):
+        """Returns blacklisted PID if alive and not frozen."""
+        bl = thrash_protect.FreezeBlacklist()
+        pids = (100,)
+        bl.add(pids)
+        selector = thrash_protect.BlacklistProcessSelector(bl)
+        stat = thrash_protect.ProcessSelector.procstat(cmd="cat", state="S", majflt=0, ppid=1)
+        with patch.object(selector, "readStat", return_value=stat):
+            result = selector.scan()
+        assert result == pids
+
+    def test_scan_skips_frozen_process(self):
+        """Doesn't return already-frozen PID."""
+        bl = thrash_protect.FreezeBlacklist()
+        pids = (100,)
+        bl.add(pids)
+        selector = thrash_protect.BlacklistProcessSelector(bl)
+        stat = thrash_protect.ProcessSelector.procstat(cmd="cat", state="T", majflt=0, ppid=1)
+        with patch.object(selector, "readStat", return_value=stat):
+            result = selector.scan()
+        assert result is None
+
+    def test_scan_skips_exited_process(self):
+        """Doesn't return dead PID."""
+        bl = thrash_protect.FreezeBlacklist()
+        bl.add((100,))
+        selector = thrash_protect.BlacklistProcessSelector(bl)
+        with patch.object(selector, "readStat", return_value=None):
+            result = selector.scan()
+        assert result is None
+
+    def test_scan_returns_none_when_empty(self):
+        """No blacklist entries -> None."""
+        bl = thrash_protect.FreezeBlacklist()
+        selector = thrash_protect.BlacklistProcessSelector(bl)
+        result = selector.scan()
+        assert result is None
+
+
+class TestBlacklistUnfreeze:
+    """Tests for blacklist-aware unfreeze logic."""
+
+    @patch("thrash_protect.kill")
+    @patch("thrash_protect.open", new=FileMockup().open)
+    @patch("thrash_protect.unlink")
+    def test_unfreeze_skips_blacklisted_item(self, unlink, kill):
+        """Blacklisted item is put back, non-blacklisted item is unfrozen."""
+        # Freeze two processes
+        thrash_protect.freeze_something((100,))
+        thrash_protect.freeze_something((200,))
+        kill.reset_mock()
+
+        # Blacklist process 200 (the last one, which would be popped first with LIFO)
+        thrash_protect._tp.freeze_blacklist.add((200,))
+
+        # Unfreeze should skip 200 and unfreeze 100 instead
+        result = thrash_protect.unfreeze_something()
+        assert result == [100]
+
+        # 200 should still be in frozen_items
+        frozen_pids = thrash_protect.get_all_frozen_pids()
+        assert (200,) in frozen_pids
+
+    @patch("thrash_protect.kill")
+    @patch("thrash_protect.open", new=FileMockup().open)
+    @patch("thrash_protect.unlink")
+    def test_unfreeze_eventually_unfreezes_blacklisted(self, unlink, kill):
+        """After skip budget spent, blacklisted item is unfrozen."""
+        thrash_protect.freeze_something((100,))
+        kill.reset_mock()
+
+        # Blacklist with skip_count=1
+        thrash_protect._tp.freeze_blacklist = thrash_protect.FreezeBlacklist(max_skip_count=1)
+        thrash_protect._tp.freeze_blacklist.add((100,))
+
+        # First skip consumed by should_skip_unfreeze -> but since it's the
+        # only item, the deadlock guard unfreezes it anyway
+        result = thrash_protect.unfreeze_something()
+        assert result == [100]
+
+    @patch("thrash_protect.kill")
+    @patch("thrash_protect.open", new=FileMockup().open)
+    @patch("thrash_protect.unlink")
+    def test_unfreeze_all_blacklisted_still_works(self, unlink, kill):
+        """If all items blacklisted, still unfreezes one (no deadlock)."""
+        thrash_protect.freeze_something((100,))
+        thrash_protect.freeze_something((200,))
+        kill.reset_mock()
+
+        thrash_protect._tp.freeze_blacklist.add((100,))
+        thrash_protect._tp.freeze_blacklist.add((200,))
+
+        result = thrash_protect.unfreeze_something()
+        assert result is not None
+        assert len(result) > 0
+
+
+class TestBlacklistTrigger:
+    """Test that LastFrozenProcessSelector triggers blacklist addition."""
+
+    def test_last_frozen_selector_triggers_blacklist(self):
+        """When LastFrozenProcessSelector fires in GlobalProcessSelector.scan(),
+        PID is added to blacklist."""
+        bl = thrash_protect._tp.freeze_blacklist
+        gps = thrash_protect._tp.process_selector
+
+        pids = (42,)
+        # Simulate: a process was just unfrozen.
+        # Use proper SystemState-like objects with the attributes that
+        # the various selectors' update() methods access.
+        prev = MagicMock()
+        prev.pagefaults = 0
+        prev.psi = None
+        cur = MagicMock()
+        cur.unfrozen_pid = pids
+        cur.pagefaults = 0
+        cur.cooldown_counter = 0
+        cur.psi = None
+        gps.update(prev, cur)
+
+        # scan_method_count was reset to 0 by update (since unfrozen_pid is set),
+        # so first scan will try LastFrozenProcessSelector
+        # Make LastFrozenProcessSelector return the pids
+        # The LastFrozenProcessSelector checks get_all_frozen_pids and readStat
+        with patch("thrash_protect.get_all_frozen_pids", return_value=[]):
+            # readStat must return something so the PID is considered alive
+            stat = thrash_protect.ProcessSelector.procstat(cmd="claude", state="S", majflt=0, ppid=1)
+            with patch.object(thrash_protect.ProcessSelector, "readStat", return_value=stat):
+                result = gps.scan()
+
+        assert result == pids
+        assert bl.is_blacklisted(pids)
+
+
+class TestBlacklistConfig:
+    """Test blacklist configuration options."""
+
+    def test_blacklist_config_defaults(self):
+        """Default values are set correctly."""
+        defaults = thrash_protect.get_defaults()
+        assert defaults["blacklist_expiry_time"] == 60.0
+        assert defaults["blacklist_max_skip_count"] == 3
+
+    def test_blacklist_config_cli(self):
+        """CLI argument parsing works."""
+        parser = thrash_protect.create_argument_parser()
+        args = parser.parse_args(["--blacklist-expiry-time", "120.0", "--blacklist-max-skip-count", "5"])
+        assert args.blacklist_expiry_time == 120.0
+        assert args.blacklist_max_skip_count == 5
+
+    def test_blacklist_config_applied_to_singleton(self):
+        """init_config applies blacklist settings to the singleton."""
+        parser = thrash_protect.create_argument_parser()
+        args = parser.parse_args(["--blacklist-expiry-time", "30.0", "--blacklist-max-skip-count", "2"])
+        with patch("thrash_protect.detect_swap_storage_type", return_value=None):
+            thrash_protect.init_config(args)
+        assert thrash_protect._tp.freeze_blacklist.expiry_time == 30.0
+        assert thrash_protect._tp.freeze_blacklist.max_skip_count == 2
