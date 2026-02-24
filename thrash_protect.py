@@ -207,6 +207,7 @@ CONFIG_SCHEMA = {
     "oom_horizon": (int, "THRASH_PROTECT_OOM_HORIZON", ["oom-horizon"]),
     "oom_swap_weight": (float, "THRASH_PROTECT_OOM_SWAP_WEIGHT", ["oom-swap-weight"]),
     "oom_low_pct": (float, "THRASH_PROTECT_OOM_LOW_PCT", ["oom-low-pct"]),
+    "pswp_weight": (float, "THRASH_PROTECT_PSWP_WEIGHT", ["pswp-weight"]),
     "blacklist_expiry_time": (float, "THRASH_PROTECT_BLACKLIST_EXPIRY_TIME", ["blacklist-expiry-time"]),
     "blacklist_max_skip_count": (int, "THRASH_PROTECT_BLACKLIST_MAX_SKIP_COUNT", ["blacklist-max-skip-count"]),
 }
@@ -317,6 +318,7 @@ def get_defaults() -> dict[str, Any]:
         "oom_horizon": 600,
         "oom_swap_weight": None,  # Auto-set based on storage type
         "oom_low_pct": 0.0,  # 0% = always predict; raise toward 75% once well-tuned
+        "pswp_weight": None,  # Auto-set based on storage type (HDD=128, SSD=8)
         "blacklist_expiry_time": 60.0,  # Seconds before a blacklist entry expires
         "blacklist_max_skip_count": 3,  # Unfreeze cycles a blacklisted item gets skipped
     }
@@ -643,6 +645,13 @@ Example usage:
         type=float,
         metavar="PERCENT",
         help="Only predict OOM when available resources are below this percentage of total (default: 100.0)",
+    )
+    p.add_argument(
+        "--pswp-weight",
+        dest="pswp_weight",
+        type=float,
+        metavar="WEIGHT",
+        help="Weight of disk swap pages relative to zswap pages (default: auto based on storage type, SSD=8 HDD=128)",
     )
 
     # Repeat-offender blacklist
@@ -1030,6 +1039,8 @@ class MemoryExhaustionPredictor:
         """
         meminfo = read_meminfo()
         if meminfo is None:
+            if diagnostic_log:
+                diagnostic_log("OOM predictor: read_meminfo() returned None, skipping")
             return None
 
         mem_available, swap_free, mem_total, swap_total = meminfo
@@ -1045,10 +1056,21 @@ class MemoryExhaustionPredictor:
             self._observations.popleft()
 
         if len(self._observations) < 2:
+            if diagnostic_log:
+                diagnostic_log(f"OOM predictor: only {len(self._observations)} observation(s), need ≥2")
             return None
 
         # Optional low_pct threshold (effectively disabled at 100%)
-        if total > 0 and (available / total * 100) >= self.low_pct:
+        avail_pct = available / total * 100 if total > 0 else 100.0
+        if diagnostic_log:
+            diagnostic_log(
+                f"OOM predictor: mem_avail={mem_available}kB swap_free={swap_free}kB "
+                f"available={available:.0f} total={total:.0f} ({avail_pct:.1f}%) "
+                f"observations={len(self._observations)}"
+            )
+        if total > 0 and avail_pct >= self.low_pct:
+            if diagnostic_log:
+                diagnostic_log(f"OOM predictor: {avail_pct:.1f}% >= low_pct {self.low_pct:.1f}%, skipping")
             return None
 
         min_eta: float | None = None
@@ -1062,6 +1084,11 @@ class MemoryExhaustionPredictor:
             tolerance = target_window * 0.5
             past = self._find_observation_at(target_time, tolerance)
             if past is None:
+                if diagnostic_log:
+                    diagnostic_log(
+                        f"OOM predictor scale={scale:.4f} (window={target_window:.1f}s): "
+                        f"no past observation within ±{tolerance:.1f}s of {target_window:.1f}s ago"
+                    )
                 continue
 
             past_time, past_available = past
@@ -1071,6 +1098,11 @@ class MemoryExhaustionPredictor:
 
             # Not declining at this scale
             if available >= past_available:
+                if diagnostic_log:
+                    diagnostic_log(
+                        f"OOM predictor scale={scale:.4f} (window={target_window:.1f}s): "
+                        f"stable or rising (past={past_available:.0f} now={available:.0f})"
+                    )
                 continue
 
             dt = now - past_time
@@ -1083,9 +1115,21 @@ class MemoryExhaustionPredictor:
 
             eta = available / decline_rate
 
+            if diagnostic_log:
+                diagnostic_log(
+                    f"OOM predictor scale={scale:.4f} (window={target_window:.1f}s "
+                    f"horizon={target_horizon:.1f}s): "
+                    f"decline={decline_rate:.1f}kB/s eta={eta:.0f}s "
+                    f"{'TRIGGERED' if eta < target_horizon else 'within horizon, no trigger'}"
+                )
+
             if eta < target_horizon and (min_eta is None or eta < min_eta):
                 min_eta = eta
 
+        if diagnostic_log:
+            diagnostic_log(
+                f"OOM predictor result: {'FREEZE predicted, min_eta=' + f'{min_eta:.0f}s' if min_eta is not None else 'no trigger'}"
+            )
         return min_eta
 
     def reset(self) -> None:
@@ -1151,6 +1195,20 @@ def init_config(args: argparse.Namespace | None = None) -> None:
             cfg["oom_swap_weight"] = 4.0
         else:
             cfg["oom_swap_weight"] = 2.0  # SSD or unknown
+
+    # Resolve pswp_weight based on storage type if not explicitly set.
+    # This weights disk swap pages relative to zswap pages in the thrash
+    # detection formula. HDD disk I/O is ~1000x slower than zswap; SSD ~10-50x.
+    # The chosen defaults (HDD=128, SSD=8) are deliberately conservative but
+    # ensure that even a few disk swap pages are treated as a strong signal.
+    # Note: the effective zswap trigger level (swap_page_threshold * pswp_weight)
+    # is the same for both storage types (4*128 = 64*8 = 512 pages), so zswap
+    # sensitivity does not depend on storage type.
+    if cfg["pswp_weight"] is None:
+        if resolved_storage == "hdd":
+            cfg["pswp_weight"] = 128.0
+        else:
+            cfg["pswp_weight"] = 8.0  # SSD or unknown
 
     # Set all config values as attributes on the config class
     for key, value in cfg.items():
@@ -1242,14 +1300,20 @@ class SystemState:
                     return int(line[12:])
 
     def get_swapcount(self) -> tuple[int, ...]:
-        ret = []
+        """Read swap counters from /proc/vmstat.
+
+        Returns a 4-tuple: (pswpin, pswpout, zswpin, zswpout)
+          - pswpin/pswpout: pages swapped to/from real swap device (disk I/O)
+          - zswpin/zswpout: pages decompressed from / compressed into zswap pool
+        zswp* counters are present on Linux 6.3+ and default to 0 on older kernels.
+        """
+        counters = {"pswpin": 0, "pswpout": 0, "zswpin": 0, "zswpout": 0}
         with open("/proc/vmstat") as vmstat:
-            line = True
-            while line:
-                line = vmstat.readline()
-                if line.startswith("pswp"):
-                    ret.append(int(line[7:]))
-        return tuple(ret)
+            for line in vmstat:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] in counters:
+                    counters[parts[0]] = int(parts[1])
+        return (counters["pswpin"], counters["pswpout"], counters["zswpin"], counters["zswpout"])
 
     def check_swap_threshold(self, prev: SystemState) -> bool:
         self.cooldown_counter = prev.cooldown_counter
@@ -1260,17 +1324,27 @@ class SystemState:
         ## will return True if we have bidirectional traffic to swap,
         ## or if we have a big one-directional flow of data.
         ##
-        ## * if both swap counters are above the swap_page_threshold, trigger
+        ## Disk swap pages (pswpin/pswpout) are weighted by pswp_weight relative
+        ## to zswap pages (zswpin/zswpout), since disk I/O is much slower (HDD:
+        ## ~1000x, SSD: ~10-50x) than zswap compression/decompression.
+        ## The effective threshold is swap_page_threshold * pswp_weight, which
+        ## keeps backward-compat for disk-only systems while making the zswap
+        ## trigger level storage-type-independent.
         ##
-        ## * if one of the swap counters is quite much above the
-        ##   swap_page_threshold, while the other is 0, we should trigger
-        ##
-        ## the below algorithm seems to satisfy those two criterias, though
-        ## I'm not much happy with the arbitrary constant "0.1" being thrown
-        ## in.
-        swap_product = ((self.swapcount[0] - prev.swapcount[0] + 0.1) / config.swap_page_threshold) * (
-            (self.swapcount[1] - prev.swapcount[1] + 0.1) / config.swap_page_threshold
-        )
+        ## The 0.1 epsilon prevents zero-product collapse when one direction is
+        ## idle: a large one-directional flow still contributes to the product.
+        pswp_weight = config.pswp_weight
+        effective_threshold = config.swap_page_threshold * pswp_weight
+
+        delta_disk_in = self.swapcount[0] - prev.swapcount[0]
+        delta_disk_out = self.swapcount[1] - prev.swapcount[1]
+        delta_zswap_in = self.swapcount[2] - prev.swapcount[2]
+        delta_zswap_out = self.swapcount[3] - prev.swapcount[3]
+
+        combined_in = delta_disk_in * pswp_weight + delta_zswap_in + 0.1
+        combined_out = delta_disk_out * pswp_weight + delta_zswap_out + 0.1
+
+        swap_product = (combined_in / effective_threshold) * (combined_out / effective_threshold)
 
         ## PSI weight: amplify swap signal when memory pressure is detected
         ## Uses "some" (at least one task stalled) rather than "full" (all CPUs stalled),
@@ -1285,9 +1359,13 @@ class SystemState:
         ret = swap_product * psi_weight > 1.0
         if diagnostic_log:
             diagnostic_log(
-                f"check_swap_threshold: swap_product={swap_product:.4f}, "
-                f"psi_weight={psi_weight:.2f}, "
-                f"final={swap_product * psi_weight:.4f}, trigger={ret}"
+                f"check_swap_threshold: "
+                f"disk_in={delta_disk_in} disk_out={delta_disk_out} "
+                f"zswap_in={delta_zswap_in} zswap_out={delta_zswap_out} "
+                f"pswp_weight={pswp_weight} eff_threshold={effective_threshold:.0f} "
+                f"combined_in={combined_in:.1f} combined_out={combined_out:.1f} "
+                f"swap_product={swap_product:.4f} psi_weight={psi_weight:.2f} "
+                f"final={swap_product * psi_weight:.4f} trigger={ret}"
             )
         ## Increase or decrease the busy-counter ... or keep it where it is
         if ret:

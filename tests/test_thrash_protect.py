@@ -761,15 +761,17 @@ class TestPSI:
 
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 0
-        prev.swapcount = (0, 0)
+        prev.swapcount = (0, 0, 0, 0)
         prev.timer_alert = False
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        # Moderate swap: delta_in=3, delta_out=3 with threshold=4
-        # swap_product = (3.1/4) * (3.1/4) = 0.775^2 ≈ 0.600 (below 1.0)
-        current.swapcount = (3, 3)
+        # Moderate disk swap: delta_in=3, delta_out=3, no zswap activity.
+        # pswp_weight=8 (unknown storage in tests), effective_threshold=32
+        # combined = 3*8 + 0 + 0.1 = 24.1
+        # swap_product = (24.1/32)^2 ≈ 0.567 (below 1.0)
+        current.swapcount = (3, 3, 0, 0)
         # High PSI: avg10=15%, psi_weight = 1 + 15/5 = 4.0
-        # final = 0.600 * 4.0 = 2.4 > 1.0 → triggers
+        # final = 0.567 * 4.0 = 2.27 > 1.0 → triggers
         current.psi = {"some": {"avg10": 15.0}}
 
         result = current.check_thrashing(prev)
@@ -782,19 +784,18 @@ class TestPSI:
 
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 0
-        prev.swapcount = (100, 100)
+        prev.swapcount = (100, 100, 0, 0)
         prev.timer_alert = False
         prev.timestamp = time.time() - 1.0
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        # Zero swap delta
-        current.swapcount = (100, 100)
+        # Zero swap delta (disk and zswap both idle)
+        current.swapcount = (100, 100, 0, 0)
         # Very high PSI
         current.psi = {"some": {"avg10": 50.0}}
         current.timestamp = time.time()
-        # swap_product = (0.1/4) * (0.1/4) = 0.000625
-        # psi_weight = 1 + 50/5 = 11.0
-        # final = 0.000625 * 11.0 = 0.006875 < 1.0 → does NOT trigger
+        # combined = 0 + 0 + 0.1 = 0.1; swap_product = (0.1/32)^2 ≈ 9.8e-6
+        # psi_weight = 1 + 50/5 = 11.0; final ≈ 1.07e-4 < 1.0 → does NOT trigger
 
         result = current.check_thrashing(prev)
         assert result is False
@@ -805,18 +806,17 @@ class TestPSI:
 
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 0
-        prev.swapcount = (50, 50)
+        prev.swapcount = (50, 50, 0, 0)
         prev.timer_alert = False
         prev.timestamp = time.time() - 1.0
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        # Tiny swap delta (1 page each direction)
-        current.swapcount = (51, 51)
+        # Tiny disk swap delta (1 page each direction), no zswap activity
+        current.swapcount = (51, 51, 0, 0)
         current.psi = {"some": {"avg10": 10.0}}
         current.timestamp = time.time()
-        # swap_product = (1.1/4) * (1.1/4) = 0.275^2 ≈ 0.0756
-        # psi_weight = 1 + 10/5 = 3.0
-        # final = 0.0756 * 3.0 = 0.227 < 1.0 → does NOT trigger
+        # combined = 1*8 + 0 + 0.1 = 8.1; swap_product = (8.1/32)^2 ≈ 0.064
+        # psi_weight = 1 + 10/5 = 3.0; final ≈ 0.192 < 1.0 → does NOT trigger
 
         result = current.check_thrashing(prev)
         assert result is False
@@ -828,12 +828,12 @@ class TestPSI:
 
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 0
-        prev.swapcount = (0, 0)
+        prev.swapcount = (0, 0, 0, 0)
         prev.timer_alert = False
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         current.psi = {"some": {"avg10": 50.0}}  # High PSI (should be ignored)
-        current.swapcount = (100, 100)  # High swap activity
+        current.swapcount = (100, 100, 0, 0)  # High disk swap activity
         current.cooldown_counter = 0
 
         # With PSI disabled, should use pure swap counting
@@ -846,15 +846,15 @@ class TestPSI:
 
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 0
-        prev.swapcount = (0, 0)
+        prev.swapcount = (0, 0, 0, 0)
         prev.timer_alert = False
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         # No PSI data at all
         current.psi = None
-        # Large swap: delta_in=100, delta_out=100 with threshold=4
-        # swap_product = (100.1/4) * (100.1/4) ≈ 626 > 1.0
-        current.swapcount = (100, 100)
+        # Large disk swap: delta=100 each direction
+        # combined = 100*8 + 0 + 0.1 = 800.1; swap_product = (800.1/32)^2 ≈ 625 > 1.0
+        current.swapcount = (100, 100, 0, 0)
 
         result = current.check_thrashing(prev)
         assert result is True
@@ -866,12 +866,12 @@ class TestPSI:
 
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 3
-        prev.swapcount = (100, 100)
+        prev.swapcount = (100, 100, 0, 0)
         prev.timer_alert = False
 
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        # Swap stopped (same counts)
-        current.swapcount = (100, 100)
+        # All swap stopped (disk and zswap counters unchanged)
+        current.swapcount = (100, 100, 0, 0)
         # PSI still elevated (stale avg10)
         current.psi = {"some": {"avg10": 20.0}}
         # Enough time has elapsed
@@ -896,30 +896,103 @@ class TestPSI:
 
         prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev.cooldown_counter = 0
-        prev.swapcount = (0, 0)
+        prev.swapcount = (0, 0, 0, 0)
         prev.timer_alert = False
 
-        # With 'some' PSI data + moderate swap → should trigger
+        # With 'some' PSI data + moderate disk swap → should trigger
         current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        current.swapcount = (3, 3)
+        current.swapcount = (3, 3, 0, 0)
         current.psi = {"some": {"avg10": 15.0}}
         result = current.check_thrashing(prev)
         assert result is True
 
-        # With only 'full' PSI data (no 'some') + moderate swap → should NOT amplify
+        # With only 'full' PSI data (no 'some') + moderate disk swap → should NOT amplify
         current2 = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
-        current2.swapcount = (3, 3)
+        current2.swapcount = (3, 3, 0, 0)
         current2.psi = {"full": {"avg10": 15.0}}
         current2.cooldown_counter = 0
         current2.timestamp = time.time()
         prev2 = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
         prev2.cooldown_counter = 0
-        prev2.swapcount = (0, 0)
+        prev2.swapcount = (0, 0, 0, 0)
         prev2.timer_alert = False
         prev2.timestamp = current2.timestamp - 1.0
         result2 = current2.check_thrashing(prev2)
-        # swap_product = (3.1/4)^2 ≈ 0.60 < 1.0, no amplification → False
+        # combined = 3*8 + 0 + 0.1 = 24.1; swap_product = (24.1/32)^2 ≈ 0.567 < 1.0
+        # psi_weight = 1.0 (no 'some'); final = 0.567 → False
         assert result2 is False
+
+    def test_zswap_only_triggers_thrash_detection(self):
+        """Test that heavy zswap activity (no disk swap) can trigger thrash detection."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (0, 0, 0, 0)
+        prev.timer_alert = False
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current.psi = None
+        # Pure zswap activity: 600 pages each direction, no disk swap.
+        # pswp_weight=8, effective_threshold=32
+        # combined = 0*8 + 600 + 0.1 = 600.1; swap_product = (600.1/32)^2 ≈ 351 > 1.0
+        current.swapcount = (0, 0, 600, 600)
+
+        result = current.check_thrashing(prev)
+        assert result is True
+        assert current.cooldown_counter == 1
+
+    def test_zswap_below_threshold_does_not_trigger(self):
+        """Test that light zswap activity does not trigger (below effective threshold)."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (0, 0, 0, 0)
+        prev.timer_alert = False
+        prev.timestamp = time.time() - 1.0
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current.psi = None
+        current.timestamp = time.time()
+        # Light zswap activity: 10 pages each direction, no disk swap.
+        # pswp_weight=8, effective_threshold=32
+        # combined = 0*8 + 10 + 0.1 = 10.1; swap_product = (10.1/32)^2 ≈ 0.099 < 1.0
+        current.swapcount = (0, 0, 10, 10)
+
+        result = current.check_thrashing(prev)
+        assert result is False
+
+    def test_disk_swap_weighted_higher_than_zswap(self):
+        """Test that a small number of disk swap pages triggers faster than equivalent zswap pages."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (0, 0, 0, 0)
+        prev.timer_alert = False
+
+        # 5 disk pages each direction triggers (pswp_weight=8, effective_threshold=32)
+        # combined = 5*8 + 0 + 0.1 = 40.1; swap_product = (40.1/32)^2 ≈ 1.57 > 1.0
+        current_disk = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current_disk.psi = None
+        current_disk.swapcount = (5, 5, 0, 0)
+        result_disk = current_disk.check_thrashing(prev)
+        assert result_disk is True
+
+        # But 5 zswap pages alone does not (weight=1, not amplified)
+        # combined = 0 + 5 + 0.1 = 5.1; swap_product = (5.1/32)^2 ≈ 0.025 < 1.0
+        prev2 = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev2.cooldown_counter = 0
+        prev2.swapcount = (0, 0, 0, 0)
+        prev2.timer_alert = False
+        prev2.timestamp = time.time() - 1.0
+        current_zswap = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current_zswap.psi = None
+        current_zswap.timestamp = time.time()
+        current_zswap.swapcount = (0, 0, 5, 5)
+        result_zswap = current_zswap.check_thrashing(prev2)
+        assert result_zswap is False
 
 
 class TestCgroupPressureSelector:
@@ -1209,6 +1282,46 @@ class TestSwapStorageDetection:
             args = argparse.Namespace(config=None)
             thrash_protect.init_config(args)
             assert thrash_protect.config.swap_page_threshold == 4
+
+    def test_pswp_weight_hdd_default(self):
+        """Test that HDD detection sets pswp_weight to 128."""
+        with patch("thrash_protect.detect_swap_storage_type", return_value="hdd"):
+            args = argparse.Namespace(config=None)
+            thrash_protect.init_config(args)
+            assert thrash_protect.config.pswp_weight == 128.0
+
+    def test_pswp_weight_ssd_default(self):
+        """Test that SSD detection sets pswp_weight to 8."""
+        with patch("thrash_protect.detect_swap_storage_type", return_value="ssd"):
+            args = argparse.Namespace(config=None)
+            thrash_protect.init_config(args)
+            assert thrash_protect.config.pswp_weight == 8.0
+
+    def test_pswp_weight_unknown_default(self):
+        """Test that unknown storage type sets pswp_weight to 8 (SSD-safe default)."""
+        with patch("thrash_protect.detect_swap_storage_type", return_value=None):
+            args = argparse.Namespace(config=None)
+            thrash_protect.init_config(args)
+            assert thrash_protect.config.pswp_weight == 8.0
+
+    def test_pswp_weight_effective_threshold_storage_independent(self):
+        """Test that effective zswap threshold (swap_page_threshold * pswp_weight) is
+        the same for HDD and SSD, making zswap detection sensitivity storage-type-independent."""
+        with patch("thrash_protect.detect_swap_storage_type", return_value="hdd"):
+            thrash_protect.init_config(argparse.Namespace(config=None))
+            hdd_effective = thrash_protect.config.swap_page_threshold * thrash_protect.config.pswp_weight
+
+        with patch("thrash_protect.detect_swap_storage_type", return_value="ssd"):
+            thrash_protect.init_config(argparse.Namespace(config=None))
+            ssd_effective = thrash_protect.config.swap_page_threshold * thrash_protect.config.pswp_weight
+
+        assert hdd_effective == ssd_effective  # both 512
+
+    def test_pswp_weight_cli_override(self):
+        """Test that --pswp-weight CLI flag overrides auto-detection."""
+        parser = thrash_protect.create_argument_parser()
+        args = parser.parse_args(["--pswp-weight", "32"])
+        assert args.pswp_weight == 32.0
 
     def test_explicit_threshold_not_overridden_by_ssd(self):
         """Test that explicitly set swap_page_threshold is not overridden by SSD detection."""

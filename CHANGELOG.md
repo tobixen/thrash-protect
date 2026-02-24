@@ -36,6 +36,19 @@ This release is partially working around or solving some of those problems.
   `swap_page_threshold` is raised from 4 to 64 to avoid false positives.
   Configurable via `--storage-type auto|ssd|hdd`.
 - **Type annotations**: Full type hints throughout with `from __future__ import annotations`.
+- **zswap-aware thrash detection**: The swap product formula now includes zswap
+  counters (`zswpin`/`zswpout` from `/proc/vmstat`, Linux 6.3+). Disk swap pages
+  are weighted by `pswp_weight` (auto-detected: HDD=128, SSD=8) relative to zswap
+  pages, reflecting the large speed difference between disk I/O and in-RAM compression.
+  The effective zswap trigger level (`swap_page_threshold × pswp_weight`) is
+  storage-type-independent (both HDD and SSD yield 512 pages). Configurable via
+  `--pswp-weight`. Falls back gracefully to disk-only detection on kernels without
+  `zswpin`/`zswpout` (pre-6.3).
+- **OOM predictor diagnostic logging**: `MemoryExhaustionPredictor.update_and_predict()`
+  now emits detailed `diagnostic_log` output for each observation scale: current
+  available/total memory, decline rate, projected ETA, and whether the scale
+  triggered. Pairs with the existing `--diagnostic-logging` flag (auto-enabled on
+  dev builds).
 
 ### Changed
 

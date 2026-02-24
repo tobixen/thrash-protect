@@ -28,6 +28,28 @@ It should be considered if those ideas are sane, and the details should be flesh
 
 ## Medium Priority
 
+### Swap product threshold refactoring
+
+Currently `check_swap_threshold` normalizes inside the product and compares to 1.0:
+
+```python
+swap_product = (combined_in / eff_threshold) * (combined_out / eff_threshold)
+ret = swap_product * psi_weight > 1.0
+```
+
+The actual trigger condition is therefore `combined_in * combined_out * psi_weight > eff_threshold²`,
+which is non-obvious. A cleaner formulation would remove `eff_threshold` from the product and compare
+directly to a threshold value:
+
+```python
+swap_product = combined_in * combined_out
+ret = swap_product * psi_weight > threshold
+```
+
+This makes the trigger level explicit in the comparison rather than hiding it in two denominator divisions.
+The default `threshold` would change from 4 to something like `(4 * 8)²  = 1024` (eff_threshold² for unknown storage),
+which is a breaking change in config semantics and needs a migration note.
+
 ### OOM Protection Tuning
 
 The v1.1 OOM protection uses a simple two-point linear projection. Future improvements:
