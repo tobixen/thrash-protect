@@ -1,0 +1,10 @@
+[Unit]
+Description=Thrash-protect visual feedback for Sway
+PartOf=sway-session.target
+
+[Service]
+ExecStart=/usr/local/lib/thrash-protect/sway-frozen-indicator.py
+Restart=on-failure
+
+[Install]
+WantedBy=sway-session.target

@@ -1,0 +1,26 @@
+/* Waybar CSS for thrash-protect custom module.
+ *
+ * Add these rules to your waybar style.css, or @import this file.
+ * If you already have a @keyframes blink and .blinking class,
+ * you only need the #custom-thrash-protect rules below.
+ *
+ * The module name must match your waybar config key, e.g.:
+ *   "custom/thrash-protect": { ... }
+ */
+
+#custom-thrash-protect {
+    padding: 0 10px;
+}
+
+#custom-thrash-protect.blinking {
+    color: #ff5555;
+    animation: blink 1s ease-in-out infinite;
+}
+
+#custom-thrash-protect.recent {
+    color: #f1fa8c;
+}
+
+@keyframes blink {
+    50% { opacity: 0.3; }
+}
