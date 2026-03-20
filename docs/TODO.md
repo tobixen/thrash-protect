@@ -1,6 +1,6 @@
 # TODO List for thrash-protect
 
-Update 2026-02-10: I've forgotten completely to read and update this document, so it's probably already slightly outdated.
+Updated 2026-02-12 with GitHub issue cross-references.
 
 ## v1.1.0
 
@@ -14,13 +14,13 @@ It should be considered if those ideas are sane, and the details should be flesh
 
 ## High Priority
 
-### SSD Default Settings
+### SSD/ZRAM Default Settings (GitHub #27)
 
 **Update**: I'm not sure if this is really a problem.  More research should probably be done.  Perhaps spin up a VM in OpenStack with local SSD storage, minimum memory and play with memory-hogging processes there.
 
-The default `swap_page_threshold=4` was tuned for spinning magnetic disks. SSDs are orders of magnitude faster, so this threshold causes false positives - thrash-protect may suspend processes unnecessarily when the system is handling swap I/O just fine.
+The default `swap_page_threshold=4` was tuned for spinning magnetic disks. SSDs are orders of magnitude faster, so this threshold causes false positives - thrash-protect may suspend processes unnecessarily when the system is handling swap I/O just fine.  ZRAM swap has similar issues since compression/decompression is CPU-bound rather than I/O-bound.
 
-**Problem**: On SSD-based systems, thrash-protect can cause performance degradation by suspending processes that aren't actually causing problems.
+**Problem**: On SSD-based and ZRAM-based systems, thrash-protect can cause performance degradation by suspending processes that aren't actually causing problems.
 
 **Current workaround**: Set `THRASH_PROTECT_SWAP_PAGE_THRESHOLD=64` (or higher) in the environment.
 
@@ -31,42 +31,27 @@ The default `swap_page_threshold=4` was tuned for spinning magnetic disks. SSDs 
 
 **Investigation needed**:
 - How to reliably detect SSD vs HDD for the swap partition(s)
-- What threshold values work well for SSDs
+- What threshold values work well for SSDs and ZRAM
 - Whether the page fault metrics also need adjustment for SSDs
+- Whether thrash-protect is useful at all on SSD/ZRAM systems, or should the README recommend against it
 
 See README.rst "Drawbacks and problems" section for more context.
 
-### Use /proc/pressure for Thrash Detection
+### ~~Use /proc/pressure for Thrash Detection (GitHub #28)~~ ✅ Done
 
-Modern Linux kernels (4.20+) provide Pressure Stall Information (PSI) via `/proc/pressure/`. This could provide a more accurate and efficient way to detect memory pressure than the current approach.
+Implemented as PSI amplification on swap-based detection. Configurable via `--use-psi`/`--no-psi` and `--psi-threshold`. Falls back to swap counting on older kernels.
 
-**Files available**:
-- `/proc/pressure/memory` - memory pressure metrics
-- `/proc/pressure/io` - I/O pressure metrics
-- `/proc/pressure/cpu` - CPU pressure metrics
+### Fork Bomb Protection (GitHub #39)
 
-**Example output** from `/proc/pressure/memory`:
-```
-some avg10=0.00 avg60=0.00 avg300=0.00 total=0
-full avg10=0.00 avg60=0.00 avg300=0.00 total=0
-```
+Thrash-protect does not protect sufficiently against fork bombs.  It should be more aggressive in suspending parent processes when a fork bomb is detected (rapid process creation from the same parent).
 
-**Benefits**:
-- Kernel-provided metric specifically designed for detecting resource pressure
-- "some" line: percentage of time at least one task is stalled
-- "full" line: percentage of time all tasks are stalled (more severe)
-- More holistic view than page fault counting
-- Could complement or replace current swap page threshold detection
+Related to #12 (parent process freezing).
 
-**Implementation ideas**:
-1. Add PSI-based detection as an alternative/additional trigger
-2. Use `full` memory pressure avg10 > threshold as trigger
-3. Fall back to current method on older kernels without PSI support
-4. Add config option: `THRASH_PROTECT_USE_PSI=auto|yes|no`
+### Parent Process Freezing / Job Control (GitHub #12)
 
-**References**:
-- https://docs.kernel.org/accounting/psi.html
-- https://facebookmicrosites.github.io/psi/
+Suspending a child process causes side-effects for the parent sometimes (notably, bash job control and sudo).  Current workarounds exist (resuming session/group process IDs, freezing parent before child for bash/sudo), but a more general solution is needed.
+
+**Possible approach**: Always freeze the parent process before suspending a child (possibly recursively, but never freezing PID 1).  Needs more research and testing.
 
 ## Medium Priority
 
@@ -81,6 +66,10 @@ Several places use bare `except:` which catches all exceptions including `Keyboa
 ### Global Variables
 
 Consider encapsulating the global variables (`frozen_pids`, `num_unfreezes`, `global_process_selector`) in a `ThrashProtect` class for better testability.
+
+### Visual Feedback When Throttling (GitHub #38)
+
+Feature request: provide visual feedback (e.g. mouse cursor change) when thrash-protect is actively throttling processes.  Currently possible via monitoring the state file `/tmp/thrash-protect-frozen-pid-list` or the log file.  A separate desktop integration tool/script could provide this, but it's likely out of scope for thrash-protect itself.
 
 ## Low Priority
 
@@ -103,7 +92,7 @@ This would allow:
 - Better separation of concerns
 - Easier testing
 
-### Configurable Log Paths
+### Configurable Log Paths (GitHub #26)
 
 Currently hardcoded:
 - `/var/log/thrash-protect.log`
@@ -112,6 +101,8 @@ Currently hardcoded:
 Add environment variables:
 - `THRASH_PROTECT_LOG_FILE`
 - `THRASH_PROTECT_STATE_FILE`
+
+Note: The original proposal to use `/dev/shm` instead of `/tmp` (#26) is largely moot since most modern distros mount `/tmp` as tmpfs.
 
 ### Review Process Whitelist
 
@@ -134,3 +125,16 @@ Consider adding:
 - ✅ Add pyproject.toml with modern build system (done in 0.15.x)
 - ✅ Add GitHub Actions CI/CD (done in 0.15.x)
 - ✅ Automatic versioning via setuptools-scm (done in 0.15.x)
+- ✅ PSI-based thrash detection (GitHub #28, done in 1.0.x)
+
+## GitHub Issues Summary
+
+| Issue | Title | Status | TODO Section |
+|-------|-------|--------|-------------|
+| #12 | Parent process getting frozen | Open | High: Parent Process Freezing |
+| #26 | Store temp files on /dev/shm | **Closed** | Low: Configurable Log Paths |
+| #27 | Configuration for ZRAM/SSD swap | Open | High: SSD/ZRAM Default Settings |
+| #28 | Detect thrashing using PSI | **Closed** | ✅ Done |
+| #29 | Audio stuttering | **Closed** | N/A |
+| #38 | Mouse cursor visual feedback | Open | Medium: Visual Feedback |
+| #39 | Fork bomb protection | Open | High: Fork Bomb Protection |
