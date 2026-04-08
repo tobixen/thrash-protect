@@ -106,6 +106,12 @@ STATIC_WHITELIST = [
     "kwin_wayland",
     "plasmashell",
     "xfce4-session",
+    "waybar",
+    "wireplumber",
+    "pipewire",
+    "swaync",
+    "swayidle",
+    "dbus-broker",
     # System
     "systemd-journal",
     "dbus-daemon",
