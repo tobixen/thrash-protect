@@ -8,9 +8,11 @@
 ### While I have been considering this, Moore's Law has made it pretty moot.
 
 try:
-    from _version import __version__
-except ImportError:
-    __version__ = "0.0.0.dev"  # Fallback if _version.py not generated yet
+    from importlib.metadata import version as _metadata_version
+
+    __version__ = _metadata_version("thrash-protect")
+except Exception:
+    __version__ = "DEVELOPMENT"  # Replaced by Makefile during standalone install
 
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013-2026, Tobias Brox"

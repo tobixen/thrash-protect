@@ -9,8 +9,16 @@ ifneq ($(_detected_version),)
 version := $(_detected_version)
 endif
 endif
+# Fallback: detect version from git tags
+ifndef version
+_git_version := $(shell git describe --tags --match 'v[0-9]*' 2>/dev/null | sed 's/^v//')
+ifneq ($(_git_version),)
+version := $(_git_version)
+endif
+endif
+export version
 
-.PHONY: build install clean distclean rpm archlinux dist release do-release ubuntu debian
+.PHONY: build install clean distclean rpm archlinux dist release do-release ubuntu debian install-sway-extras
 
 all: build
 
@@ -30,11 +38,24 @@ endif
 
 install: thrash_protect.py
 	install "thrash_protect.py" "$(PREFIX)/sbin/thrash-protect"
-	if [ -d "$(INSTALL_ROOT)/lib/systemd/system" ]; then install systemd/thrash-protect.service "$(INSTALL_ROOT)/lib/systemd/system" ; \
-        elif [ -d "$(PREFIX)/lib/systemd/system" ]; then install systemd/thrash-protect.service "$(PREFIX)/lib/systemd/system" ; fi
-	if [ -d "$(INSTALL_ROOT)/etc/init" ]; then install upstart/thrash-protect.conf "$(INSTALL_ROOT)/etc/init/thrash-protect.conf" ; fi
+ifdef version
+	sed -i 's/__version__ = "DEVELOPMENT"/__version__ = "$(version)"/' "$(PREFIX)/sbin/thrash-protect"
+endif
+	if [ -d "$(INSTALL_ROOT)/lib/systemd/system" ]; then install -m 644 systemd/thrash-protect.service "$(INSTALL_ROOT)/lib/systemd/system" ; \
+        elif [ -d "$(PREFIX)/lib/systemd/system" ]; then install -m 644 systemd/thrash-protect.service "$(PREFIX)/lib/systemd/system" ; fi
+	if [ -d "$(INSTALL_ROOT)/etc/init" ]; then install -m 644 upstart/thrash-protect.conf "$(INSTALL_ROOT)/etc/init/thrash-protect.conf" ; fi
 	if [ -x "$(INSTALL_ROOT)/sbin/openrc-run" ] ; then install openrc/thrash-protect "$(INSTALL_ROOT)/etc/init.d/thrash-protect" ; fi
 	[ -d "$(PREFIX)/lib/systemd/system" ] || [ -d "$(INSTALL_ROOT)/etc/init" ] || [ -d "$(INSTALL_ROOT)/lib/systemd/system" ] || [ -x "$(INSTALL_ROOT)/sbin/openrc-run" ] || install systemv/thrash-protect "$(INSTALL_ROOT)/etc/init.d/thrash-protect"
+
+SWAY_EXTRAS_DIR = $(PREFIX)/local/lib/thrash-protect
+
+install-sway-extras:
+	install -d "$(SWAY_EXTRAS_DIR)"
+	install -m 755 extras/sway-frozen-indicator.py "$(SWAY_EXTRAS_DIR)/sway-frozen-indicator.py"
+	install -m 755 extras/waybar-thrash-protect.py "$(SWAY_EXTRAS_DIR)/waybar-thrash-protect.py"
+	install -m 644 extras/waybar-thrash-protect.css "$(SWAY_EXTRAS_DIR)/waybar-thrash-protect.css"
+	install -d "$(HOME)/.config/systemd/user"
+	install -m 644 extras/thrash-protect-sway-indicator.service "$(HOME)/.config/systemd/user/"
 
 ## Interactive release: prompts for version, shows changelog, creates signed tag
 release:
@@ -73,8 +94,8 @@ release:
 		fi \
 	fi
 
-## Package targets require version=X.Y.Z on command line
-## Example: make archlinux version=0.15.0
+## Package targets use auto-detected version from .tag.* files,
+## or explicit version=X.Y.Z on command line.
 
 archlinux: archlinux/PKGBUILD_ thrash_protect.py
 ifndef version
@@ -114,6 +135,7 @@ endif
 	mkdir -p debian/tmp/usr/lib/systemd/system
 	mkdir -p debian/tmp/usr/share/doc/${pkgname}
 	install -m 755 thrash_protect.py debian/tmp/usr/sbin/thrash-protect
+	sed -i 's/__version__ = "DEVELOPMENT"/__version__ = "$(version)"/' debian/tmp/usr/sbin/thrash-protect
 	install -m 644 systemd/thrash-protect.service debian/tmp/usr/lib/systemd/system/
 	install -m 644 README.rst debian/tmp/usr/share/doc/${pkgname}/
 	install -m 644 CHANGELOG.md debian/tmp/usr/share/doc/${pkgname}/

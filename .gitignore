@@ -21,6 +21,14 @@ archlinux/*.tar.gz
 # rpm/Makefile generated
 rpm/*.spec.bak
 
+# debian build artifacts
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/*.substvars
+debian/*.debhelper
+debian/thrash-protect/
+
 # IDE/editor
 .vscode/
 .idea/

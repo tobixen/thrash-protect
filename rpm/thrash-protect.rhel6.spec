@@ -27,7 +27,7 @@ true
 mkdir -p $RPM_BUILD_ROOT/etc/init.d
 mkdir -p $RPM_BUILD_ROOT/usr/sbin
 mkdir -p $RPM_BUILD_ROOT%{_defaultdocdir}/%{name}-%{version}
-make install INSTALL_ROOT=$RPM_BUILD_ROOT/
+make install version=%{version} INSTALL_ROOT=$RPM_BUILD_ROOT/
 
 
 %files

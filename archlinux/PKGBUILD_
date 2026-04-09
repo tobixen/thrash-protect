@@ -14,6 +14,6 @@ package() {
   mkdir -p "$pkgdir/usr/bin/"
   ln -s "$pkgdir/usr/bin/" "$pkgdir/usr/sbin"
   cd "$srcdir/$pkgname-$pkgver/"
-  make PREFIX=$pkgdir/usr INSTALL_ROOT=$pkgdir install
+  make PREFIX=$pkgdir/usr INSTALL_ROOT=$pkgdir version=$pkgver install
   rm "$pkgdir/usr/sbin"
 }
