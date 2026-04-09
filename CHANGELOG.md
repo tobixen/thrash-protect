@@ -7,7 +7,9 @@ and this project should adhere to [Semantic Versioning](https://semver.org/spec/
 
 For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
-## [1.0.5] - 2026-04-08
+## [1.0.5] - 2026-04-09
+
+Some bugfixes and whitelistings added, as I've been having some troubles with thrash-protect lately.
 
 ### Fixed
 
@@ -17,14 +19,14 @@ For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
   frozen cgroup paths to `/tmp/thrash-protect-frozen-cgroup-list` for crash recovery.
 - Fix version embedding for standalone installs: switch to `importlib.metadata` with a
   `DEVELOPMENT` sentinel replaced by `sed` during install (avoids broken `_version.py` imports).
+- **Extended whitelist for modern Wayland desktops**: `waybar`, `wireplumber`, `pipewire`,
+  `swaync`, `swayidle`, `dbus-broker` are now protected from being frozen. Previously, freezing
+  `waybar` could stall the sway compositor event loop via a full IPC socket buffer.
 
 ### Added
 
 - **Sway/waybar integration extras**: visual indicator scripts and a systemd user service
   showing when thrash-protect is actively throttling processes (`extras/`).
-- **Extended whitelist for modern Wayland desktops**: `waybar`, `wireplumber`, `pipewire`,
-  `swaync`, `swayidle`, `dbus-broker` are now protected from being frozen. Previously, freezing
-  `waybar` could stall the sway compositor event loop via a full IPC socket buffer.
 
 ### Removed
 
