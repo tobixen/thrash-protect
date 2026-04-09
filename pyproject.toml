@@ -99,6 +99,7 @@ ignore = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
+pythonpath = ["."]
 
 [tool.coverage.run]
 source = ["thrash_protect"]
