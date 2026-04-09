@@ -9,6 +9,8 @@ For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
 ## [1.0.2] - 2026-02-11
 
+My priority now is to produce rpm and deb packages.  I may need to change version numbers frequently until it works.
+
 ### Changed
 
 - Auto-detect version from `.tag.*` files so package targets work without `version=X.Y.Z`
