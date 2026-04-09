@@ -704,8 +704,9 @@ class TestDiagnosticLogging:
     def test_diagnostic_auto_enabled_for_dev_version(self):
         """Test that diagnostic logging is auto-enabled for dev versions."""
         with patch.object(thrash_protect, "__version__", "1.1.0.dev5+gabcdef"):
-            thrash_protect.init_config(argparse.Namespace(config=None))
-            assert thrash_protect.diagnostic_log is thrash_protect._diagnostic_log
+            with patch("thrash_protect.load_from_file", return_value={}):
+                thrash_protect.init_config(argparse.Namespace(config=None))
+                assert thrash_protect.diagnostic_log is thrash_protect._diagnostic_log
         # Reset
         with patch.object(thrash_protect, "__version__", "1.2.0"):
             thrash_protect.init_config(argparse.Namespace(config=None))
