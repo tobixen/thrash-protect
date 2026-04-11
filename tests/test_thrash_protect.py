@@ -1357,7 +1357,7 @@ class TestOOMProtection:
     """Tests for OOM protection / memory exhaustion prediction."""
 
     def test_read_meminfo(self):
-        """Test reading MemAvailable and SwapFree from /proc/meminfo."""
+        """Test reading MemAvailable, SwapFree, MemTotal, SwapTotal from /proc/meminfo."""
         meminfo = (
             "MemTotal:       16384000 kB\n"
             "MemFree:         1000000 kB\n"
@@ -1368,7 +1368,7 @@ class TestOOMProtection:
         )
         with patch("builtins.open", return_value=StringIO(meminfo)):
             result = thrash_protect.read_meminfo()
-            assert result == (4000000, 6000000)
+            assert result == (4000000, 6000000, 16384000, 8000000)
 
     def test_read_meminfo_missing(self):
         """Test read_meminfo when /proc/meminfo is not available."""
@@ -1378,56 +1378,113 @@ class TestOOMProtection:
 
     def test_predictor_first_observation(self):
         """Test that first observation returns None (need two points)."""
-        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, horizon=3600)
-        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000)):
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
             eta = predictor.update_and_predict()
             assert eta is None
 
     def test_predictor_stable_memory(self):
         """Test that stable memory returns None (not declining)."""
-        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, horizon=3600)
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
 
-        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000)):
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
             with patch("time.time", return_value=1000.0):
                 predictor.update_and_predict()
 
         # Same values = not declining
-        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000)):
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
             with patch("time.time", return_value=1010.0):
                 eta = predictor.update_and_predict()
                 assert eta is None
 
     def test_predictor_increasing_memory(self):
         """Test that increasing memory returns None."""
-        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, horizon=3600)
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
 
-        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000)):
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
             with patch("time.time", return_value=1000.0):
                 predictor.update_and_predict()
 
         # Memory increased
-        with patch("thrash_protect.read_meminfo", return_value=(5000000, 6000000)):
+        with patch("thrash_protect.read_meminfo", return_value=(5000000, 6000000, 16000000, 8000000)):
             with patch("time.time", return_value=1010.0):
                 eta = predictor.update_and_predict()
                 assert eta is None
 
-    def test_predictor_declining_memory(self):
-        """Test ETA calculation with declining memory."""
-        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, horizon=3600)
+    def test_predictor_declining_memory_short_window(self):
+        """Test ETA calculation with declining memory over the short-scale window.
+
+        With observation_window=60, the short scale is 60/12=5s.
+        Two observations 5s apart will be matched by the short-scale window.
+        Short-scale horizon = 5 * (600/60) = 50s.
+        """
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
 
         # available = 4M + 6M * 2 = 16M
-        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000)):
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
             with patch("time.time", return_value=1000.0):
                 predictor.update_and_predict()
 
-        # 10 seconds later: available = 3M + 5M * 2 = 13M (declined by 3M in 10s)
-        with patch("thrash_protect.read_meminfo", return_value=(3000000, 5000000)):
-            with patch("time.time", return_value=1010.0):
+        # 5 seconds later: available = 3M + 5M * 2 = 13M (declined by 3M in 5s)
+        # decline_rate = 3M / 5s = 600000 kB/s
+        # eta = 13M / 600000 ≈ 21.67 seconds
+        # Short-scale horizon = 50s, so 21.67 < 50 -> triggers
+        with patch("thrash_protect.read_meminfo", return_value=(3000000, 5000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1005.0):
                 eta = predictor.update_and_predict()
-                # decline_rate = 3M / 10s = 300000 kB/s
-                # eta = 13M / 300000 ≈ 43.3 seconds
                 assert eta is not None
-                assert abs(eta - 43.33) < 0.1
+                assert abs(eta - 21.67) < 0.1
+
+    def test_predictor_declining_memory_main_window(self):
+        """Test ETA calculation using the main (60s) observation window."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+
+        # First observation at t=0
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+
+        # Fill some intermediate observations (memory declining steadily)
+        for t in range(1010, 1060, 10):
+            frac = (t - 1000) / 60
+            mem = int(4000000 - 1000000 * frac)
+            swap = int(6000000 - 500000 * frac)
+            with patch("thrash_protect.read_meminfo", return_value=(mem, swap, 16000000, 8000000)):
+                with patch("time.time", return_value=float(t)):
+                    predictor.update_and_predict()
+
+        # At t=1060 (60s after first): available should trigger main window
+        # available at t=1000: 4M + 6M*2 = 16M
+        # available at t=1060: 3M + 5.5M*2 = 14M (approx)
+        with patch("thrash_protect.read_meminfo", return_value=(3000000, 5500000, 16000000, 8000000)):
+            with patch("time.time", return_value=1060.0):
+                eta = predictor.update_and_predict()
+                # Main window: decline from 16M to 14M over 60s
+                # decline_rate = 2M / 60 = 33333 kB/s
+                # eta = 14M / 33333 ≈ 420s
+                # Main horizon = 600s, so 420 < 600 -> triggers
+                assert eta is not None
+                assert eta < 600
+
+    def test_predictor_slow_decline_no_trigger(self):
+        """Test that a very slow decline doesn't trigger any window.
+
+        A tiny decline over 60s should produce an ETA beyond even the main horizon.
+        """
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+
+        # large available: 8M + 8M*2 = 24M
+        with patch("thrash_protect.read_meminfo", return_value=(8000000, 8000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+
+        # 60s later: tiny decline of 10kB total
+        # decline_rate = 10 / 60 = 0.167 kB/s
+        # eta = ~24M / 0.167 ≈ 144M seconds -> way beyond 600s horizon
+        with patch("thrash_protect.read_meminfo", return_value=(7999990, 8000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1060.0):
+                eta = predictor.update_and_predict()
+                assert eta is None
 
     def test_predictor_swap_weight_ssd_vs_hdd(self):
         """Test that swap_weight affects the prediction.
@@ -1435,20 +1492,20 @@ class TestOOMProtection:
         Higher swap_weight (HDD) makes swap depletion more alarming.
         With swap nearly depleted, HDD should predict faster exhaustion.
         """
-        predictor_ssd = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, horizon=3600)
-        predictor_hdd = thrash_protect.MemoryExhaustionPredictor(swap_weight=4.0, horizon=3600)
+        predictor_ssd = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+        predictor_hdd = thrash_protect.MemoryExhaustionPredictor(swap_weight=4.0, observation_window=60, horizon=600)
 
         # Scenario: swap is nearly depleted and declining
         for predictor in [predictor_ssd, predictor_hdd]:
-            with patch("thrash_protect.read_meminfo", return_value=(1000000, 500000)):
+            with patch("thrash_protect.read_meminfo", return_value=(1000000, 500000, 16000000, 8000000)):
                 with patch("time.time", return_value=1000.0):
                     predictor.update_and_predict()
 
-        # 10s later: swap dropped from 500k to 250k
-        # SSD: 2M -> 1.5M (decline 500k), eta = 1.5M/50k = 30s
-        # HDD: 3M -> 2M (decline 1M), eta = 2M/100k = 20s
-        with patch("thrash_protect.read_meminfo", return_value=(1000000, 250000)):
-            with patch("time.time", return_value=1010.0):
+        # 5s later: swap dropped from 500k to 250k
+        # SSD: 2M -> 1.5M (decline 500k in 5s), eta = 1.5M/100k = 15s
+        # HDD: 3M -> 2M (decline 1M in 5s), eta = 2M/200k = 10s
+        with patch("thrash_protect.read_meminfo", return_value=(1000000, 250000, 16000000, 8000000)):
+            with patch("time.time", return_value=1005.0):
                 eta_ssd = predictor_ssd.update_and_predict()
                 eta_hdd = predictor_hdd.update_and_predict()
 
@@ -1456,43 +1513,155 @@ class TestOOMProtection:
         assert eta_hdd is not None
         assert eta_hdd < eta_ssd
 
-    def test_predictor_should_freeze_within_horizon(self):
-        """Test should_freeze returns True when ETA < horizon."""
-        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, horizon=3600)
+    def test_predictor_should_freeze_rapid_decline(self):
+        """Test should_freeze returns True on rapid decline."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
 
         # First observation
-        with patch("thrash_protect.read_meminfo", return_value=(2000000, 1000000)):
+        with patch("thrash_protect.read_meminfo", return_value=(2000000, 1000000, 16000000, 8000000)):
             with patch("time.time", return_value=1000.0):
                 predictor.should_freeze()
 
-        # Rapid decline: available goes from 4M to 1M in 10s
-        # ETA = 1M / (300000 kB/s) ≈ 3.33s -> well within horizon
-        with patch("thrash_protect.read_meminfo", return_value=(500000, 500000)):
-            with patch("time.time", return_value=1010.0):
+        # Rapid decline in 5s: available goes from 4M to 1.5M
+        # Short window: decline_rate = 2.5M/5s = 500k/s, eta = 1.5M/500k = 3s
+        # Short horizon = 50s, so 3 < 50 -> triggers
+        with patch("thrash_protect.read_meminfo", return_value=(500000, 500000, 16000000, 8000000)):
+            with patch("time.time", return_value=1005.0):
                 result = predictor.should_freeze()
                 assert result is True
 
-    def test_predictor_should_not_freeze_beyond_horizon(self):
-        """Test should_freeze returns False when ETA > horizon."""
-        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, horizon=60)
+    def test_predictor_should_not_freeze_tiny_decline(self):
+        """Test should_freeze returns False when decline is negligible."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
 
-        # First observation: large available
-        with patch("thrash_protect.read_meminfo", return_value=(8000000, 8000000)):
+        # large available
+        with patch("thrash_protect.read_meminfo", return_value=(8000000, 8000000, 16000000, 8000000)):
             with patch("time.time", return_value=1000.0):
                 predictor.should_freeze()
 
-        # Tiny decline: 10kB in 10s -> ETA is huge
-        with patch("thrash_protect.read_meminfo", return_value=(7999990, 8000000)):
-            with patch("time.time", return_value=1010.0):
+        # Tiny decline: 10kB in 5s -> ETA is huge, beyond any horizon
+        with patch("thrash_protect.read_meminfo", return_value=(7999990, 8000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1005.0):
                 result = predictor.should_freeze()
                 assert result is False
+
+    def test_predictor_multi_scale_only_short_triggers(self):
+        """Test that a rapid short-term decline triggers even without long-term data.
+
+        When the predictor has only been running for a few seconds, only the
+        short-scale window has data. A rapid decline should still trigger.
+        """
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+
+        # Two observations 3s apart, sharp decline (rogue process eating RAM)
+        with patch("thrash_protect.read_meminfo", return_value=(1000000, 200000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+
+        # available: 1M + 200k*2 = 1.4M -> 500k + 100k*2 = 700k in 3s
+        # decline = 700k in 3s, rate = 233k/s, eta = 700k/233k = 3s
+        # Short window horizon = 50s, 3 < 50 -> triggers
+        with patch("thrash_protect.read_meminfo", return_value=(500000, 100000, 16000000, 8000000)):
+            with patch("time.time", return_value=1003.0):
+                eta = predictor.update_and_predict()
+                assert eta is not None
+                assert eta < 5  # should be ~3s
+
+    def test_predictor_old_observations_pruned(self):
+        """Test that observations older than max_age are pruned."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+
+        # Add observation at t=0
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+
+        # Add observation at t=100 (well beyond max_age of 90s)
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1100.0):
+                predictor.update_and_predict()
+
+        # The t=0 observation should have been pruned
+        assert len(predictor._observations) == 1
+
+    def test_predictor_no_false_positive_at_startup(self):
+        """Test that observations 0.5s apart don't trigger predictions.
+
+        This is the critical regression test: on startup, the deque only has
+        recent observations.  The tolerance check must reject them because
+        they're too recent to match either the 60s or 5s observation windows.
+        """
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+
+        # Simulate the first few seconds of startup with declining memory
+        # (normal cache/allocation activity)
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+
+        # 0.5s later - moderate decline
+        with patch("thrash_protect.read_meminfo", return_value=(3900000, 5990000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.5):
+                eta = predictor.update_and_predict()
+                assert eta is None  # Must not trigger!
+
+        # 1.0s later - still declining
+        with patch("thrash_protect.read_meminfo", return_value=(3800000, 5980000, 16000000, 8000000)):
+            with patch("time.time", return_value=1001.0):
+                eta = predictor.update_and_predict()
+                assert eta is None  # Must not trigger!
+
+        # 2.0s later - still declining
+        with patch("thrash_protect.read_meminfo", return_value=(3600000, 5960000, 16000000, 8000000)):
+            with patch("time.time", return_value=1002.0):
+                eta = predictor.update_and_predict()
+                assert eta is None  # Must not trigger! 2s < 2.5s tolerance
+
+    def test_predictor_low_pct_filters_high_memory(self):
+        """Test that low_pct prevents prediction when memory is plentiful."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(
+            swap_weight=2.0, observation_window=60, horizon=600, low_pct=10.0
+        )
+
+        # total = 16M + 8M*2 = 32M, 10% = 3.2M
+        # available = 4M + 6M*2 = 16M -> 50% of total, well above 10%
+        with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+
+        # Declining but still above threshold: available = 3M + 5M*2 = 13M -> 40.6%
+        with patch("thrash_protect.read_meminfo", return_value=(3000000, 5000000, 16000000, 8000000)):
+            with patch("time.time", return_value=1005.0):
+                eta = predictor.update_and_predict()
+                assert eta is None
+
+    def test_predictor_low_pct_allows_low_memory(self):
+        """Test that prediction works when memory is actually low."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(
+            swap_weight=2.0, observation_window=60, horizon=600, low_pct=10.0
+        )
+
+        # total = 16M + 8M*2 = 32M, 10% = 3.2M
+        # available = 500k + 500k*2 = 1.5M -> 4.7% of total, below 10%
+        with patch("thrash_protect.read_meminfo", return_value=(500000, 500000, 16000000, 8000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+
+        # Still declining and still below threshold
+        with patch("thrash_protect.read_meminfo", return_value=(300000, 400000, 16000000, 8000000)):
+            with patch("time.time", return_value=1005.0):
+                eta = predictor.update_and_predict()
+                # available = 300k + 400k*2 = 1.1M, 3.4% < 10%, should predict
+                assert eta is not None
 
     def test_oom_config_defaults(self):
         """Test OOM protection config defaults."""
         args = argparse.Namespace(config=None)
         thrash_protect.init_config(args)
         assert thrash_protect.config.oom_protection is True
-        assert thrash_protect.config.oom_horizon == 3600
+        assert thrash_protect.config.oom_observation_window == 60
+        assert thrash_protect.config.oom_horizon == 600
+        assert thrash_protect.config.oom_low_pct == 100.0
         assert thrash_protect.config.oom_swap_weight == 2.0  # default (no HDD detected)
         assert thrash_protect._tp.memory_predictor is not None
 
@@ -1517,8 +1686,14 @@ class TestOOMProtection:
         args = parser.parse_args(["--no-oom-protection"])
         assert args.oom_protection is False
 
+        args = parser.parse_args(["--oom-observation-window", "30"])
+        assert args.oom_observation_window == 30
+
         args = parser.parse_args(["--oom-horizon", "1800"])
         assert args.oom_horizon == 1800
 
         args = parser.parse_args(["--oom-swap-weight", "3.0"])
         assert args.oom_swap_weight == 3.0
+
+        args = parser.parse_args(["--oom-low-pct", "15.0"])
+        assert args.oom_low_pct == 15.0

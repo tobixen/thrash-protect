@@ -11,10 +11,14 @@ For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
 ### Added
 
-- **OOM protection**: Proactive memory exhaustion prediction using two-point linear
-  projection on weighted MemAvailable + SwapFree. Freezes processes before the OOM
-  killer activates. Configurable via `--oom-protection`/`--no-oom-protection`,
-  `--oom-horizon` (default 3600s), `--oom-swap-weight`.
+- **OOM protection**: Proactive memory exhaustion prediction using multi-scale
+  linear projection on weighted MemAvailable + SwapFree. Maintains a sliding
+  window of observations and checks at multiple time scales (main window and
+  1/12th short window), each with a proportional horizon. Swap is weighted
+  higher than memory so the predictor naturally triggers when swap starts
+  depleting. Configurable via `--oom-protection`/`--no-oom-protection`,
+  `--oom-observation-window` (default 60s), `--oom-horizon` (default 600s),
+  `--oom-swap-weight`, `--oom-low-pct`.
 - **SSD auto-detection**: Automatically detects if swap is on SSD via
   `/proc/swaps` + `/sys/block/*/queue/rotational`. When SSD is detected,
   `swap_page_threshold` is raised from 4 to 64 to avoid false positives.
@@ -32,6 +36,12 @@ For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
 ### Fixed
 
+- **OOM predictor false positives**: Replaced naive two-point projection (0.5s
+  observation window, 3600s horizon) with multi-scale sliding window predictor.
+  The old algorithm treated normal memory fluctuations as impending doom.
+  The new algorithm uses a 60s main window with 600s horizon, plus a 5s short
+  window with 50s horizon, preventing false positives while still catching
+  rapid memory consumption.
 - Bare `except:` clauses replaced with `except Exception:` (4 occurrences).
   E722 now enforced via ruff.
 
