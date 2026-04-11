@@ -12,19 +12,27 @@ The devil is in the details here.  Memory usage may go pretty fast up and down. 
 
 It should be considered if those ideas are sane, and the details should be fleshed out before starting implementation.
 
-## v1.1.0
-
-SSD-backed swap may go full rather quickly.  I want to extend the scope of thrash-protect to not only protect against heavy thrashing, but also to protect against OOM-situations.
-
-General idea: in addition to stopping processes when there are two-way swapping, thrash-protect should also stop processes when a linear projection of memory usage gives indications that all memory will be spent within (configurable value:) an hour.
-
-The devil is in the details here.  Memory usage may go pretty fast up and down.  A "linear prediction" needs two observations, and under ordinary circumstances (no thrashing, plenty of memory, no stopped processes) it's needed with some distance between those two observation points.  We should have shorter distance between the observation points when there is less memory available.  We should have very small observation intervals when we're actively stopping and resuming processes.
-
-It should be considered if those ideas are sane, and the details should be fleshed out before starting implementation.
-
 ## High Priority
 
-(None currently - see Completed section for recently addressed items)
+### ~~SSD Auto-detection (GitHub #27)~~ ✅ Partially done
+
+SSD auto-detection was implemented in v1.1.  ZRAM swap may still need attention — compression/decompression is CPU-bound rather than I/O-bound, so the swap page threshold tuning may not be appropriate.  Whether thrash-protect is useful at all on ZRAM systems is an open question.
+
+### ~~Use /proc/pressure for Thrash Detection (GitHub #28)~~ ✅ Done
+
+Implemented as PSI amplification on swap-based detection. Configurable via `--use-psi`/`--no-psi` and `--psi-threshold`. Falls back to swap counting on older kernels.
+
+### Fork Bomb Protection (GitHub #39)
+
+Thrash-protect does not protect sufficiently against fork bombs.  It should be more aggressive in suspending parent processes when a fork bomb is detected (rapid process creation from the same parent).
+
+Related to #12 (parent process freezing).
+
+### Parent Process Freezing / Job Control (GitHub #12)
+
+Suspending a child process causes side-effects for the parent sometimes (notably, bash job control and sudo).  Current workarounds exist (resuming session/group process IDs, freezing parent before child for bash/sudo), but a more general solution is needed.
+
+**Possible approach**: Always freeze the parent process before suspending a child (possibly recursively, but never freezing PID 1).  Needs more research and testing.
 
 ## Medium Priority
 

@@ -49,6 +49,11 @@ This release is partially working around or solving some of those problems.
   available/total memory, decline rate, projected ETA, and whether the scale
   triggered. Pairs with the existing `--diagnostic-logging` flag (auto-enabled on
   dev builds).
+- **Sway/waybar integration extras**: visual indicator scripts and a systemd user service
+  showing when thrash-protect is actively throttling processes (`extras/`).
+- **Extended whitelist for modern Wayland desktops**: `waybar`, `wireplumber`, `pipewire`,
+  `swaync`, `swayidle`, `dbus-broker` are now protected from being frozen. Previously, freezing
+  `waybar` could stall the sway compositor event loop via a full IPC socket buffer.
 
 ### Changed
 
@@ -61,6 +66,11 @@ This release is partially working around or solving some of those problems.
 
 ### Fixed
 
+- **Cgroup freeze bugs**: prevent self-freezing deadlock, re-insert items on failed
+  unfreeze instead of silently losing track of them (which caused an ever-growing frozen
+  list), persist frozen cgroup paths for crash recovery.
+- Fix version embedding for standalone installs: switch to `importlib.metadata` with a
+  `DEVELOPMENT` sentinel replaced by `sed` during install.
 - **OOM predictor false positives**: Replaced naive two-point projection (0.5s
   observation window, 3600s horizon) with multi-scale sliding window predictor.
   The old algorithm treated normal memory fluctuations as impending doom.
