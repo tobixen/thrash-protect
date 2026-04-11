@@ -25,12 +25,20 @@ This release is partially working around or solving some of those problems.
 
 - **OOM protection**: Proactive memory exhaustion prediction using multi-scale
   linear projection on weighted MemAvailable + SwapFree. Maintains a sliding
-  window of observations and checks at multiple time scales (main window and
-  1/12th short window), each with a proportional horizon. Swap is weighted
-  higher than memory so the predictor naturally triggers when swap starts
-  depleting. Configurable via `--oom-protection`/`--no-oom-protection`,
+  window of observations and checks at three time scales (main 60s window, a
+  1/12x short window for rapid decline detection, and a 1/60x rapid scale for
+  active freeze/unfreeze cycles), each with a proportional horizon. Swap is
+  weighted higher than memory so the predictor naturally triggers when swap
+  starts depleting. Configurable via `--oom-protection`/`--no-oom-protection`,
   `--oom-observation-window` (default 60s), `--oom-horizon` (default 600s),
-  `--oom-swap-weight`, `--oom-low-pct`.
+  `--oom-swap-weight`, `--oom-low-pct` (default 100 = always predict; lower to
+  predict only when available memory is below that percentage).
+- **Repeat-offender blacklist**: Processes that are unfrozen and immediately
+  cause re-thrashing (detected by `LastFrozenProcessSelector`) are blacklisted
+  and kept frozen longer by skipping a configurable number of unfreeze cycles.
+  Includes a deadlock guard for when all frozen items are blacklisted.
+  Configurable via `--blacklist-expiry-time` (default 60s) and
+  `--blacklist-max-skip-count` (default 3).
 - **SSD auto-detection**: Automatically detects if swap is on SSD via
   `/proc/swaps` + `/sys/block/*/queue/rotational`. When SSD is detected,
   `swap_page_threshold` is raised from 4 to 64 to avoid false positives.
@@ -47,13 +55,7 @@ This release is partially working around or solving some of those problems.
 - **OOM predictor diagnostic logging**: `MemoryExhaustionPredictor.update_and_predict()`
   now emits detailed `diagnostic_log` output for each observation scale: current
   available/total memory, decline rate, projected ETA, and whether the scale
-  triggered. Pairs with the existing `--diagnostic-logging` flag (auto-enabled on
-  dev builds).
-- **Sway/waybar integration extras**: visual indicator scripts and a systemd user service
-  showing when thrash-protect is actively throttling processes (`extras/`).
-- **Extended whitelist for modern Wayland desktops**: `waybar`, `wireplumber`, `pipewire`,
-  `swaync`, `swayidle`, `dbus-broker` are now protected from being frozen. Previously, freezing
-  `waybar` could stall the sway compositor event loop via a full IPC socket buffer.
+  triggered.
 
 ### Changed
 
@@ -63,20 +65,22 @@ This release is partially working around or solving some of those problems.
   backward-compatible functions still available.
 - `load_config()` now returns `(config_dict, explicitly_set_keys)` to support
   SSD auto-detection without overriding explicit user settings.
+- **Diagnostic logging auto-enabled for dev builds**: When the version string
+  contains pre-release markers (dev, alpha, beta, rc, .dirty), diagnostic
+  logging is automatically enabled unless the user has explicitly disabled it.
 
 ### Fixed
 
-- **Cgroup freeze bugs**: prevent self-freezing deadlock, re-insert items on failed
-  unfreeze instead of silently losing track of them (which caused an ever-growing frozen
-  list), persist frozen cgroup paths for crash recovery.
-- Fix version embedding for standalone installs: switch to `importlib.metadata` with a
-  `DEVELOPMENT` sentinel replaced by `sed` during install.
-- **OOM predictor false positives**: Replaced naive two-point projection (0.5s
-  observation window, 3600s horizon) with multi-scale sliding window predictor.
-  The old algorithm treated normal memory fluctuations as impending doom.
-  The new algorithm uses a 60s main window with 600s horizon, plus a 5s short
-  window with 50s horizon, preventing false positives while still catching
-  rapid memory consumption.
+- **OOM predictor never fired with default config**: `--oom-low-pct` defaulted
+  to 0.0, which meant the condition `avail_pct >= low_pct` was always true and
+  prediction was always skipped. Default corrected to 100.0 (threshold
+  effectively inactive; lower to e.g. 10 to predict only when < 10% free).
+- **OOM predictor false positives**: Replaced naive two-point projection with
+  multi-scale sliding window predictor. The old algorithm treated normal memory
+  fluctuations as impending doom. The new algorithm uses three time scales with
+  proportional horizons, and requires that reference observations fall within a
+  tolerance window of the target time (preventing a 0.5s-old sample being used
+  as a 60s-ago reference).
 - Bare `except:` clauses replaced with `except Exception:` (4 occurrences).
   E722 now enforced via ruff.
 
