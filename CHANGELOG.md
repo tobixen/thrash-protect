@@ -36,6 +36,8 @@ Some bugfixes and whitelistings added, as I've been having some troubles with th
 
 My priority now is to produce rpm and deb packages.  This is done via the Makefile and a "make release" is needed for every attempt - hence I may need to change version numbers frequently until it works.
 
+My priority now is to produce rpm and deb packages.  I may need to change version numbers frequently until it works.
+
 ### Changed
 
 - Auto-detect version from `.tag.*` files so package targets work without `version=X.Y.Z`
