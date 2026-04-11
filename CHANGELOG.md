@@ -23,13 +23,8 @@ This release is partially working around or solving some of those problems.
 
 ### Added
 
-- **OOM protection**: Proactive memory exhaustion prediction using multi-scale
-  linear projection on weighted MemAvailable + SwapFree. Maintains a sliding
-  window of observations and checks at three time scales (main 60s window, a
-  1/12x short window for rapid decline detection, and a 1/60x rapid scale for
-  active freeze/unfreeze cycles), each with a proportional horizon. Swap is
-  weighted higher than memory so the predictor naturally triggers when swap
-  starts depleting. Configurable via `--oom-protection`/`--no-oom-protection`,
+- **OOM protection**: Proactive memory exhaustion prediction.  The idea
+  is that thrash-protect should progressively work harder to slow down the processes growing memory usage fastest before running out of memory - and hopefully trigger alarms or alerting the user so action can be taken before the OOM-killer strikes.  Configurable via `--oom-protection`/`--no-oom-protection`,
   `--oom-observation-window` (default 60s), `--oom-horizon` (default 600s),
   `--oom-swap-weight`, `--oom-low-pct` (default 100 = always predict; lower to
   predict only when available memory is below that percentage).
@@ -43,7 +38,6 @@ This release is partially working around or solving some of those problems.
   `/proc/swaps` + `/sys/block/*/queue/rotational`. When SSD is detected,
   `swap_page_threshold` is raised from 4 to 64 to avoid false positives.
   Configurable via `--storage-type auto|ssd|hdd`.
-- **Type annotations**: Full type hints throughout with `from __future__ import annotations`.
 - **zswap-aware thrash detection**: The swap product formula now includes zswap
   counters (`zswpin`/`zswpout` from `/proc/vmstat`, Linux 6.3+). Disk swap pages
   are weighted by `pswp_weight` (auto-detected: HDD=128, SSD=8) relative to zswap
@@ -52,10 +46,6 @@ This release is partially working around or solving some of those problems.
   storage-type-independent (both HDD and SSD yield 512 pages). Configurable via
   `--pswp-weight`. Falls back gracefully to disk-only detection on kernels without
   `zswpin`/`zswpout` (pre-6.3).
-- **OOM predictor diagnostic logging**: `MemoryExhaustionPredictor.update_and_predict()`
-  now emits detailed `diagnostic_log` output for each observation scale: current
-  available/total memory, decline rate, projected ETA, and whether the scale
-  triggered.
 
 ### Changed
 
@@ -69,18 +59,9 @@ This release is partially working around or solving some of those problems.
   contains pre-release markers (dev, alpha, beta, rc, .dirty), diagnostic
   logging is automatically enabled unless the user has explicitly disabled it.
 
-### Fixed
+### Code quality
 
-- **OOM predictor never fired with default config**: `--oom-low-pct` defaulted
-  to 0.0, which meant the condition `avail_pct >= low_pct` was always true and
-  prediction was always skipped. Default corrected to 100.0 (threshold
-  effectively inactive; lower to e.g. 10 to predict only when < 10% free).
-- **OOM predictor false positives**: Replaced naive two-point projection with
-  multi-scale sliding window predictor. The old algorithm treated normal memory
-  fluctuations as impending doom. The new algorithm uses three time scales with
-  proportional horizons, and requires that reference observations fall within a
-  tolerance window of the target time (preventing a 0.5s-old sample being used
-  as a 60s-ago reference).
+- **Type annotations**: Full type hints throughout with `from __future__ import annotations`.
 - Bare `except:` clauses replaced with `except Exception:` (4 occurrences).
   E722 now enforced via ruff.
 
