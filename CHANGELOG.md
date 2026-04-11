@@ -9,6 +9,18 @@ For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
 ## [1.1.0] - Unreleased
 
+SSDs are different things than HDDs.  Some observations:
+
+* It may take a long time to fill up a swap partition on an old
+  spinning disk, but SSDs gets filled up really fast.
+* Thrash-protect is checking the IO-load to figure how badly thrashed
+  a computer is.  This is not tuned for SSD - the box typically don't
+  appear to be thrashed at all until it's suddenly out of memory (and
+  at that time, thrash-protect goes crazy stopping basically
+  everything)
+
+This release is partially working around or solving some of those problems.
+
 ### Added
 
 - **OOM protection**: Proactive memory exhaustion prediction using multi-scale
