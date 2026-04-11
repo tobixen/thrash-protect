@@ -1646,6 +1646,32 @@ class TestOOMProtection:
                 # available = 300k + 400k*2 = 1.1M, 3.4% < 10%, should predict
                 assert eta is not None
 
+    def test_predictor_default_low_pct_fires_when_memory_declining(self):
+        """Test that the default low_pct allows prediction when memory is declining.
+
+        With the correct default of 100.0, prediction fires regardless of
+        available memory percentage.  With the wrong default of 0.0, avail_pct
+        is always >= 0.0, so update_and_predict() always returns None.
+        """
+        predictor = thrash_protect.MemoryExhaustionPredictor(
+            swap_weight=2.0,
+            observation_window=60,
+            horizon=600,
+            low_pct=thrash_protect.get_defaults()["oom_low_pct"],
+        )
+
+        # Memory still relatively plentiful (50% available) but declining fast
+        with patch("thrash_protect.read_meminfo", return_value=(5000000, 5000000, 16000000, 5000000)):
+            with patch("time.time", return_value=1000.0):
+                predictor.update_and_predict()
+
+        # Drop hard: only ~6% left and still declining toward zero
+        with patch("thrash_protect.read_meminfo", return_value=(500000, 100000, 16000000, 5000000)):
+            with patch("time.time", return_value=1005.0):
+                eta = predictor.update_and_predict()
+                # Default low_pct=100 means "always predict"; should not be None
+                assert eta is not None
+
     def test_oom_config_defaults(self):
         """Test OOM protection config defaults."""
         args = argparse.Namespace(config=None)
@@ -1653,7 +1679,7 @@ class TestOOMProtection:
         assert thrash_protect.config.oom_protection is True
         assert thrash_protect.config.oom_observation_window == 60
         assert thrash_protect.config.oom_horizon == 600
-        assert thrash_protect.config.oom_low_pct == 0.0
+        assert thrash_protect.config.oom_low_pct == 100.0
         assert thrash_protect.config.oom_swap_weight == 2.0  # default (no HDD detected)
         assert thrash_protect._tp.memory_predictor is not None
 

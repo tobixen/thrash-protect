@@ -317,7 +317,7 @@ def get_defaults() -> dict[str, Any]:
         "oom_observation_window": 60,
         "oom_horizon": 600,
         "oom_swap_weight": None,  # Auto-set based on storage type
-        "oom_low_pct": 0.0,  # 0% = always predict; raise toward 75% once well-tuned
+        "oom_low_pct": 100.0,  # 100% = always predict; lower (e.g. 10) to predict only when <10% free
         "pswp_weight": None,  # Auto-set based on storage type (HDD=128, SSD=8)
         "blacklist_expiry_time": 60.0,  # Seconds before a blacklist entry expires
         "blacklist_max_skip_count": 3,  # Unfreeze cycles a blacklisted item gets skipped
@@ -1021,6 +1021,10 @@ class MemoryExhaustionPredictor:
         Returns None if no observation falls within [target_time - tolerance,
         target_time + tolerance].  This prevents using a 0.5s-old observation
         when we need one from 60s ago.
+
+        In practice the caller passes target_time = now - window and
+        tolerance = window / 2, so the accepted age range is an asymmetric
+        window: [window/2, window*1.5] seconds ago.
         """
         best: tuple[float, float] | None = None
         best_diff = float("inf")
@@ -1243,7 +1247,7 @@ def init_config(args: argparse.Namespace | None = None) -> None:
     if (
         "diagnostic_logging" not in explicitly_set
         and not config.diagnostic_logging
-        and any(tag in __version__ for tag in ("dev", "alpha", "beta", "rc", ".dirty"))
+        and any(tag in __version__.lower() for tag in ("dev", "alpha", "beta", "rc", ".dirty"))
     ):
         config.diagnostic_logging = True
         logging.info("diagnostic logging auto-enabled for dev version %s", __version__)
@@ -1341,6 +1345,9 @@ class SystemState:
         delta_zswap_in = self.swapcount[2] - prev.swapcount[2]
         delta_zswap_out = self.swapcount[3] - prev.swapcount[3]
 
+        # pswp_weight scales disk pages up (not zswap pages down) so that
+        # effective_threshold = swap_page_threshold * pswp_weight cancels out,
+        # making the trigger level storage-type-independent.
         combined_in = delta_disk_in * pswp_weight + delta_zswap_in + 0.1
         combined_out = delta_disk_out * pswp_weight + delta_zswap_out + 0.1
 
@@ -2190,11 +2197,12 @@ class ThrashProtectState:
         opposite end of the list.  If all items are blacklisted, the first
         candidate is unfrozen anyway to avoid deadlock.
         """
+        # Expire old blacklist entries once per unfreeze cycle, even if nothing
+        # is frozen — otherwise entries linger until the next freeze event.
+        self.freeze_blacklist.expire()
+
         if not self.frozen_items:
             return None
-
-        # Expire old blacklist entries once per unfreeze cycle
-        self.freeze_blacklist.expire()
 
         if self.num_unfreezes % config.unfreeze_pop_ratio:
             pop_index = -1
