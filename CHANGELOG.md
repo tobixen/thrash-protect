@@ -7,7 +7,7 @@ and this project should adhere to [Semantic Versioning](https://semver.org/spec/
 
 For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
-## [1.1.0] - Unreleased
+## [1.1.2] - 2026-04-12
 
 SSDs are different things than HDDs.  Some observations:
 
@@ -64,6 +64,10 @@ This release is partially working around or solving some of those problems.
 - **Type annotations**: Full type hints throughout with `from __future__ import annotations`.
 - Bare `except:` clauses replaced with `except Exception:` (4 occurrences).
   E722 now enforced via ruff.
+
+## [1.1.0] - 2026-04-12
+
+See v1.1.2.  I again forgot my good-old-rule to never release anything right before bedtime.  Only change between v1.1.0 and v1.1.2 is the last-minute polishing of the CHANGELOG entry.
 
 ## [1.0.5] - 2026-04-09
 
