@@ -18,7 +18,7 @@ endif
 endif
 export version
 
-.PHONY: build install clean distclean rpm archlinux dist release do-release ubuntu debian install-sway-extras
+.PHONY: build install clean distclean rpm archlinux dist release do-release debian install-sway-extras
 
 all: build
 
@@ -112,17 +112,6 @@ endif
 	$(MAKE) dist version=${version}
 	rsync ${pkgname}-${version}.tar.gz ${HOME}/rpmbuild/SOURCES/v${version}.tar.gz
 	${MAKE} -C $@ rpm version=${version}
-
-## TODO: debian target (with systemv)
-
-## TODO: not tested
-ubuntu:
-ifndef version
-	$(error ubuntu requires version=X.Y.Z)
-endif
-	@test -f .tag.${version} || { echo "Error: Run 'make release' first to create tag v${version}"; exit 1; }
-	rm -f debian/${pkgname}.init
-	dpkg-buildpackage
 
 debian:
 ifndef version
