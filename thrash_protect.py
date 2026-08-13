@@ -182,6 +182,9 @@ CONFIG_SCHEMA = {
     "pgmajfault_scan_threshold": (int, "THRASH_PROTECT_PGMAJFAULT_SCAN_THRESHOLD", ["pgmajfault-scan-threshold"]),
     "use_psi": (_parse_bool, "THRASH_PROTECT_USE_PSI", ["use-psi"]),
     "psi_threshold": (float, "THRASH_PROTECT_PSI_THRESHOLD", ["psi-threshold"]),
+    "psi_swap_floor": (int, "THRASH_PROTECT_PSI_SWAP_FLOOR", ["psi-swap-floor"]),
+    "io_pressure_veto": (_parse_bool, "THRASH_PROTECT_IO_PRESSURE_VETO", ["io-pressure-veto"]),
+    "io_pressure_threshold": (float, "THRASH_PROTECT_IO_PRESSURE_THRESHOLD", ["io-pressure-threshold"]),
     "cmd_whitelist": (_parse_list, "THRASH_PROTECT_CMD_WHITELIST", ["cmd-whitelist"]),
     "cmd_blacklist": (_parse_list, "THRASH_PROTECT_CMD_BLACKLIST", ["cmd-blacklist"]),
     "cmd_jobctrllist": (_parse_list, "THRASH_PROTECT_CMD_JOBCTRLLIST", ["cmd-jobctrllist"]),
@@ -301,6 +304,12 @@ def get_defaults() -> dict[str, Any]:
         "pgmajfault_scan_threshold": None,  # Computed from swap_page_threshold if not set
         "use_psi": True,  # Use PSI for thrash detection if available
         "psi_threshold": 5.0,  # Trigger when some avg10 exceeds this percentage
+        # Minimum swap pages in EACH direction before PSI is allowed to amplify.
+        # Without it, memory PSI can multiply a one-page trickle past the trigger.
+        "psi_swap_floor": 2,
+        # Treat a saturated disk with no swap traffic as an IO problem, not thrashing
+        "io_pressure_veto": True,
+        "io_pressure_threshold": 50.0,  # io "full" avg10 above this counts as IO starvation
         "cmd_whitelist": get_default_whitelist(),
         "cmd_jobctrllist": get_default_jobctrllist(),
         "cmd_blacklist": [],
@@ -494,6 +503,33 @@ Example usage:
         type=float,
         metavar="PCT",
         help="PSI some avg10 percentage to trigger action (default: 5.0)",
+    )
+    p.add_argument(
+        "--psi-swap-floor",
+        dest="psi_swap_floor",
+        type=int,
+        metavar="PAGES",
+        help="Minimum swap pages in each direction before PSI may amplify (default: 2)",
+    )
+    p.add_argument(
+        "--io-pressure-veto",
+        dest="io_pressure_veto",
+        action="store_true",
+        default=None,
+        help="Suppress triggering when a saturated disk explains the pressure (default: true)",
+    )
+    p.add_argument(
+        "--no-io-pressure-veto",
+        dest="io_pressure_veto",
+        action="store_false",
+        help="Do not suppress triggering when a saturated disk explains the pressure",
+    )
+    p.add_argument(
+        "--io-pressure-threshold",
+        dest="io_pressure_threshold",
+        type=float,
+        metavar="PCT",
+        help="io full avg10 percentage counting as IO starvation (default: 50.0)",
     )
 
     # Process lists
@@ -818,22 +854,18 @@ def is_psi_available() -> bool:
     return _psi_available
 
 
-def get_memory_pressure() -> dict[str, dict[str, float | int]] | None:
-    """Read memory pressure from /proc/pressure/memory.
+def _read_psi(path: str) -> dict[str, dict[str, float | int]] | None:
+    """Read a /proc/pressure/* file.
 
     Returns a dict with 'some' and 'full' pressure metrics, each containing
     avg10, avg60, avg300 (percentages) and total (microseconds).
-    Returns None if PSI is not available.
-
-    Example output:
-        {'some': {'avg10': 0.0, 'avg60': 0.0, 'avg300': 0.0, 'total': 0},
-         'full': {'avg10': 5.23, 'avg60': 2.10, 'avg300': 0.50, 'total': 123456}}
+    Returns None if PSI is not available or the file cannot be read.
     """
     if not is_psi_available():
         return None
     try:
         pressure = {}
-        with open("/proc/pressure/memory") as f:
+        with open(path) as f:
             for line in f:
                 parts = line.strip().split()
                 if not parts:
@@ -851,6 +883,54 @@ def get_memory_pressure() -> dict[str, dict[str, float | int]] | None:
         return pressure
     except (FileNotFoundError, PermissionError, OSError, ValueError):
         return None
+
+
+def get_memory_pressure() -> dict[str, dict[str, float | int]] | None:
+    """Read memory pressure from /proc/pressure/memory.
+
+    Example output:
+        {'some': {'avg10': 0.0, 'avg60': 0.0, 'avg300': 0.0, 'total': 0},
+         'full': {'avg10': 5.23, 'avg60': 2.10, 'avg300': 0.50, 'total': 123456}}
+    """
+    return _read_psi("/proc/pressure/memory")
+
+
+def get_io_pressure() -> dict[str, dict[str, float | int]] | None:
+    """Read IO pressure from /proc/pressure/io.
+
+    Memory pressure and IO pressure overlap: a page-cache refault from a
+    saturated disk raises both, even though nothing is short of memory.
+    Reading them side by side is what lets us tell the two apart.
+    """
+    return _read_psi("/proc/pressure/io")
+
+
+def get_workingset_refaults() -> tuple[int, int] | None:
+    """Read (anon, file) workingset refault counters from /proc/vmstat.
+
+    A refault is a page we evicted and then had to read back.  The anon
+    counter is the honest definition of memory thrashing; the file counter
+    rises whenever anything walks more file data than fits in the page cache,
+    which is a completely different problem with a completely different cure.
+
+    Both counters exist from Linux 5.9.  Older kernels report (0, 0), which
+    callers must treat as "no information" rather than "no refaults".
+
+    A failed read returns None instead, which is a different thing again: the
+    zeros of an old kernel are stable across samples, whereas a one-off
+    failure would otherwise make the *next* interval subtract zero and so
+    compute its ratio against the lifetime counters.
+    """
+    counters = {"workingset_refault_anon": 0, "workingset_refault_file": 0}
+    try:
+        with open("/proc/vmstat") as vmstat:
+            for line in vmstat:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] in counters:
+                    counters[parts[0]] = int(parts[1])
+    except (FileNotFoundError, PermissionError, OSError, ValueError):
+        return None
+    return (counters["workingset_refault_anon"], counters["workingset_refault_file"])
 
 
 #########################
@@ -1286,11 +1366,20 @@ class SystemState:
     collection will be insignificant)
     """
 
+    ## Class-level fallbacks.  SystemState objects are also built through
+    ## __new__ (notably in the test suite), and every consumer of these must
+    ## cope with them being absent anyway - (0, 0) refaults and no io_psi both
+    ## mean "no information", which is exactly the pre-5.9/pre-4.20 situation.
+    refaults: tuple[int, int] = (0, 0)
+    io_psi: dict[str, dict[str, float | int]] | None = None
+
     def __init__(self) -> None:
         self.timestamp: float = time.time()
         self.pagefaults: int | None = self.get_pagefaults()
         self.swapcount: tuple[int, ...] = self.get_swapcount()
         self.psi: dict[str, dict[str, float | int]] | None = get_memory_pressure()  # None if PSI not available
+        self.io_psi = get_io_pressure()  # None if PSI not available
+        self.refaults = get_workingset_refaults()  # (0, 0) on kernels below 5.9
         self.cooldown_counter: int = 0
         self.unfrozen_pid: tuple[int, ...] | list[int] | None = None
         self.timer_alert: bool = False
@@ -1353,17 +1442,78 @@ class SystemState:
 
         swap_product = (combined_in / effective_threshold) * (combined_out / effective_threshold)
 
+        ## Total swap traffic actually observed, unweighted.  Used to decide
+        ## whether there is enough of a swap signal to be worth amplifying.
+        raw_swap_in = delta_disk_in + delta_zswap_in
+        raw_swap_out = delta_disk_out + delta_zswap_out
+
+        ## IO-pressure veto: a saturated disk raises memory PSI through
+        ## page-cache refault alone.  When the disk is stalling everything and
+        ## swap is meanwhile idle, this is an IO problem and suspending
+        ## processes cannot help - it only moves a fixed IO budget from the
+        ## victims to whatever is hogging the device.
+        io_vetoed = False
+        if config.io_pressure_veto and self.io_psi and "full" in self.io_psi:
+            io_full = self.io_psi["full"].get("avg10", 0)
+            ## Gate on the unamplified swap signal, not on the PSI floor: the
+            ## veto only bites when PSI amplification is the sole reason we
+            ## would trigger.  Real thrashing clears swap_product > 1.0 on its
+            ## own and is therefore never vetoed, however busy the disk is.
+            if io_full > config.io_pressure_threshold and swap_product <= 1.0:
+                logging.debug(
+                    f"IO pressure veto: io full avg10={io_full}%, "
+                    f"swap in/out={raw_swap_in}/{raw_swap_out} - "
+                    f"IO starvation, not thrashing"
+                )
+                io_vetoed = True
+
         ## PSI weight: amplify swap signal when memory pressure is detected
         ## Uses "some" (at least one task stalled) rather than "full" (all CPUs stalled),
         ## because "full" can be near-zero even during heavy thrashing on multi-core systems.
         psi_weight = 1.0
-        if config.use_psi and self.psi and "some" in self.psi:
+        if not io_vetoed and config.use_psi and self.psi and "some" in self.psi:
             psi_some = self.psi["some"].get("avg10", 0)
-            psi_weight = 1.0 + psi_some / config.psi_threshold
-            if psi_weight > 1.0:
-                logging.debug(f"PSI weight applied: some avg10={psi_some}%, weight={psi_weight:.2f}")
 
-        ret = swap_product * psi_weight > 1.0
+            ## Only amplify a swap signal that actually exists.  Memory PSI is
+            ## a percentage and reaches 50%+ on page-cache churn, so without a
+            ## floor it can multiply a one-page trickle straight past 1.0.
+            if min(raw_swap_in, raw_swap_out) < config.psi_swap_floor:
+                logging.debug(
+                    f"PSI not applied: swap in/out={raw_swap_in}/{raw_swap_out} "
+                    f"below psi_swap_floor={config.psi_swap_floor}"
+                )
+            else:
+                ## Trust memory PSI only insofar as it is anon-driven.  A
+                ## refault of an anonymous page is thrashing; a refault of a
+                ## file page is usually just something reading more data than
+                ## fits in cache.  On kernels without the split counters the
+                ## delta is zero and the fraction stays 1.0 (no damping), and
+                ## so it does when either sample could not be read at all.
+                anon_fraction = 1.0
+                if self.refaults is not None and prev.refaults is not None:
+                    delta_anon = self.refaults[0] - prev.refaults[0]
+                    delta_file = self.refaults[1] - prev.refaults[1]
+                    total_refaults = delta_anon + delta_file
+                    ## A negative delta means the counters went backwards - a
+                    ## reset, a per-cpu fold - and that is missing information,
+                    ## not evidence of file-backed refaults.  Damping on it
+                    ## would turn the amplifier into a suppressor on garbage.
+                    if delta_anon >= 0 and delta_file >= 0 and total_refaults > 0:
+                        anon_fraction = delta_anon / total_refaults
+                        logging.debug(
+                            f"refault split: anon={delta_anon} file={delta_file} anon_fraction={anon_fraction:.3f}"
+                        )
+
+                psi_weight = 1.0 + (psi_some / config.psi_threshold) * anon_fraction
+                if psi_weight > 1.0:
+                    logging.debug(f"PSI weight applied: some avg10={psi_some}%, weight={psi_weight:.2f}")
+
+        ## A vetoed sample is a quiet sample, not an early return: it still has
+        ## to fall through to the counter bookkeeping below, or whatever was
+        ## suspended when the disk got busy would never be resumed.  (The veto
+        ## only fires when swap_product <= 1.0 and it leaves psi_weight at 1.0,
+        ## so the comparison below is already False - this is belt and braces.)
+        ret = not io_vetoed and swap_product * psi_weight > 1.0
         if diagnostic_log:
             diagnostic_log(
                 f"check_swap_threshold: "
@@ -1372,6 +1522,7 @@ class SystemState:
                 f"pswp_weight={pswp_weight} eff_threshold={effective_threshold:.0f} "
                 f"combined_in={combined_in:.1f} combined_out={combined_out:.1f} "
                 f"swap_product={swap_product:.4f} psi_weight={psi_weight:.2f} "
+                f"io_vetoed={io_vetoed} "
                 f"final={swap_product * psi_weight:.4f} trigger={ret}"
             )
         ## Increase or decrease the busy-counter ... or keep it where it is

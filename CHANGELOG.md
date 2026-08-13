@@ -7,6 +7,34 @@ and this project should adhere to [Semantic Versioning](https://semver.org/spec/
 
 For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
+## [Unreleased]
+
+### Fixed
+
+Thrash-protect could suspend processes on a busy system that was not
+thrashing at all.  Anything that reads more file data than fits in the page
+cache - a backup, a virus scan, a `find` across the whole disk - drives memory
+pressure up through page-cache refault, and that pressure was enough to
+amplify a couple of stray swap pages past the trigger.  The result was healthy
+services being stopped and restarted for hours while the process actually
+responsible ran undisturbed.
+
+Three things now have to agree before pressure counts as thrashing:
+
+* swap has to be moving in both directions, not just a page or two
+  (`--psi-swap-floor`, default 2 pages);
+* the pages coming back have to be anonymous rather than file-backed, on
+  kernels that report the two separately (Linux 5.9+);
+* the disk must not be so busy that it explains the stall on its own
+  (`--io-pressure-threshold`, default 50%; `--no-io-pressure-veto` to switch
+  this off).
+
+Swap traffic heavy enough to trigger unamplified is never suppressed, and
+kernels too old to report the new counters behave as before.  Amplification is
+now reduced in proportion to how file-backed the refaults are, so a box that is
+genuinely thrashing *and* reading a lot of file data is detected less eagerly
+than it was - deliberately, since that is the case the old code got wrong.
+
 ## [1.1.2] - 2026-04-12
 
 SSDs are different things than HDDs.  Some observations:

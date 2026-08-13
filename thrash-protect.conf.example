@@ -58,5 +58,19 @@ date_human_readable = true
 # At this value, swap sensitivity is doubled. Higher PSI = more amplification.
 # psi_threshold = 5.0
 
+# Minimum swap pages in each direction before PSI is allowed to amplify
+# (default: 2). Memory pressure also rises on page-cache refault, which is not
+# thrashing; without this floor it can amplify a one-page trickle past the
+# trigger. Raise it to make PSI amplification harder to reach.
+# psi_swap_floor = 2
+
+# Do not count pressure as thrashing when a saturated disk explains it on its
+# own (default: true). Suspending processes cannot fix an IO bottleneck.
+# io_pressure_veto = true
+
+# io full avg10 percentage at which the disk counts as saturated (default: 50.0)
+# Only consulted when io_pressure_veto is enabled.
+# io_pressure_threshold = 50.0
+
 # Pretend thrashing every 2^N iterations, for testing (default: 0 = disabled)
 # test_mode = 0
