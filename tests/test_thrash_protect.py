@@ -996,6 +996,231 @@ class TestPSI:
         assert result_zswap is False
 
 
+class TestIOStarvationFalsePositive:
+    """Regression tests for docs/incident-2026-08-09-io-starvation.md.
+
+    A whole-disk scan saturated the disk and evicted the page cache.  Memory
+    PSI rose to 55% on page-cache refault -- not on swap shortage; pswpin was
+    flat at zero -- and amplified a one-to-two page swap trickle past the
+    trigger.  6-11 innocent services stayed frozen for over two hours while
+    the scan responsible was never caught.
+    """
+
+    @staticmethod
+    def _pair(
+        swap_in,
+        swap_out,
+        psi_some=None,
+        refault_anon=0,
+        refault_file=0,
+        io_full=None,
+        interval=0.5,
+    ):
+        """Build a (prev, current) SystemState pair with explicit deltas."""
+        now = time.time()
+
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (0, 0, 0, 0)
+        prev.timer_alert = False
+        prev.timestamp = now - interval
+        prev.refaults = (0, 0)
+
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current.swapcount = (swap_in, swap_out, 0, 0)
+        current.psi = {"some": {"avg10": psi_some}} if psi_some is not None else None
+        current.timestamp = now
+        current.refaults = (refault_anon, refault_file)
+        current.io_psi = {"full": {"avg10": io_full}} if io_full is not None else None
+        return prev, current
+
+    ## --- fix 2: PSI may not amplify a swap trickle -------------------------
+
+    def test_psi_not_amplified_below_swap_floor(self):
+        """The incident sample: 1 page in, 2 out, memory PSI 55% -> no trigger.
+
+        Without the floor this yields swap_product 0.127 * psi_weight 12.1
+        = 1.54 > 1.0, which is exactly what froze postgres and spamd.
+        """
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        prev, current = self._pair(swap_in=1, swap_out=2, psi_some=55.53)
+
+        assert current.check_thrashing(prev) is False
+
+    def test_psi_still_amplifies_above_swap_floor(self):
+        """The amplifier must survive: 3 pages each way + PSI still triggers."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        # swap_product = (3/4)^2 = 0.5625; psi_weight = 1 + 15/5 = 4.0 -> 2.25
+        prev, current = self._pair(swap_in=3, swap_out=3, psi_some=15.0)
+
+        assert current.check_thrashing(prev) is True
+
+    ## --- fix 1: memory PSI is only trusted insofar as it is anon-driven ----
+
+    def test_psi_damped_when_refaults_are_file_dominated(self):
+        """File-dominated refaults mean the memory PSI is page-cache churn.
+
+        Swap deltas here clear the floor, so only the anon-fraction gate can
+        stop this one.
+        """
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        prev, current = self._pair(swap_in=2, swap_out=2, psi_some=55.53, refault_anon=5, refault_file=5000)
+
+        assert current.check_thrashing(prev) is False
+
+    def test_psi_amplified_when_refaults_are_anon_dominated(self):
+        """Genuine thrashing refaults anonymous pages -> full amplification."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        prev, current = self._pair(swap_in=2, swap_out=2, psi_some=55.53, refault_anon=5000, refault_file=5)
+
+        assert current.check_thrashing(prev) is True
+
+    def test_absent_refault_counters_preserve_old_behaviour(self):
+        """Pre-5.9 kernels have no workingset_refault_anon; do not damp there."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        prev, current = self._pair(swap_in=2, swap_out=2, psi_some=55.53, refault_anon=0, refault_file=0)
+
+        assert current.check_thrashing(prev) is True
+
+    ## --- fix 3: IO starvation is not thrashing ----------------------------
+
+    def test_io_pressure_vetoes_trigger_when_swap_is_idle(self):
+        """Saturated disk + negligible swap = an IO problem, not thrashing."""
+        thrash_protect.init_config(argparse.Namespace(config=None, psi_swap_floor=0))
+        prev, current = self._pair(swap_in=1, swap_out=2, psi_some=55.53, io_full=84.82)
+
+        assert current.check_thrashing(prev) is False
+
+    def test_without_io_pressure_the_same_sample_still_triggers(self):
+        """Control for the test above: the veto is what changed the outcome."""
+        thrash_protect.init_config(argparse.Namespace(config=None, psi_swap_floor=0))
+        prev, current = self._pair(swap_in=1, swap_out=2, psi_some=55.53, io_full=None)
+
+        assert current.check_thrashing(prev) is True
+
+    def test_io_pressure_does_not_veto_real_thrashing(self):
+        """Real thrashing also saturates the disk -- it must still trigger."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        prev, current = self._pair(
+            swap_in=100,
+            swap_out=100,
+            psi_some=90.0,
+            io_full=99.0,
+            refault_anon=5000,
+            refault_file=5,
+        )
+
+        assert current.check_thrashing(prev) is True
+
+    ## --- fix 3, continued: the veto must not freeze the bookkeeping --------
+
+    def test_io_pressure_veto_still_counts_down_the_cooldown(self):
+        """A vetoed sample is a quiet sample: it must let frozen pids go.
+
+        run() only unfreezes in the `not current.cooldown_counter` branch, so
+        a veto that returns before the counter is decremented would keep
+        whatever was suspended when the scan started suspended for the whole
+        scan -- the exact outcome this class exists to prevent.
+        """
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        prev, current = self._pair(swap_in=0, swap_out=0, psi_some=55.53, io_full=84.82, interval=5.0)
+        prev.cooldown_counter = 3
+
+        assert current.check_thrashing(prev) is False
+        assert current.cooldown_counter == 2
+
+    def test_io_pressure_veto_can_be_switched_off(self):
+        """--no-io-pressure-veto restores the unvetoed outcome."""
+        thrash_protect.init_config(argparse.Namespace(config=None, psi_swap_floor=0, io_pressure_veto=False))
+        prev, current = self._pair(swap_in=1, swap_out=2, psi_some=55.53, io_full=84.82)
+
+        assert current.check_thrashing(prev) is True
+
+    def test_io_pressure_threshold_boundary(self):
+        """The veto bites strictly above io_pressure_threshold, not at it."""
+        thrash_protect.init_config(argparse.Namespace(config=None, psi_swap_floor=0, io_pressure_threshold=50.0))
+
+        prev, current = self._pair(swap_in=1, swap_out=2, psi_some=55.53, io_full=50.0)
+        assert current.check_thrashing(prev) is True
+
+        prev, current = self._pair(swap_in=1, swap_out=2, psi_some=55.53, io_full=50.1)
+        assert current.check_thrashing(prev) is False
+
+    ## --- fix 1, continued: the refault split must not lie -----------------
+
+    def test_refault_read_failure_does_not_leak_lifetime_ratio(self):
+        """A failed /proc/vmstat read must not be read as "no refaults".
+
+        Otherwise the next interval computes its anon fraction against zero,
+        i.e. against the lifetime counters, and damps (or fails to damp) on a
+        ratio that has nothing to do with the interval.
+        """
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        prev, current = self._pair(swap_in=2, swap_out=2, psi_some=55.53, refault_anon=5, refault_file=5000)
+        prev.refaults = None  # previous sample could not be read
+
+        assert current.check_thrashing(prev) is True
+
+    def test_anon_fraction_is_clamped(self):
+        """A counter that goes backwards must not make psi_weight < 1.0."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        prev, current = self._pair(swap_in=2, swap_out=2, psi_some=55.53, refault_anon=0, refault_file=5000)
+        prev.refaults = (100, 0)  # anon went backwards, file shot up
+
+        assert current.check_thrashing(prev) is True
+
+    def test_get_workingset_refaults_read_failure(self):
+        """A read failure reports None, distinct from the pre-5.9 zeros."""
+        mock = FileMockup({})
+        with patch("thrash_protect.open", new=mock.open):
+            assert thrash_protect.get_workingset_refaults() is None
+
+    ## --- the off switch has to survive the config layers -------------------
+
+    def test_io_pressure_veto_is_settable_from_env(self):
+        """argparse must not mask a config-file or environment setting."""
+        parser = thrash_protect.create_argument_parser()
+        args = parser.parse_args([])
+        assert args.io_pressure_veto is None
+
+        with patch.dict(os.environ, {"THRASH_PROTECT_IO_PRESSURE_VETO": "0"}):
+            cfg, _ = thrash_protect.load_config(args)
+        assert cfg["io_pressure_veto"] is False
+
+    ## --- parsers -----------------------------------------------------------
+
+    def test_get_workingset_refaults(self):
+        """Parse workingset_refault_anon / _file out of /proc/vmstat."""
+        vmstat = (
+            b"nr_free_pages 12345\n"
+            b"workingset_refault_anon 26729497\n"
+            b"workingset_refault_file 251074206\n"
+            b"pgmajfault 28682345\n"
+        )
+        mock = FileMockup({"/proc/vmstat": vmstat})
+        with patch("thrash_protect.open", new=mock.open):
+            assert thrash_protect.get_workingset_refaults() == (26729497, 251074206)
+
+    def test_get_workingset_refaults_missing(self):
+        """Kernels below 5.9 lack the split counters; report zeros."""
+        mock = FileMockup({"/proc/vmstat": b"nr_free_pages 12345\npgmajfault 7\n"})
+        with patch("thrash_protect.open", new=mock.open):
+            assert thrash_protect.get_workingset_refaults() == (0, 0)
+
+    def test_get_io_pressure(self):
+        """Parse /proc/pressure/io in the same shape as memory pressure."""
+        io = (
+            b"some avg10=98.66 avg60=98.74 avg300=99.03 total=115710390755\n"
+            b"full avg10=84.82 avg60=42.26 avg300=56.53 total=97542922807\n"
+        )
+        mock = FileMockup({"/proc/pressure/io": io})
+        with patch("thrash_protect.open", new=mock.open):
+            with patch("thrash_protect.is_psi_available", return_value=True):
+                result = thrash_protect.get_io_pressure()
+        assert result["full"]["avg10"] == 84.82
+        assert result["some"]["avg10"] == 98.66
+
+
 class TestCgroupPressureSelector:
     """Tests for CgroupPressureProcessSelector."""
 

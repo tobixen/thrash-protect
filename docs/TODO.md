@@ -2,6 +2,14 @@
 
 Updated 2026-02-12 with GitHub issue cross-references.
 
+Background reading:
+[incident-2026-08-09-io-starvation.md](incident-2026-08-09-io-starvation.md) —
+a real false positive where IO starvation, not memory shortage, drove the
+trigger; several items below come from it.  Fixes 1–3 from that document (PSI
+swap floor, anon/file refault weighting, IO-pressure veto) are implemented;
+4–7 are still open, and fix 4 is the pgid rollup described under Fork Bomb
+Protection below.
+
 ## v1.1.0
 
 SSD-backed swap may go full rather quickly.  I want to extend the scope of thrash-protect to not only protect against heavy thrashing, but also to protect against OOM-situations.
@@ -22,11 +30,40 @@ SSD auto-detection was implemented in v1.1.  ZRAM swap may still need attention 
 
 Implemented as PSI amplification on swap-based detection. Configurable via `--use-psi`/`--no-psi` and `--psi-threshold`. Falls back to swap counting on older kernels.
 
+The amplifier is now gated, after it was found to convict on page-cache
+refault pressure alone — see
+[incident-2026-08-09-io-starvation.md](incident-2026-08-09-io-starvation.md).
+It requires a minimum swap signal in both directions (`--psi-swap-floor`), is
+scaled by the anonymous share of workingset refaults, and is vetoed outright
+when IO pressure explains the stall (`--io-pressure-threshold`).
+
+Two follow-ups from the review of that work:
+
+- The IO-pressure veto reads io `full`, while memory PSI deliberately reads
+  `some` because `full` under-reports on multi-core machines.  On the 1-vCPU
+  incident host `full` was 84.8 and the veto fires; on an 8-core box with one
+  thread stalled on IO, `full` can sit near zero while `some` is above 90, so
+  the veto may rarely fire where it is meant to.  Needs a measurement from a
+  multi-core host before changing.
+- `/proc/vmstat` is now parsed three times per interval (`get_pagefaults`,
+  `get_swapcount`, `get_workingset_refaults`), in a daemon that polls faster
+  the busier it gets.  One read into a dict of the handful of keys of interest
+  would do — related to fix 5 in the incident document, which criticises
+  thrash-protect for adding to the IO load it is reacting to.
+
 ### Fork Bomb Protection (GitHub #39)
 
 Thrash-protect does not protect sufficiently against fork bombs.  It should be more aggressive in suspending parent processes when a fork bomb is detected (rapid process creation from the same parent).
 
 Related to #12 (parent process freezing).
+
+The same rollup is needed for a non-malicious case: a fork-heavy batch job
+(`find / | xargs -n100 grep`) respawns its worker so fast that victim selection
+can never signal it, and falls through to innocent long-lived services instead.
+Aggregating `/proc/<pid>/io:read_bytes` and fault counters by pgid/session/cgroup
+would serve #39, #12 and that case at once.  See
+[incident-2026-08-09-io-starvation.md](incident-2026-08-09-io-starvation.md),
+fix 4.
 
 ### Parent Process Freezing / Job Control (GitHub #12)
 

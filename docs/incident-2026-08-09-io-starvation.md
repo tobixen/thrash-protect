@@ -4,7 +4,7 @@ A whole-disk `grep` on a small VM caused thrash-protect to suspend 6–11 innoce
 processes continuously for over two hours, while never catching the process
 responsible.  There was no thrashing: swap-in was **zero** and the major fault
 rate was ~1.4/s.  This document records the measurements, the trigger analysis,
-and proposed fixes.
+and the fixes.  Fixes 1–3 are implemented; 4–7 are still proposals.
 
 Host: broxbox05, Ubuntu jammy, kernel 5.15.0-76-generic, 1 vCPU, 1963 MB RAM,
 3906 MB swap (1297 MB in use), 80 GB `QEMU HARDDISK` on `mq-deadline`.
@@ -231,33 +231,62 @@ Under a hard IO ceiling the throughput argument also fails: the device was at
 It could only redistribute a fixed budget — and it redistributed it *from* the
 latency-sensitive services *to* the batch job.
 
-## Proposed fixes
+## Fixes
 
-Roughly in order of value.  Items 4 and 5 overlap with existing TODO entries;
+Items 1–3 are **implemented**; see the `[Unreleased]` CHANGELOG section.
+Items 4–7 remain proposals.  Items 4 and 5 overlap with existing TODO entries;
 see cross-references.
 
-**1. Make `workingset_refault_anon` the primary thrash signal.**
-It is literally "we evicted anonymous pages and had to fetch them back" — the
-definition of memory thrashing, without `pgmajfault`'s file-backed
-contamination.  `workingset_refault_file` must never trigger a memory-thrash
-response on its own.  Available since Linux 5.9; fall back to the current swap
-counters on older kernels.  This single change would have prevented the
-incident.
+**1. Trust memory PSI only insofar as it is anon-driven.** ✅ *implemented*
+`workingset_refault_anon` / `workingset_refault_file` (Linux 5.9+) are read each
+interval, and `psi_weight` is scaled by the anon share of refaults:
 
-**2. Gate the PSI amplifier on a real swap floor.**
-Require a minimum absolute swap signal in both directions before `psi_weight`
-may be applied at all.  Today, PSI can multiply a 2-page trickle past the
-trigger.  Note that in 1.1.2 the `0.1` epsilon is *not* the problem — with
-`pswp_weight` at 128 it is negligible — so this is about the amplifier, not the
-epsilon.
+```python
+psi_weight = 1.0 + (psi_some / psi_threshold) * anon_fraction
+```
 
-**3. Subtract IO pressure from memory pressure.**
-Read `/proc/pressure/io` alongside `/proc/pressure/memory`.  When `io.full`
-greatly exceeds `memory.full` (here 84.8 vs 46.6), the memory pressure is
-largely refault-off-a-saturated-disk rather than shortage; damp `psi_weight`
-accordingly.  Add a hard veto from `/proc/diskstats`: **~100% device busy with
-~0 swap delta is a positive identification of an IO problem**, and suspension is
-never the answer to one.
+During the incident file refaults dominated by better than 9:1, collapsing the
+weight from 12.1 to roughly 2.1.  On kernels without the split counters the
+delta is zero, the fraction stays 1.0, and behaviour is unchanged.
+
+*This differs from the original proposal, which was to make
+`workingset_refault_anon` the primary thrash signal outright.  That turned out
+to be the wrong framing: the existing signal is `(pswpin, pswpout, zswpin,
+zswpout)`, which is **already** anon-only, so replacing it buys nothing.  The
+contamination entered through the amplifier — memory PSI, which counts file
+refaults — so that is where the anon/file split belongs.*
+
+**2. Gate the PSI amplifier on a real swap floor.** ✅ *implemented*
+`--psi-swap-floor` (default 2 pages) is the minimum swap traffic required in
+**each** direction before `psi_weight` may be applied at all.  The incident
+sample was 1 page in, 2 out.
+
+Note that the `0.1` epsilon is *not* the problem in 1.1.2 — with `pswp_weight`
+at 128 it is negligible — so this is about the amplifier, not the epsilon.
+
+Worth recording, because it bounds how large the floor may usefully be:
+`pswp_weight` cancels out of `swap_product` for disk-only swap, since
+`combined = Δ·weight` and `effective_threshold = threshold·weight`.  The
+unamplified trigger therefore reduces to `Δin · Δout > swap_page_threshold²`,
+i.e. ~4 pages per direction at the default.  A floor at or above 4 would make
+the amplifier dead code, which is why it defaults to 2 and why fix 1 has to do
+the substantive work.
+
+**3. Do not treat IO starvation as thrashing.** ✅ *implemented*
+`/proc/pressure/io` is now read alongside `/proc/pressure/memory`.  When
+`io.full avg10` exceeds `--io-pressure-threshold` (default 50%) **and** the
+unamplified `swap_product` would not have triggered on its own, the check
+returns False.  `--no-io-pressure-veto` disables it.
+
+*Two deviations from the original proposal.  First, the signal is io PSI rather
+than `/proc/diskstats` busy%: PSI is already a percentage and needs no
+cross-interval delta sampling, so it costs one file read and no new state.
+Second, the proposal was to subtract IO pressure from memory pressure — that
+was rejected as unsafe, because genuine thrashing saturates the disk too (the
+swap IO **is** the disk load), so subtraction would suppress exactly the case
+the tool exists for.  Gating on "the raw swap signal would not have triggered
+anyway" is strictly safer: it cannot suppress real thrashing at any disk
+utilisation.*
 
 **4. Roll victim accounting up to the process group.**
 Aggregate `/proc/<pid>/io:read_bytes` and fault counters by pgid/session/cgroup
@@ -302,14 +331,25 @@ That preserves the load-control behaviour and only stops it firing when there is
 a single culprit that should be targeted instead.  It would have made the right
 call here: the `xargs` group owned essentially 100% of reads.
 
-## Suggested tests
+## Tests
 
-- PSI false positive: `in=1, out=2, psi_some=55`, HDD tuning → must **not**
-  trigger.
-- anon/file refault split: high `workingset_refault_file` with
-  `workingset_refault_anon` flat → must not trigger.
-- IO-saturation veto: ~100% `diskstats` busy with zero swap delta → must not
-  trigger.
+`tests/test_thrash_protect.py::TestIOStarvationFalsePositive` covers fixes 1–3.
+Each blocking test is paired with a control that must still trigger, so the
+suite fails if a fix degenerates into simply switching the amplifier off:
+
+| test | asserts |
+|---|---|
+| `test_psi_not_amplified_below_swap_floor` | the incident sample (1 in, 2 out, PSI 55%) does **not** trigger |
+| `test_psi_still_amplifies_above_swap_floor` | 3 pages each way + PSI still does |
+| `test_psi_damped_when_refaults_are_file_dominated` | file-dominated refaults do **not** trigger |
+| `test_psi_amplified_when_refaults_are_anon_dominated` | anon-dominated refaults do |
+| `test_absent_refault_counters_preserve_old_behaviour` | pre-5.9 kernels are unchanged |
+| `test_io_pressure_vetoes_trigger_when_swap_is_idle` | saturated disk + idle swap does **not** trigger |
+| `test_without_io_pressure_the_same_sample_still_triggers` | control: the veto is what changed the outcome |
+| `test_io_pressure_does_not_veto_real_thrashing` | heavy swap on a saturated disk still triggers |
+
+Still to write, for the proposals not yet implemented:
+
 - pgid rollup: a parent respawning short-lived high-IO children → the *parent
   group* must be selected, not a transient child.
 
