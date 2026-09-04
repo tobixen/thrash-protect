@@ -143,8 +143,23 @@ Note: The original proposal to use `/dev/shm` instead of `/tmp` (#26) is largely
 
 The default `cmd_whitelist` may need updating for modern systems:
 ```python
-['sshd', 'bash', 'xinit', 'X', 'spectrwm', 'screen', 'SCREEN',
- 'mutt', 'ssh', 'xterm', 'rxvt', 'urxvt', 'Xorg.bin', 'Xorg', 'systemd-journal']
+[
+    "sshd",
+    "bash",
+    "xinit",
+    "X",
+    "spectrwm",
+    "screen",
+    "SCREEN",
+    "mutt",
+    "ssh",
+    "xterm",
+    "rxvt",
+    "urxvt",
+    "Xorg.bin",
+    "Xorg",
+    "systemd-journal",
+]
 ```
 
 Consider adding:
