@@ -670,8 +670,9 @@ class TestDiagnosticLogging:
     def test_diagnostic_disabled_by_default(self):
         """Test that diagnostic_log is None (no-op) by default for release versions."""
         with patch.object(thrash_protect, "__version__", "1.2.0"):
-            thrash_protect.init_config(argparse.Namespace(config=None))
-            assert thrash_protect.diagnostic_log is None
+            with patch("thrash_protect.load_from_file", return_value={}):
+                thrash_protect.init_config(argparse.Namespace(config=None))
+                assert thrash_protect.diagnostic_log is None
 
     def test_diagnostic_enabled(self):
         """Test that diagnostic_log is set to _diagnostic_log when enabled."""
@@ -714,8 +715,9 @@ class TestDiagnosticLogging:
     def test_diagnostic_not_auto_enabled_for_release_version(self):
         """Test that diagnostic logging is not auto-enabled for release versions."""
         with patch.object(thrash_protect, "__version__", "1.2.0"):
-            thrash_protect.init_config(argparse.Namespace(config=None))
-            assert thrash_protect.diagnostic_log is None
+            with patch("thrash_protect.load_from_file", return_value={}):
+                thrash_protect.init_config(argparse.Namespace(config=None))
+                assert thrash_protect.diagnostic_log is None
 
     def test_diagnostic_explicit_disable_overrides_dev_version(self):
         """Test that explicitly disabling diagnostic overrides dev auto-enable."""
