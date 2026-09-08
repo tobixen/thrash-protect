@@ -1,6 +1,7 @@
 ## TODO: I had to add a symlink from thrash-protect to thrash_protect to get this to work ...
 
 import argparse
+import inspect
 import json
 import logging
 import os
@@ -2196,7 +2197,12 @@ class TestFreezeBlacklist:
         bl.add(pids)
         assert bl.is_blacklisted(pids)
 
-    def test_add_refreshes_skip_count(self):
+    def test_add_escalates_skip_count(self):
+        """Re-adding escalates rather than merely refreshing.
+
+        See TestBlacklistEscalation for the reasoning; this test only guards
+        that a re-offence never comes out *worse* off than the first offence.
+        """
         bl = thrash_protect.FreezeBlacklist(max_skip_count=3)
         pids = (100,)
         bl.add(pids)
@@ -2204,9 +2210,9 @@ class TestFreezeBlacklist:
         bl.should_skip_unfreeze(pids)
         bl.should_skip_unfreeze(pids)
         assert bl.entries[pids].skip_remaining == 1
-        # Re-add resets skip_remaining
+        # Re-add escalates the allowance instead of resetting it to the base
         bl.add(pids)
-        assert bl.entries[pids].skip_remaining == 3
+        assert bl.entries[pids].skip_remaining == 6
 
     def test_should_skip_unfreeze_decrements(self):
         bl = thrash_protect.FreezeBlacklist(max_skip_count=3)
@@ -2418,3 +2424,375 @@ class TestBlacklistConfig:
             thrash_protect.init_config(args)
         assert thrash_protect._tp.freeze_blacklist.expiry_time == 30.0
         assert thrash_protect._tp.freeze_blacklist.max_skip_count == 2
+
+
+class TestOOMFreezeHold:
+    """A freeze driven by OOM prediction must not be released by a swap-only all-clear.
+
+    The unfreeze criterion in the main loop is `cooldown_counter`, written by
+    check_swap_threshold from swap traffic and bumped by check_delay() on a timer
+    alert.  Neither measures memory headroom.  When swap is full there is no swap
+    traffic, so before this hold existed an OOM-driven freeze was released on the
+    very next tick "because the box is not thrashing", which is exactly the
+    condition it was frozen for.  See docs/incident-2026-09-03-swap-exhaustion.md.
+    """
+
+    def test_oom_hold_config_default(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect.config.oom_hold_ticks == 4
+
+    def test_oom_hold_config_cli(self):
+        args = argparse.Namespace(config=None, oom_hold_ticks=9)
+        thrash_protect.init_config(args)
+        assert thrash_protect.config.oom_hold_ticks == 9
+
+    def test_note_oom_freeze_arms_the_hold(self):
+        """Assert the literal, not config - comparing against the source it was
+        copied from cannot fail for any value, a negative one included."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        tp = thrash_protect.ThrashProtectState()
+        assert tp.oom_hold_counter == 0
+        tp.note_oom_freeze()
+        assert tp.oom_hold_counter == 4
+
+    def test_negative_hold_ticks_is_clamped(self):
+        """A negative value would make may_unfreeze() false for ever and send
+        the counter runaway-negative: nothing would ever be resumed again."""
+        args = argparse.Namespace(config=None, oom_hold_ticks=-1)
+        thrash_protect.init_config(args)
+        tp = thrash_protect.ThrashProtectState()
+        tp.note_oom_freeze()
+        assert tp.oom_hold_counter == 0
+        assert tp.may_unfreeze(0)
+
+    def test_zero_hold_ticks_disables_the_hold(self):
+        args = argparse.Namespace(config=None, oom_hold_ticks=0)
+        thrash_protect.init_config(args)
+        tp = thrash_protect.ThrashProtectState()
+        tp.note_oom_freeze()
+        assert tp.may_unfreeze(0)
+
+    def test_tick_from_negative_counter_does_not_run_away(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        tp = thrash_protect.ThrashProtectState()
+        tp.oom_hold_counter = -3
+        for _ in range(5):
+            tp.tick_oom_hold()
+        assert tp.oom_hold_counter == -3, "a negative counter must not be decremented further"
+
+    def test_state_cleanup_clears_the_hold(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        tp = thrash_protect.ThrashProtectState()
+        tp.note_oom_freeze()
+        with patch("thrash_protect.unlink"):
+            tp.cleanup()
+        assert tp.oom_hold_counter == 0
+
+    def test_may_unfreeze_blocked_while_hold_armed(self):
+        """The whole point: quiet swap (cooldown 0) must not release an OOM freeze."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        tp = thrash_protect.ThrashProtectState()
+        assert tp.may_unfreeze(0)
+        tp.note_oom_freeze()
+        assert not tp.may_unfreeze(0)
+
+    def test_hold_expires_after_configured_ticks(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        tp = thrash_protect.ThrashProtectState()
+        tp.note_oom_freeze()
+        for _ in range(thrash_protect.config.oom_hold_ticks):
+            assert not tp.may_unfreeze(0)
+            tp.tick_oom_hold()
+        assert tp.may_unfreeze(0)
+
+    def test_hold_does_not_go_negative(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        tp = thrash_protect.ThrashProtectState()
+        for _ in range(5):
+            tp.tick_oom_hold()
+        assert tp.oom_hold_counter == 0
+
+    def test_thrash_cooldown_still_blocks_unfreeze(self):
+        """The pre-existing swap-based criterion must keep working unchanged."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        tp = thrash_protect.ThrashProtectState()
+        assert not tp.may_unfreeze(1)
+
+    def test_state_reset_clears_the_hold(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        tp = thrash_protect.ThrashProtectState()
+        tp.note_oom_freeze()
+        tp.reset()
+        assert tp.oom_hold_counter == 0
+
+
+class TestBlacklistEscalation:
+    """A repeat offender must stay suspended longer than it did last time.
+
+    Design rule from the author: "If the computer looks clogged again after
+    resuming a process, stop the same process and leave it suspended for a little
+    bit longer than last time."  The original blacklist reset the allowance to
+    max_skip_count on every re-offence, so the hold never grew.
+    """
+
+    def test_escalation_config_default(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect.config.blacklist_escalation_cap == 8
+
+    def test_escalation_config_cli(self):
+        args = argparse.Namespace(config=None, blacklist_escalation_cap=2)
+        thrash_protect.init_config(args)
+        assert thrash_protect.config.blacklist_escalation_cap == 2
+
+    def test_first_offence_gets_base_allowance(self):
+        bl = thrash_protect.FreezeBlacklist(max_skip_count=3)
+        pids = (100,)
+        bl.add(pids)
+        assert bl.entries[pids].skip_remaining == 3
+
+    def test_reoffence_escalates_allowance(self):
+        bl = thrash_protect.FreezeBlacklist(max_skip_count=3)
+        pids = (100,)
+        bl.add(pids)
+        bl.add(pids)
+        assert bl.entries[pids].skip_remaining == 6
+        bl.add(pids)
+        assert bl.entries[pids].skip_remaining == 9
+
+    def test_escalation_restores_full_allowance_after_partial_consumption(self):
+        """Re-offending mid-hold must not lose the escalation already earned."""
+        bl = thrash_protect.FreezeBlacklist(max_skip_count=3)
+        pids = (100,)
+        bl.add(pids)
+        bl.add(pids)  # allowance now 6
+        bl.should_skip_unfreeze(pids)
+        bl.should_skip_unfreeze(pids)
+        assert bl.entries[pids].skip_remaining == 4
+        bl.add(pids)
+        assert bl.entries[pids].skip_remaining == 9
+
+    def test_escalation_is_capped(self):
+        bl = thrash_protect.FreezeBlacklist(max_skip_count=3, escalation_cap=2)
+        pids = (100,)
+        for _ in range(10):
+            bl.add(pids)
+        assert bl.entries[pids].skip_remaining == 6
+
+    @pytest.mark.parametrize("cap", [0, -1, -5])
+    def test_cap_below_one_never_shortens_the_hold(self, cap):
+        """A cap under 1 sits below the base allowance, so a re-offender would
+        come out with a *shorter* hold than a first offender - and at -1 the
+        allowance goes negative, which leaves the entry blacklisted (so still
+        preferred as a freeze target) while never being skipped on unfreeze."""
+        bl = thrash_protect.FreezeBlacklist(max_skip_count=3, escalation_cap=cap)
+        pids = (100,)
+        bl.add(pids)
+        first = bl.entries[pids].skip_remaining
+        bl.add(pids)
+        assert bl.entries[pids].skip_remaining >= first
+        assert bl.entries[pids].skip_remaining > 0
+
+    def test_cap_of_one_is_not_a_silent_noop(self):
+        bl = thrash_protect.FreezeBlacklist(max_skip_count=3, escalation_cap=1)
+        pids = (100,)
+        bl.add(pids)
+        bl.add(pids)
+        assert bl.entries[pids].skip_remaining == 3
+
+    def test_expiry_resets_escalation(self):
+        """A process that behaved for a whole expiry window starts over."""
+        bl = thrash_protect.FreezeBlacklist(expiry_time=10.0, max_skip_count=3)
+        pids = (100,)
+        bl.add(pids)
+        bl.add(pids)
+        assert bl.entries[pids].skip_remaining == 6
+        bl.entries[pids].last_refreshed = time.time() - 20.0
+        bl.expire()
+        bl.add(pids)
+        assert bl.entries[pids].skip_remaining == 3
+
+    def test_escalated_entry_is_skipped_that_many_times(self):
+        bl = thrash_protect.FreezeBlacklist(max_skip_count=2)
+        pids = (100,)
+        bl.add(pids)
+        bl.add(pids)  # allowance 4
+        skips = 0
+        while bl.should_skip_unfreeze(pids):
+            skips += 1
+            assert skips <= 10, "runaway"
+        assert skips == 4
+
+
+class TestBlacklistExpiryIsNotStarved:
+    """Entries must expire during a storm, when no unfreeze cycle ever runs.
+
+    expire() used to be called only from _pick_unfreeze_item(), which the OOM
+    hold and the busy gate can keep the loop out of for the whole event - so an
+    escalated allowance would persist however long blacklist_expiry_time was.
+    """
+
+    def test_expire_is_not_behind_the_unfreeze_gate(self):
+        src = inspect.getsource(thrash_protect.ThrashProtectState._pick_unfreeze_item)
+        assert "expire()" not in src, "expire() is back inside the unfreeze path"
+        assert "expire()" in inspect.getsource(thrash_protect.ThrashProtectState.run)
+
+
+class TestOOMHoldMainLoop:
+    """The main loop wiring itself - arming, aging, and the release gate.
+
+    TestOOMFreezeHold covers the three methods in isolation; this drives run()
+    so the placement of the calls is covered too.
+    """
+
+    class _FakeState:
+        def __init__(self, busy, cooldown=0):
+            self._busy = busy
+            self.cooldown_counter = cooldown
+            self.unfrozen_pid = None
+
+        def check_thrashing(self, prev):
+            return self._busy
+
+        def check_delay(self, *args):
+            return False
+
+        def get_sleep_interval(self):
+            return 0.0
+
+    class _Done(Exception):
+        pass
+
+    def _drive(self, script, oom_script, froze=(123,)):
+        """Run run() over a scripted sequence of (busy, cooldown) ticks.
+
+        Returns (freeze_calls, unfreeze_calls, hold_after_each_tick).
+        """
+        tp = thrash_protect.ThrashProtectState()
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        states = [self._FakeState(b, c) for b, c in script]
+        oom = list(oom_script)
+        holds = []
+
+        def next_state():
+            if not states:
+                raise self._Done
+            return states.pop(0)
+
+        predictor = MagicMock()
+        predictor.should_freeze.side_effect = lambda: oom.pop(0) if oom else False
+        tp.memory_predictor = predictor
+        tp.process_selector = MagicMock()
+        tp.freeze_something = MagicMock(return_value=froze)
+        tp.unfreeze_something = MagicMock(return_value=None)
+
+        real_expire = tp.freeze_blacklist.expire
+
+        def spy_expire():
+            holds.append(tp.oom_hold_counter)
+            return real_expire()
+
+        tp.freeze_blacklist.expire = spy_expire
+
+        with patch("thrash_protect.SystemState", side_effect=next_state):
+            try:
+                tp.run()
+            except self._Done:
+                pass
+        return tp.freeze_something, tp.unfreeze_something, holds
+
+    def test_oom_freeze_is_not_released_on_the_next_quiet_tick(self):
+        """The 2026-09-07 failure: predict, freeze, then a quiet tick released it."""
+        freeze, unfreeze, _ = self._drive(
+            script=[(False, 0)] * 4,
+            oom_script=[True, False, False],
+        )
+        assert freeze.call_count == 1
+        assert unfreeze.call_count == 0, "released while the OOM hold was armed"
+
+    def test_release_resumes_once_the_hold_has_aged_out(self):
+        freeze, unfreeze, _ = self._drive(
+            script=[(False, 0)] * 9,
+            oom_script=[True] + [False] * 8,
+        )
+        assert freeze.call_count == 1
+        assert unfreeze.call_count > 0, "hold never aged out"
+
+    def test_busy_ticks_do_not_consume_the_hold(self):
+        """Aging on a thrashing tick would spend a hold on ticks where nothing
+        could have been released anyway."""
+        # First state is consumed before the loop, so the prediction lands on
+        # iteration 1; should_freeze() is only reached on a non-busy tick.
+        _, _, holds = self._drive(
+            script=[(False, 0), (False, 0), (True, 0), (True, 0), (True, 0)],
+            oom_script=[True],
+        )
+        assert holds, "expire() never ran"
+        assert holds == [4, 4, 4, 4], f"hold aged on busy ticks: {holds}"
+
+    def test_prediction_that_froze_nothing_does_not_arm_the_hold(self):
+        freeze, unfreeze, _ = self._drive(
+            script=[(False, 0)] * 4,
+            oom_script=[True, False, False],
+            froze=(),
+        )
+        assert freeze.call_count == 1
+        assert unfreeze.call_count > 0, "a freeze that found nothing still blocked releases"
+
+
+class TestRefaultSplitDiagnostics:
+    """anon_fraction must be visible in the diagnostic line.
+
+    It is the gate that decides whether memory PSI may amplify at all, and with
+    --diagnostic on but --debug off it was reported only via logging.debug - i.e.
+    invisible in exactly the configuration recommended for capturing an incident.
+    """
+
+    def test_diagnostic_line_reports_anon_fraction(self):
+        captured = []
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        with patch.object(thrash_protect, "diagnostic_log", captured.append):
+            prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+            prev.swapcount = (0, 0, 0, 0)
+            prev.refaults = (0, 0)
+            prev.cooldown_counter = 0
+            prev.timer_alert = False
+            prev.timestamp = 1000.0
+
+            cur = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+            cur.swapcount = (10, 10, 0, 0)
+            cur.refaults = (30, 70)
+            cur.psi = {"some": {"avg10": 50.0}}
+            cur.io_psi = {"full": {"avg10": 0.0}}
+            cur.timestamp = 1001.0
+
+            cur.check_swap_threshold(prev)
+
+        line = "\n".join(captured)
+        assert "anon_fraction=0.300" in line, line
+
+    def test_diagnostic_line_says_n_a_when_never_computed(self):
+        """Below the swap floor the split is never computed.  Printing the 1.0
+        default there reads as "refaults were 100% anonymous", the exact inverse
+        of the truth in the swap-full case this field exists to diagnose."""
+        captured = []
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        with patch.object(thrash_protect, "diagnostic_log", captured.append):
+            prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+            prev.swapcount = (0, 0, 0, 0)
+            prev.refaults = (0, 0)
+            prev.cooldown_counter = 0
+            prev.timer_alert = False
+            prev.timestamp = 1000.0
+
+            cur = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+            cur.swapcount = (1, 0, 0, 0)  # below psi_swap_floor=2 in both directions
+            cur.refaults = (0, 100000)
+            cur.psi = {"some": {"avg10": 86.0}}
+            cur.io_psi = {"full": {"avg10": 0.0}}
+            cur.timestamp = 1001.0
+
+            cur.check_swap_threshold(prev)
+
+        line = "\n".join(captured)
+        assert "anon_fraction=n/a" in line, line
+        assert "anon_fraction=1.000" not in line, line

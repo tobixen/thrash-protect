@@ -213,6 +213,8 @@ CONFIG_SCHEMA = {
     "pswp_weight": (float, "THRASH_PROTECT_PSWP_WEIGHT", ["pswp-weight"]),
     "blacklist_expiry_time": (float, "THRASH_PROTECT_BLACKLIST_EXPIRY_TIME", ["blacklist-expiry-time"]),
     "blacklist_max_skip_count": (int, "THRASH_PROTECT_BLACKLIST_MAX_SKIP_COUNT", ["blacklist-max-skip-count"]),
+    "blacklist_escalation_cap": (int, "THRASH_PROTECT_BLACKLIST_ESCALATION_CAP", ["blacklist-escalation-cap"]),
+    "oom_hold_ticks": (int, "THRASH_PROTECT_OOM_HOLD_TICKS", ["oom-hold-ticks"]),
 }
 
 
@@ -330,6 +332,8 @@ def get_defaults() -> dict[str, Any]:
         "pswp_weight": None,  # Auto-set based on storage type (HDD=128, SSD=8)
         "blacklist_expiry_time": 60.0,  # Seconds before a blacklist entry expires
         "blacklist_max_skip_count": 3,  # Unfreeze cycles a blacklisted item gets skipped
+        "blacklist_escalation_cap": 8,  # Max allowance is this many times max_skip_count
+        "oom_hold_ticks": 4,  # Ticks an OOM-driven freeze is held despite quiet swap
     }
 
 
@@ -704,6 +708,20 @@ Example usage:
         type=int,
         metavar="N",
         help="Number of unfreeze cycles a blacklisted process gets skipped (default: 3)",
+    )
+    p.add_argument(
+        "--blacklist-escalation-cap",
+        dest="blacklist_escalation_cap",
+        type=int,
+        metavar="N",
+        help="Cap the escalated hold at this many times --blacklist-max-skip-count (default: 8)",
+    )
+    p.add_argument(
+        "--oom-hold-ticks",
+        dest="oom_hold_ticks",
+        type=int,
+        metavar="N",
+        help="Ticks an OOM-driven freeze is held even when swap is quiet (default: 4)",
     )
 
     return p
@@ -1302,6 +1320,7 @@ def init_config(args: argparse.Namespace | None = None) -> None:
     _tp.freeze_blacklist = FreezeBlacklist(
         expiry_time=config.blacklist_expiry_time,
         max_skip_count=config.blacklist_max_skip_count,
+        escalation_cap=config.blacklist_escalation_cap,
     )
     _tp.process_selector = GlobalProcessSelector(blacklist=_tp.freeze_blacklist)
 
@@ -1471,6 +1490,12 @@ class SystemState:
         ## Uses "some" (at least one task stalled) rather than "full" (all CPUs stalled),
         ## because "full" can be near-zero even during heavy thrashing on multi-core systems.
         psi_weight = 1.0
+        ## Hoisted out of the PSI block so the diagnostic line can report it.
+        ## None means "never computed" - the sample was vetoed, PSI was off or
+        ## the swap floor blocked amplification.  Reporting the 1.0 default
+        ## instead would read as "refaults were 100% anonymous", which is the
+        ## exact inverse of the truth in the swap-full case.
+        anon_fraction: float | None = None
         if not io_vetoed and config.use_psi and self.psi and "some" in self.psi:
             psi_some = self.psi["some"].get("avg10", 0)
 
@@ -1523,6 +1548,7 @@ class SystemState:
                 f"combined_in={combined_in:.1f} combined_out={combined_out:.1f} "
                 f"swap_product={swap_product:.4f} psi_weight={psi_weight:.2f} "
                 f"io_vetoed={io_vetoed} "
+                f"anon_fraction={'n/a' if anon_fraction is None else format(anon_fraction, '.3f')} "
                 f"final={swap_product * psi_weight:.4f} trigger={ret}"
             )
         ## Increase or decrease the busy-counter ... or keep it where it is
@@ -2191,11 +2217,15 @@ diagnostic_log = None
 class _BlacklistEntry:
     """A single entry in the freeze blacklist."""
 
-    __slots__ = ("last_refreshed", "skip_remaining")
+    __slots__ = ("last_refreshed", "skip_remaining", "allowance")
 
     def __init__(self, now: float, max_skip_count: int) -> None:
         self.last_refreshed: float = now
         self.skip_remaining: int = max_skip_count
+        ## The allowance this offender has earned.  Grows on re-offence; the
+        ## entry is discarded wholesale by expire(), so behaving for a full
+        ## expiry window is what resets it.
+        self.allowance: int = max_skip_count
 
 
 class FreezeBlacklist:
@@ -2207,17 +2237,36 @@ class FreezeBlacklist:
     2. Stay frozen longer (skipped during unfreeze cycles)
     """
 
-    def __init__(self, expiry_time: float = 60.0, max_skip_count: int = 3) -> None:
+    def __init__(self, expiry_time: float = 60.0, max_skip_count: int = 3, escalation_cap: int = 8) -> None:
         self.entries: dict[tuple[int, ...], _BlacklistEntry] = {}
         self.expiry_time: float = expiry_time
         self.max_skip_count: int = max_skip_count
+        ## Below 1 the cap would sit under the base allowance, so a re-offender
+        ## would come out with a *shorter* hold than a first offender.
+        self.escalation_cap: int = max(1, escalation_cap)
 
     def add(self, pids: tuple[int, ...] | list[int]) -> None:
-        """Add or refresh a blacklist entry, resetting skip_remaining."""
+        """Add a blacklist entry, or escalate an existing one.
+
+        A first offence gets max_skip_count.  Each re-offence adds another
+        max_skip_count to the allowance, capped at max_skip_count *
+        escalation_cap, so a process that keeps re-thrashing on resume stays
+        suspended longer each time round rather than getting the same short
+        hold forever.  Escalation survives partial consumption of the current
+        allowance; only expire() takes it away.
+        """
         pids = tuple(pids)
         now = time.time()
-        self.entries[pids] = _BlacklistEntry(now, self.max_skip_count)
-        logging.debug("blacklisted pids %s (skip_remaining=%d)" % (pids, self.max_skip_count))
+        entry = self.entries.get(pids)
+        if entry is None:
+            self.entries[pids] = _BlacklistEntry(now, self.max_skip_count)
+            logging.debug("blacklisted pids %s (skip_remaining=%d)" % (pids, self.max_skip_count))
+            return
+        cap = self.max_skip_count * self.escalation_cap
+        entry.allowance = min(entry.allowance + self.max_skip_count, cap)
+        entry.skip_remaining = entry.allowance
+        entry.last_refreshed = now
+        logging.debug("blacklist escalated for pids %s (skip_remaining=%d)" % (pids, entry.skip_remaining))
 
     def is_blacklisted(self, pids: tuple[int, ...] | list[int]) -> bool:
         """Check if a PID tuple is currently blacklisted."""
@@ -2260,6 +2309,9 @@ class ThrashProtectState:
 
     def __init__(self) -> None:
         self.frozen_items: list[tuple[str, ...]] = []
+        ## Ticks remaining before an OOM-driven freeze may be released.  See
+        ## note_oom_freeze() for why the swap-based cooldown cannot serve here.
+        self.oom_hold_counter: int = 0
         self.frozen_cgroup_paths: set[str] = set()
         self.num_unfreezes: int = 0
         self.freeze_blacklist: FreezeBlacklist = FreezeBlacklist()
@@ -2272,6 +2324,7 @@ class ThrashProtectState:
     def reset(self) -> None:
         """Reset all state (useful for testing)."""
         self.frozen_items = []
+        self.oom_hold_counter = 0
         self.frozen_cgroup_paths.clear()
         self.num_unfreezes = 0
         self.freeze_blacklist = FreezeBlacklist()
@@ -2282,6 +2335,43 @@ class ThrashProtectState:
     def get_all_frozen_pids(self) -> list[tuple[int, ...]]:
         """Get combined list of all frozen pids (both SIGSTOP and cgroup frozen)."""
         return [unpack_frozen_item(item)[2] for item in self.frozen_items]
+
+    def note_oom_freeze(self) -> None:
+        """Arm the hold that stops an OOM-driven freeze being released at once.
+
+        The unfreeze criterion in the main loop is `cooldown_counter`, which is
+        written by check_swap_threshold from swap traffic and bumped by
+        check_delay() on a timer alert.  Neither measures memory headroom, so a
+        freeze ordered by the OOM predictor has nothing holding it: when swap is
+        full there is no swap traffic to count, the counter is already zero, and
+        the next tick resumes the process "because the box is not thrashing" -
+        which is precisely the situation it was frozen for.
+
+        The hold is global, not per-process: while it is armed *nothing* is
+        resumed, including items suspended earlier by the swap detector.  A
+        prediction says the whole box is in trouble, so that is the intended
+        reading, but it is deliberately modest - it is not an attempt to decide
+        how long any one process should stay down.  A repeat offender earns a
+        longer hold through FreezeBlacklist escalation instead.
+
+        A negative `oom_hold_ticks` would make `may_unfreeze()` false for ever
+        and send the counter runaway-negative, so it is clamped here rather than
+        trusted; 0 disables the hold.
+        """
+        self.oom_hold_counter = max(0, config.oom_hold_ticks)
+
+    def tick_oom_hold(self) -> None:
+        """Age the OOM hold by one tick.  Call once per loop iteration."""
+        if self.oom_hold_counter > 0:
+            self.oom_hold_counter -= 1
+
+    def may_unfreeze(self, cooldown_counter: int) -> bool:
+        """Whether anything may be resumed this tick.
+
+        Both criteria have to agree: no thrashing (the swap-based cooldown) and
+        no OOM hold outstanding.
+        """
+        return not cooldown_counter and not self.oom_hold_counter
 
     def freeze_something(self, pids_to_freeze: tuple[int, ...] | list[int] | int | None = None) -> tuple[int, ...]:
         pids_to_freeze = normalize_pids(pids_to_freeze or self.process_selector.scan())
@@ -2348,10 +2438,6 @@ class ThrashProtectState:
         opposite end of the list.  If all items are blacklisted, the first
         candidate is unfrozen anyway to avoid deadlock.
         """
-        # Expire old blacklist entries once per unfreeze cycle, even if nothing
-        # is frozen — otherwise entries linger until the next freeze event.
-        self.freeze_blacklist.expire()
-
         if not self.frozen_items:
             return None
 
@@ -2429,6 +2515,7 @@ class ThrashProtectState:
 
     def cleanup(self) -> None:
         """Clean up if exiting due to an exception."""
+        self.oom_hold_counter = 0
         self.freeze_blacklist.clear()
         self.frozen_cgroup_paths.clear()
         for item in self.frozen_items:
@@ -2480,16 +2567,36 @@ class ThrashProtectState:
 
             ## If we're thrashing or OOM is predicted, then freeze something.
             if busy or oom_predicted:
-                self.freeze_something()
-                if oom_predicted and self.memory_predictor:
+                froze = self.freeze_something()
+                if oom_predicted:
+                    ## Hold it down for a few ticks - the swap-based cooldown
+                    ## counter says nothing about memory exhaustion and would
+                    ## release it on the very next tick.  Only if we actually
+                    ## suspended something: arming on a prediction that found
+                    ## nothing to freeze would block unrelated releases for
+                    ## nothing.
+                    if froze:
+                        self.note_oom_freeze()
                     # Old observations reflect pre-freeze memory trends and
                     # would immediately re-trigger.  Reset so the short scale
                     # can quickly assess whether the freeze helped.
                     self.memory_predictor.reset()
-            elif not current.cooldown_counter:
-                ## If no swapping has been observed for a while and no OOM predicted,
-                ## then unfreeze something.
+            elif self.may_unfreeze(current.cooldown_counter):
+                ## If no swapping has been observed for a while and no OOM
+                ## freeze is still being held, then unfreeze something.
                 current.unfrozen_pid = self.unfreeze_something()
+
+            ## Age the hold only on a tick where releasing was actually on the
+            ## table.  `oom_predicted` is only computed when `busy` is false, so
+            ## aging on every non-predicting tick would let thrashing ticks -
+            ## on which nothing could be released anyway - eat the whole hold.
+            if not busy and not oom_predicted:
+                self.tick_oom_hold()
+
+            ## Blacklist bookkeeping, once per iteration.  It used to live in
+            ## _pick_unfreeze_item(), which the unfreeze gate above can now keep
+            ## us out of for a whole storm - and then no entry would ever expire.
+            self.freeze_blacklist.expire()
 
             self.process_selector.update(prev, current)
 
