@@ -35,6 +35,37 @@ now reduced in proportion to how file-backed the refaults are, so a box that is
 genuinely thrashing *and* reading a lot of file data is detected less eagerly
 than it was - deliberately, since that is the case the old code got wrong.
 
+A process suspended because memory was being consumed rapidly could be resumed
+on the very next tick, on the grounds that the box was not thrashing.  With
+swap full there is no swap traffic to observe, so that all-clear was answering
+a question it had never measured, and the process it had just stopped was let
+straight back in.  After an OOM-driven suspension nothing is now resumed for a
+few ticks (`--oom-hold-ticks`, default 4; 0 disables it).  The hold is
+system-wide rather than per-process - a prediction says the whole box is in
+trouble - and it is not armed by a prediction that found nothing to suspend.
+
+A process that caused the box to clog again immediately after being resumed was
+supposed to stay suspended longer the next time round, but the repeat-offender
+blacklist reset its allowance on every re-offence, so the hold never grew.  The
+allowance now grows with each re-offence, up to
+`--blacklist-escalation-cap` times `--blacklist-max-skip-count` (default 8 x 3),
+and a process that behaves for a whole expiry window starts over.  Expiry is
+now checked once per cycle rather than only when something is resumed, so an
+escalated hold really does lapse during a long event.
+
+### Changed
+
+The packaged systemd unit now asks for `Nice=-15` and `OOMScoreAdjust=-900`,
+and limits its own restart rate.  The daemon has to be able to observe and act
+while the machine is stalled, which is exactly when it is least likely to be
+scheduled; `mlockall()` kept its pages resident but nothing protected its CPU
+share.
+
+`--diagnostic` output now reports `anon_fraction` alongside `io_vetoed` in the
+`check_swap_threshold` line - it scales how hard memory PSI amplifies the swap
+signal, and was previously visible only with `--debug`.  It reads `n/a` when
+the sample never got as far as computing it.
+
 ## [1.1.2] - 2026-04-12
 
 SSDs are different things than HDDs.  Some observations:

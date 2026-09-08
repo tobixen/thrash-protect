@@ -1,10 +1,34 @@
 [Unit]
 Description=Thrash protecting daemon
 
+# Don't turn a capability failure into a silent outage: Nice= is applied in
+# systemd's exec_child(), and without CAP_SYS_NICE the service fails to start
+# rather than warning.  With Restart=always and no limits that is a tight
+# restart loop ending with the protection daemon not running at all.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
 [Service]
 ExecStart=/usr/sbin/thrash-protect
 KillMode=process
 Restart=always
+RestartSec=5
+
+# The daemon has to observe and act while the box is stalled, which is exactly
+# when it is least likely to be scheduled: during the incident in
+# docs/incident-2026-09-03-swap-exhaustion.md it managed 19 loop iterations in
+# 51 seconds against 2/s nominal, and that alone blinded its OOM predictor.
+# mlockall() keeps its pages resident; nothing protected its CPU share.
+Nice=-15
+
+# Deliberately no IOSchedulingClass: the daemon does no block IO worth
+# prioritising.  It reads procfs and appends to a log that kernel writeback
+# flushes on its own priority, and on an nvme device with the `none` scheduler
+# there is nothing to honour ioprio anyway.
+
+# Never a candidate for the OOM killer - reaping the thrash protector during a
+# memory emergency removes the one process trying to resolve it.
+OOMScoreAdjust=-900
 
 [Install]
 WantedBy=multi-user.target
