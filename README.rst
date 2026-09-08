@@ -366,6 +366,16 @@ by weighting - randomly stopping blacklisted processes may not be
 sufficient to stop thrashing, and a whitelisted process may still be
 particularly nasty and stopped.
 
+Note also what whitelisting does *not* do: it lowers the score for being
+suspended, and nothing more.  It does not keep a process's pages resident.
+Once the kernel runs short enough to start evicting executable pages, a
+whitelisted terminal refaults its own code on every scheduling quantum and
+becomes unusable without ever being stopped - see
+``docs/incident-2026-09-03-swap-exhaustion.md``.  Keeping a terminal genuinely
+responsive through a memory emergency needs page residency, which on cgroup v2
+means ``memory.min`` (or ``MemoryMin=`` on the session scope) rather than
+anything thrash-protect currently offers.
+
 With this approach, hopefully the most-thrashing processes will be
 slowed down sufficiently that it will always be possible to ssh into a
 thrashing box and see what's going on.
