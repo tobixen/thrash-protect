@@ -1164,18 +1164,22 @@ class MemoryExhaustionPredictor:
 
         # Optional low_pct threshold (effectively disabled at 100%)
         avail_pct = available / total * 100 if total > 0 else 100.0
-        if diagnostic_log:
-            diagnostic_log(
-                f"OOM predictor: mem_avail={mem_available}kB swap_free={swap_free}kB "
-                f"available={available:.0f} total={total:.0f} ({avail_pct:.1f}%) "
-                f"observations={len(self._observations)}"
-            )
+        summary = (
+            f"OOM predictor: mem_avail={mem_available}kB swap_free={swap_free}kB "
+            f"available={available:.0f} total={total:.0f} ({avail_pct:.1f}%) "
+            f"observations={len(self._observations)}"
+        )
         if total > 0 and avail_pct >= self.low_pct:
-            if diagnostic_log:
-                diagnostic_log(f"OOM predictor: {avail_pct:.1f}% >= low_pct {self.low_pct:.1f}%, skipping")
+            if diagnostic_log and _tp.diagnostic_heartbeat_due("oom_predictor", now):
+                diagnostic_log(f"{summary} | {avail_pct:.1f}% >= low_pct {self.low_pct:.1f}%, skipping")
             return None
 
         min_eta: float | None = None
+        ## One fragment per scale, joined into a single diagnostic line.  The
+        ## line is written only when some scale is within twice its horizon,
+        ## or as a heartbeat once a minute - otherwise it is every tick.
+        scale_notes: list[str] = []
+        noteworthy = False
         for scale in self._SCALES:
             target_window = self.observation_window * scale
             target_horizon = target_window * self._horizon_ratio
@@ -1186,11 +1190,7 @@ class MemoryExhaustionPredictor:
             tolerance = target_window * 0.5
             past = self._find_observation_at(target_time, tolerance)
             if past is None:
-                if diagnostic_log:
-                    diagnostic_log(
-                        f"OOM predictor scale={scale:.4f} (window={target_window:.1f}s): "
-                        f"no past observation within ±{tolerance:.1f}s of {target_window:.1f}s ago"
-                    )
+                scale_notes.append(f"{target_window:g}s: no sample")
                 continue
 
             past_time, past_available = past
@@ -1200,11 +1200,7 @@ class MemoryExhaustionPredictor:
 
             # Not declining at this scale
             if available >= past_available:
-                if diagnostic_log:
-                    diagnostic_log(
-                        f"OOM predictor scale={scale:.4f} (window={target_window:.1f}s): "
-                        f"stable or rising (past={past_available:.0f} now={available:.0f})"
-                    )
+                scale_notes.append(f"{target_window:g}s: stable or rising")
                 continue
 
             dt = now - past_time
@@ -1216,22 +1212,19 @@ class MemoryExhaustionPredictor:
                 continue
 
             eta = available / decline_rate
-
-            if diagnostic_log:
-                diagnostic_log(
-                    f"OOM predictor scale={scale:.4f} (window={target_window:.1f}s "
-                    f"horizon={target_horizon:.1f}s): "
-                    f"decline={decline_rate:.1f}kB/s eta={eta:.0f}s "
-                    f"{'TRIGGERED' if eta < target_horizon else 'within horizon, no trigger'}"
-                )
+            scale_notes.append(
+                f"{target_window:g}s: decline={decline_rate:.1f}kB/s eta={eta:.0f}s horizon={target_horizon:g}s "
+                f"{'TRIGGERED' if eta < target_horizon else 'beyond horizon'}"
+            )
+            if eta < 2 * target_horizon:
+                noteworthy = True
 
             if eta < target_horizon and (min_eta is None or eta < min_eta):
                 min_eta = eta
 
-        if diagnostic_log:
-            diagnostic_log(
-                f"OOM predictor result: {'FREEZE predicted, min_eta=' + f'{min_eta:.0f}s' if min_eta is not None else 'no trigger'}"
-            )
+        if diagnostic_log and (noteworthy or _tp.diagnostic_heartbeat_due("oom_predictor", now)):
+            result = f"FREEZE predicted, min_eta={min_eta:.0f}s" if min_eta is not None else "no trigger"
+            diagnostic_log(" | ".join([summary, *scale_notes, result]))
         return min_eta
 
     def reset(self) -> None:
@@ -1539,10 +1532,19 @@ class SystemState:
         ## only fires when swap_product <= 1.0 and it leaves psi_weight at 1.0,
         ## so the comparison below is already False - this is belt and braces.)
         ret = not io_vetoed and swap_product * psi_weight > 1.0
-        if diagnostic_log:
+        ## Quiet samples (far below the trigger, nothing vetoed, nothing frozen
+        ## or cooling down) are logged only as a once-a-minute heartbeat; they
+        ## made up 99% of --diagnostic output.
+        if diagnostic_log and (
+            ret
+            or io_vetoed
+            or swap_product * psi_weight >= 0.01
+            or prev.cooldown_counter
+            or _tp.diagnostic_heartbeat_due("check_swap_threshold", self.timestamp)
+        ):
             diagnostic_log(
                 f"check_swap_threshold: "
-                f"disk_in={delta_disk_in} disk_out={delta_disk_out} "
+                f"pswp_in={delta_disk_in} pswp_out={delta_disk_out} "
                 f"zswap_in={delta_zswap_in} zswap_out={delta_zswap_out} "
                 f"pswp_weight={pswp_weight} eff_threshold={effective_threshold:.0f} "
                 f"combined_in={combined_in:.1f} combined_out={combined_out:.1f} "
@@ -1606,7 +1608,9 @@ class SystemState:
         """
         delta = time.time() - self.timestamp - expected_delay
         if delta > config.max_acceptable_time_delta:
-            logging.info(
+            ## Routine at debug level, but it is the only trace of the daemon
+            ## itself stalling, so --diagnostic keeps it.
+            (diagnostic_log or logging.debug)(
                 "relatively big time delta observed. interval: %s cooldown_counter: %s expected delay: %s max acceptable delta: %s delta: %s time: %s frozen pids: %s.  (this message is to be expected every now and then as the max acceptable delta parameter is autotuned)"
                 % (
                     config.interval,
@@ -2103,7 +2107,7 @@ def get_process_info(pid: int) -> str:
         else:
             return "No information available, the process was probably killed or 'ps' returns unexpected output."
     except Exception:
-        logging.error("Could not fetch process user information, the process is probably gone")
+        logging.info("Could not fetch process user information, the process is probably gone")
         return "problem fetching process information"
 
 
@@ -2317,6 +2321,8 @@ class ThrashProtectState:
         self.freeze_blacklist: FreezeBlacklist = FreezeBlacklist()
         self.process_selector: GlobalProcessSelector = GlobalProcessSelector(blacklist=self.freeze_blacklist)
         self.memory_predictor: MemoryExhaustionPredictor | None = None
+        ## Last time each periodic diagnostic heartbeat was written.
+        self.diagnostic_heartbeats: dict[str, float] = {}
         # Lazily cached cgroup path for our own process.
         # Sentinel "_unset" distinguishes "not computed" from None (no cgroup).
         self._own_cgroup_path: str | None = "_unset"
@@ -2330,7 +2336,23 @@ class ThrashProtectState:
         self.freeze_blacklist = FreezeBlacklist()
         self.process_selector = GlobalProcessSelector(blacklist=self.freeze_blacklist)
         self.memory_predictor = None
+        self.diagnostic_heartbeats = {}
         self._own_cgroup_path = "_unset"
+
+    def diagnostic_heartbeat_due(self, key: str, now: float, interval: float = 60.0) -> bool:
+        """Whether a quiet diagnostic line for `key` should be written now.
+
+        Always while anything is frozen - those ticks explain how long it
+        stays frozen - and otherwise at most once per `interval` seconds, the
+        first time included.  A clock stepping backwards counts as due.
+        """
+        if self.frozen_items:
+            return True
+        last = self.diagnostic_heartbeats.get(key)
+        if last is not None and 0 <= now - last < interval:
+            return False
+        self.diagnostic_heartbeats[key] = now
+        return True
 
     def get_all_frozen_pids(self) -> list[tuple[int, ...]]:
         """Get combined list of all frozen pids (both SIGSTOP and cgroup frozen)."""

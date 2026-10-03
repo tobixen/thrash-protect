@@ -9,6 +9,7 @@ import signal
 import tempfile
 import time
 from io import BytesIO, StringIO
+from subprocess import CalledProcessError
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -2796,3 +2797,167 @@ class TestRefaultSplitDiagnostics:
         line = "\n".join(captured)
         assert "anon_fraction=n/a" in line, line
         assert "anon_fraction=1.000" not in line, line
+
+
+class TestLogMessages:
+    """Wording and levels of log output, checked against a live debug log."""
+
+    def test_predictor_says_beyond_horizon_when_not_triggering(self):
+        """eta=1144s with horizon=600s was logged as 'within horizon, no trigger'."""
+        messages = []
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+        with patch("thrash_protect.diagnostic_log", messages.append):
+            with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
+                with patch("time.time", return_value=1000.0):
+                    predictor.update_and_predict()
+            # available 16M -> 15M in 60s: eta = 900s, beyond the 600s horizon
+            with patch("thrash_protect.read_meminfo", return_value=(3000000, 6000000, 16000000, 8000000)):
+                with patch("time.time", return_value=1060.0):
+                    assert predictor.update_and_predict() is None
+        eta_lines = [m for m in messages if "eta=" in m]
+        assert eta_lines
+        assert all("beyond horizon" in m and "within horizon" not in m for m in eta_lines)
+
+    def test_time_delta_message_is_debug(self, caplog):
+        """The message itself says it is expected; it was logged 280 times at INFO in 11 hours."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        state = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        state.timestamp = time.time() - 10
+        state.cooldown_counter = 0
+        messages = []
+        with caplog.at_level(logging.INFO):
+            with patch("thrash_protect.diagnostic_log", messages.append):
+                state.check_delay()
+        assert not [r for r in caplog.records if "time delta" in r.getMessage()]
+        # ...but it is the only trace of the daemon itself stalling, so --diagnostic keeps it
+        assert [m for m in messages if "time delta" in m]
+
+    def test_vanished_process_is_not_an_error(self, caplog):
+        with caplog.at_level(logging.INFO):
+            with patch("thrash_protect.check_output", side_effect=CalledProcessError(1, "ps")):
+                assert thrash_protect.get_process_info(12345) == "problem fetching process information"
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+    def test_swap_diagnostic_uses_kernel_counter_names(self):
+        """'disk_in' is wrong on zram, where the same counter is compressed RAM."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        messages = []
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (0, 0, 0, 0)
+        prev.timer_alert = False
+        prev.timestamp = time.time() - 1.0
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current.psi = None
+        current.timestamp = time.time()
+        current.swapcount = (3, 4, 0, 0)
+        with patch("thrash_protect.diagnostic_log", messages.append):
+            current.check_thrashing(prev)
+        line = next(m for m in messages if m.startswith("check_swap_threshold"))
+        assert "pswp_in=3 pswp_out=4" in line
+        assert "disk_in" not in line
+
+
+class TestDiagnosticVolume:
+    """--diagnostic wrote 184k lines in 11 hours, 99.9% of them 'no trigger'.
+
+    Quiet ticks are now summarised by a heartbeat once a minute; anything
+    near a threshold is still logged every tick.
+    """
+
+    @staticmethod
+    def _swap_tick(prev_swapcount, swapcount, now):
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = prev_swapcount
+        prev.timer_alert = False
+        prev.timestamp = now - 0.5
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current.psi = None
+        current.timestamp = now
+        current.swapcount = swapcount
+        with patch("time.time", return_value=now):
+            current.check_thrashing(prev)
+
+    def test_quiet_swap_ticks_log_once_a_minute(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        messages = []
+        with patch("thrash_protect.diagnostic_log", messages.append):
+            for i in range(240):  # two minutes of 0.5s ticks with no swap traffic
+                self._swap_tick((0, 0, 0, 0), (0, 0, 0, 0), 1000.0 + i * 0.5)
+        assert len([m for m in messages if m.startswith("check_swap_threshold")]) == 2
+
+    def test_swap_ticks_near_threshold_always_logged(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        messages = []
+        with patch("thrash_protect.diagnostic_log", messages.append):
+            for i in range(10):
+                # 1 page each way: final = (8.1/32)^2 ≈ 0.064, well short of a trigger
+                self._swap_tick((0, 0, 0, 0), (1, 1, 0, 0), 1000.0 + i * 0.5)
+        assert len([m for m in messages if m.startswith("check_swap_threshold")]) == 10
+
+    @staticmethod
+    def _predict(predictor, meminfo, now):
+        with patch("thrash_protect.read_meminfo", return_value=meminfo):
+            with patch("time.time", return_value=now):
+                return predictor.update_and_predict()
+
+    def test_predictor_writes_one_line_per_tick(self):
+        messages = []
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+        with patch("thrash_protect.diagnostic_log", messages.append):
+            self._predict(predictor, (4000000, 6000000, 16000000, 8000000), 1000.0)
+            messages.clear()
+            # 5s later, steep decline: the short scale triggers
+            self._predict(predictor, (3000000, 5000000, 16000000, 8000000), 1005.0)
+        assert len(messages) == 1
+        assert "FREEZE predicted" in messages[0]
+
+    def test_predictor_quiet_ticks_log_once_a_minute(self):
+        messages = []
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+        with patch("thrash_protect.diagnostic_log", messages.append):
+            for i in range(240):  # two minutes of stable memory
+                self._predict(predictor, (4000000, 6000000, 16000000, 8000000), 1000.0 + i * 0.5)
+        assert len([m for m in messages if m.endswith("no trigger")]) == 2  # heartbeats at 1000.5 and 1060.5
+
+    def test_quiet_ticks_logged_while_something_is_frozen(self):
+        """The ticks walking cooldown_counter down to an unfreeze answer 'why was X frozen so long'."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        thrash_protect._tp.frozen_items = [("1234",)]
+        messages = []
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+        with patch("thrash_protect.diagnostic_log", messages.append):
+            for i in range(10):
+                self._swap_tick((0, 0, 0, 0), (0, 0, 0, 0), 1000.0 + i * 0.5)
+                self._predict(predictor, (4000000, 6000000, 16000000, 8000000), 1000.0 + i * 0.5)
+        assert len([m for m in messages if m.startswith("check_swap_threshold")]) == 10
+        assert len([m for m in messages if m.endswith("no trigger")]) == 9  # the first tick has one observation
+
+    def test_heartbeat_survives_clock_stepping_back(self):
+        assert thrash_protect._tp.diagnostic_heartbeat_due("k", 1000.0)
+        assert not thrash_protect._tp.diagnostic_heartbeat_due("k", 1030.0)
+        assert thrash_protect._tp.diagnostic_heartbeat_due("k", 500.0)
+
+    def test_low_pct_skip_is_throttled(self):
+        messages = []
+        predictor = thrash_protect.MemoryExhaustionPredictor(
+            swap_weight=2.0, observation_window=60, horizon=600, low_pct=10.0
+        )
+        with patch("thrash_protect.diagnostic_log", messages.append):
+            for i in range(240):
+                self._predict(predictor, (4000000, 6000000, 16000000, 8000000), 1000.0 + i * 0.5)
+        assert len([m for m in messages if "low_pct" in m]) == 2
+
+    def test_predictor_logs_eta_approaching_horizon(self):
+        """An ETA under twice the horizon is worth seeing even without a trigger."""
+        messages = []
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+        with patch("thrash_protect.diagnostic_log", messages.append):
+            self._predict(predictor, (4000000, 6000000, 16000000, 8000000), 1000.0)
+            self._predict(predictor, (4000000, 6000000, 16000000, 8000000), 1000.5)  # heartbeat used up
+            messages.clear()
+            # 16M -> 15M over 60s: eta = 900s, beyond 600s but within 1200s
+            assert self._predict(predictor, (3000000, 6000000, 16000000, 8000000), 1060.0) is None
+        assert len(messages) == 1
+        assert "eta=900s" in messages[0]
