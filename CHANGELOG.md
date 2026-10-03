@@ -66,6 +66,20 @@ share.
 signal, and was previously visible only with `--debug`.  It reads `n/a` when
 the sample never got as far as computing it.
 
+In the same line, `disk_in`/`disk_out` are now called `pswp_in`/`pswp_out`,
+after the kernel counters they come from: on zram they are not disk traffic.
+The OOM predictor no longer says "within horizon" about an estimate that is
+beyond it.  Two routine messages have been demoted - "relatively big time
+delta observed" is now only shown with `--diagnostic` or `--debug`, and a
+process vanishing before its details could be logged is info, not an error.
+
+`--diagnostic` is far quieter.  It wrote six lines every half second whether
+anything was happening or not - 184,000 lines in eleven hours on a laptop,
+nearly all of them saying nothing triggered.  The OOM predictor now writes one
+line per check instead of up to five, and quiet checks are reduced to a
+once-a-minute heartbeat.  Anything near a threshold, and every check while
+something is suspended, is still logged.
+
 ## [1.1.2] - 2026-04-12
 
 SSDs are different things than HDDs.  Some observations:
