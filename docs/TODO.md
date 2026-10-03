@@ -61,7 +61,17 @@ It should be considered if those ideas are sane, and the details should be flesh
 
 ### ~~SSD Auto-detection (GitHub #27)~~ ✅ Partially done
 
-SSD auto-detection was implemented in v1.1.  ZRAM swap may still need attention — compression/decompression is CPU-bound rather than I/O-bound, so the swap page threshold tuning may not be appropriate.  Whether thrash-protect is useful at all on ZRAM systems is an open question.
+SSD auto-detection was implemented in v1.1.  zram is now detected as its own storage type and weighted like zswap.  The OOM predictor counts zram's free space only for the RAM it can save, using the live compression ratio.  Whether thrash-protect helps once zram is actually full is untested.
+
+Known gaps:
+
+* The storage type and zram-awareness are decided once, at startup.  zram
+  swap enabled later (a `swapon` after the daemon, unit ordering - the unit
+  has no `After=swap.target`) leaves the SSD weights and a predictor that
+  counts zram as disk.  Re-probe /proc/swaps periodically.
+* zram writeback (`CONFIG_ZRAM_WRITEBACK` with a `backing_dev`) sends zram
+  pages to disk, yet they are weighted and counted as compressed RAM.
+  Treat `/sys/block/zramN/backing_dev` other than `none` as disk.
 
 ### ~~Use /proc/pressure for Thrash Detection (GitHub #28)~~ ✅ Done
 

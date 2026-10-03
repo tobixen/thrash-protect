@@ -18,6 +18,7 @@ import thrash_protect
 
 # Save reference to real function before autouse fixture patches it
 _real_detect_swap_storage_type = thrash_protect.detect_swap_storage_type
+_real_read_zram_swap = thrash_protect.read_zram_swap
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +31,8 @@ def reset_global_state():
     """
     thrash_protect._tp.reset()
     with patch("thrash_protect.detect_swap_storage_type", return_value=None):
-        yield
+        with patch("thrash_protect.read_zram_swap", return_value=None):
+            yield
     # Clean up after test
     thrash_protect._tp.reset()
 
@@ -1492,11 +1494,93 @@ class TestSwapStorageDetection:
 
     def test_detect_unresolvable_device(self):
         """Test detection when device rotational info is unavailable."""
-        proc_swaps = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/zram0\tpartition\t8388604\t\t0\t\t-2\n"
+        proc_swaps = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/nbd0\tpartition\t8388604\t\t0\t\t-2\n"
         with patch("builtins.open", return_value=StringIO(proc_swaps)):
             with patch("thrash_protect._get_device_rotational", return_value=None):
                 result = _real_detect_swap_storage_type()
                 assert result is None
+
+    def test_detect_zram(self):
+        """zram reports rotational=0 like an SSD, but it is compressed RAM."""
+        proc_swaps = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/zram0\tpartition\t8388604\t\t0\t\t100\n"
+        with patch("builtins.open", return_value=StringIO(proc_swaps)):
+            with patch("thrash_protect._get_device_rotational", return_value=0):
+                assert _real_detect_swap_storage_type() == "zram"
+
+    def test_detect_zram_with_ssd_returns_ssd(self):
+        """zram and disk pages share pswpin/pswpout, so a disk alongside zram wins."""
+        proc_swaps = (
+            "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+            "/dev/zram0\tpartition\t8388604\t\t0\t\t100\n"
+            "/dev/sda2\tpartition\t8388604\t\t0\t\t-2\n"
+        )
+        with patch("builtins.open", return_value=StringIO(proc_swaps)):
+            with patch("thrash_protect._get_device_rotational", return_value=0):
+                assert _real_detect_swap_storage_type() == "ssd"
+
+    def test_detect_zram_with_hdd_returns_hdd(self):
+        proc_swaps = (
+            "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+            "/dev/zram0\tpartition\t8388604\t\t0\t\t100\n"
+            "/dev/sdb1\tpartition\t4194304\t\t0\t\t-1\n"
+        )
+        rotational_values = {"/dev/zram0": 0, "/dev/sdb1": 1}
+        with patch("builtins.open", return_value=StringIO(proc_swaps)):
+            with patch("thrash_protect._get_device_rotational", side_effect=rotational_values.get):
+                assert _real_detect_swap_storage_type() == "hdd"
+
+    def test_detect_zram_with_swapfile_returns_ssd(self):
+        """A swap file has no rotational flag of its own; next to zram it is still disk."""
+        proc_swaps = (
+            "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+            "/dev/zram0\tpartition\t8388604\t\t0\t\t100\n"
+            "/swap.img\tfile\t\t2097148\t\t0\t\t-2\n"
+        )
+        rotational_values = {"/dev/zram0": 0}
+        with patch("builtins.open", return_value=StringIO(proc_swaps)):
+            with patch("thrash_protect._get_device_rotational", side_effect=rotational_values.get):
+                assert _real_detect_swap_storage_type() == "ssd"
+
+    def test_swapfile_named_zram_is_not_zram(self):
+        proc_swaps = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/var/zram0\tfile\t2097148\t0\t-2\n"
+        with patch("builtins.open", return_value=StringIO(proc_swaps)):
+            with patch("thrash_protect._get_device_rotational", return_value=None):
+                assert _real_detect_swap_storage_type() is None
+
+    def test_zram_weighted_like_zswap(self):
+        """zram pages are counted once, like zswap pages, at the same 512-page trigger level."""
+        with patch("thrash_protect.detect_swap_storage_type", return_value="zram"):
+            thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect.config.pswp_weight == 1.0
+        assert thrash_protect.config.swap_page_threshold * thrash_protect.config.pswp_weight == 512
+
+    def test_zram_storage_type_cli(self):
+        parser = thrash_protect.create_argument_parser()
+        assert parser.parse_args(["--storage-type", "zram"]).storage_type == "zram"
+
+    @staticmethod
+    def _zram_check(swap_in, swap_out):
+        with patch("thrash_protect.detect_swap_storage_type", return_value="zram"):
+            thrash_protect.init_config(argparse.Namespace(config=None))
+        prev = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        prev.cooldown_counter = 0
+        prev.swapcount = (0, 0, 0, 0)
+        prev.timer_alert = False
+        prev.timestamp = time.time() - 1.0
+        current = thrash_protect.SystemState.__new__(thrash_protect.SystemState)
+        current.psi = None
+        current.timestamp = time.time()
+        current.swapcount = (swap_in, swap_out, 0, 0)
+        return current.check_thrashing(prev)
+
+    def test_zram_write_burst_does_not_trigger(self):
+        """A one-way write-out to zram (measured live: 2 in / 4627 out per tick)
+        scored 2.27 with the SSD weight and froze a process on an idle box."""
+        assert self._zram_check(2, 4627) is False
+
+    def test_zram_bidirectional_traffic_triggers(self):
+        """Measured live under real pressure: 645 in / 1526 out per tick."""
+        assert self._zram_check(645, 1526) is True
 
     def test_ssd_auto_adjusts_threshold(self):
         """Test that SSD detection auto-adjusts swap_page_threshold to 64."""
@@ -2961,3 +3045,139 @@ class TestDiagnosticVolume:
             assert self._predict(predictor, (3000000, 6000000, 16000000, 8000000), 1060.0) is None
         assert len(messages) == 1
         assert "eta=900s" in messages[0]
+
+
+class TestZramAwarePredictor:
+    """zram's free space is not headroom on top of MemAvailable: filling it
+    costs RAM.  A page moved into zram frees only (1 - 1/ratio) of itself."""
+
+    SWAP_TOTAL = 8388604
+
+    def _fake_files(self, files):
+        def fake_open(path, *args, **kwargs):
+            if path in files:
+                return StringIO(files[path])
+            raise FileNotFoundError(path)
+
+        return patch("builtins.open", side_effect=fake_open)
+
+    def test_read_zram_swap(self):
+        files = {
+            "/proc/swaps": (
+                "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+                "/dev/zram0                              partition\t8388604\t\t7719768\t\t100\n"
+                "/dev/dm-3                               partition\t13631484\t1000\t\t-1\n"
+            ),
+            # orig_data_size compr_data_size mem_used_total ... (bytes) - live values
+            "/sys/block/zram0/mm_stat": "6711574528 2167408167 2223718400        0 2227003392    23298     4750   191334   203739\n",
+        }
+        with self._fake_files(files):
+            size, used, ratio = _real_read_zram_swap()
+        assert (size, used) == (8388604, 7719768)
+        assert abs(ratio - 6711574528 / 2223718400) < 1e-9
+
+    def test_read_zram_swap_none_without_zram(self):
+        files = {
+            "/proc/swaps": "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/sda2\tpartition\t8388604\t0\t-2\n"
+        }
+        with self._fake_files(files):
+            assert _real_read_zram_swap() is None
+
+    def test_read_zram_swap_empty_device_assumes_conservative_ratio(self):
+        files = {
+            "/proc/swaps": "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/zram0\tpartition\t8388604\t0\t100\n",
+            "/sys/block/zram0/mm_stat": "0 0 0 0 0 0 0 0 0\n",
+        }
+        with self._fake_files(files):
+            assert _real_read_zram_swap() == (8388604, 0, 2.0)
+
+    SWAPS_ZRAM = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/zram0\tpartition\t8388604\t%d\t100\n"
+
+    def test_read_zram_swap_ignores_ratio_of_a_few_pages(self):
+        """1 MiB stored in 2 MiB of pool (allocator overhead) is no ratio to value 8 GiB by."""
+        files = {
+            "/proc/swaps": self.SWAPS_ZRAM % 1024,
+            "/sys/block/zram0/mm_stat": "1048576 900000 2097152 0 2097152 0 0 0 0\n",
+        }
+        with self._fake_files(files):
+            assert _real_read_zram_swap() == (8388604, 1024, 2.0)
+
+    def test_read_zram_swap_clamps_ratio_below_one(self):
+        """Incompressible data: storing it in zram saves nothing, but costs no more than itself."""
+        mib = 1024 * 1024
+        files = {
+            "/proc/swaps": self.SWAPS_ZRAM % (512 * 1024),
+            "/sys/block/zram0/mm_stat": f"{512 * mib} {520 * mib} {530 * mib} 0 {530 * mib} 0 0 0 0\n",
+        }
+        with self._fake_files(files):
+            assert _real_read_zram_swap() == (8388604, 512 * 1024, 1.0)
+
+    def test_read_zram_swap_ignores_swapfile_named_zram(self):
+        files = {"/proc/swaps": "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/var/zram0\tfile\t2097148\t0\t-2\n"}
+        with self._fake_files(files):
+            assert _real_read_zram_swap() is None
+
+    def test_first_store_into_empty_zram_does_not_freeze(self):
+        """Empty -> first megabyte: the measured ratio is overhead-dominated (0.5 here).
+        Valuing 8 GiB of free zram by it dropped 'available' by 4 GB in one tick."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(
+            swap_weight=2.0, observation_window=60, horizon=600, zram=True
+        )
+        ticks = [
+            (1000.0, 0, "0 0 0 0 0 0 0 0 0\n"),
+            (1001.0, 1024, "1048576 900000 2097152 0 2097152 0 0 0 0\n"),
+        ]
+        eta = None
+        for now, used_kb, mm_stat in ticks:
+            files = {"/proc/swaps": self.SWAPS_ZRAM % used_kb, "/sys/block/zram0/mm_stat": mm_stat}
+            with patch("thrash_protect.read_zram_swap", _real_read_zram_swap):
+                with self._fake_files(files):
+                    with patch(
+                        "thrash_protect.read_meminfo", return_value=(4194304, 8388604 - used_kb, 32178176, 8388604)
+                    ):
+                        with patch("time.time", return_value=now):
+                            eta = predictor.update_and_predict()
+        assert eta is None
+
+    def _run(self, zram, samples):
+        """samples: (time, mem_avail, swap_free, zram_ratio)"""
+        predictor = thrash_protect.MemoryExhaustionPredictor(
+            swap_weight=2.0, observation_window=60, horizon=600, zram=zram
+        )
+        eta = None
+        for now, mem_avail, swap_free, ratio in samples:
+            with patch("thrash_protect.read_meminfo", return_value=(mem_avail, swap_free, 32178176, self.SWAP_TOTAL)):
+                with patch(
+                    "thrash_protect.read_zram_swap", return_value=(self.SWAP_TOTAL, self.SWAP_TOTAL - swap_free, ratio)
+                ):
+                    with patch("time.time", return_value=now):
+                        eta = predictor.update_and_predict()
+        return eta
+
+    # Live samples from a zram-only laptop, 2026-10-03 21:01:30 and 21:02:31:
+    # MemAvailable rose 0.5 GB while 0.9 GB went into zram at ~3.1:1.
+    LIVE = [(1000.0, 8502916, 2408440, 3.1), (1061.0, 9030440, 1525792, 3.1)]
+
+    def test_live_zram_reclaim_froze_with_plain_formula(self):
+        assert self._run(False, self.LIVE) is not None
+
+    def test_live_zram_reclaim_does_not_trigger_zram_aware(self):
+        assert self._run(True, self.LIVE) is None
+
+    def test_zram_decline_equals_allocation_rate(self):
+        """Allocating P with zram full of headroom: MemAvailable drops P/r and
+        swap_free drops P.  The predictor should see a decline of P, not P/r + 2P."""
+        messages = []
+        p, r = 600000, 3.0  # 600 MB over 60 s
+        samples = [(1000.0, 8000000, 8000000, r), (1060.0, 8000000 - p / r, 8000000 - p, r)]
+        with patch("thrash_protect.diagnostic_log", messages.append):
+            self._run(True, samples)
+        assert any("60s: decline=10000.0kB/s" in m for m in messages), messages
+
+    def test_init_config_enables_zram_predictor(self):
+        with patch("thrash_protect.read_zram_swap", return_value=(8388604, 0, 2.0)):
+            thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect._tp.memory_predictor.zram is True
+        with patch("thrash_protect.read_zram_swap", return_value=None):
+            thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect._tp.memory_predictor.zram is False

@@ -129,20 +129,19 @@ blame me if you start up this script and anything goes kaboom.
 
 Drawbacks and problems
 ----------------------
-- The tool (and/or the default settings) was written for magnetic
-  disks - SSDs are magnitudes faster, hence "thrashing" to a SSD does
-  not cause the same kind of extreme performance issues as "thrashing"
-  to a spinning disk.  On one production system we had quite some
-  problems due to thrash-protect, the problems vanished when I turned
-  off the service as the small amount of "thrashing" on the system is
-  causing insignificant performance issues.  Arguably, swapping to SSD
-  can be bad because the life time of the SSD may depend on the number
-  of write cycles (particularly for SSDs made for consumer hardware),
-  in that regard thrash-protect may still be useful - but perhaps the
-  thresholds to identify "thrashing" should be tuned up a bit.  (It
-  can be adjusted through the environment variable
-  THRASH_PROTECT_SWAP_PAGE_THRESHOLD, the default is 4, I'd suggest
-  64, but haven't been experimenting with it yet).
+- The tool was originally written for magnetic disks.  SSDs are
+  magnitudes faster, so "thrashing" to an SSD does not hurt as much as
+  thrashing to a spinning disk.  The swap storage type is now detected
+  at startup (``--storage-type``, default ``auto``) and the thresholds
+  are adjusted accordingly: disk swap pages count 128 times (HDD) or 8
+  times (SSD) as much as pages compressed into zswap.  zram is
+  compressed RAM just like zswap, and its pages are counted at zswap's
+  weight when it is the only swap device.  When zram shares the box
+  with a disk swap device the two cannot be told apart in the kernel
+  counters, and the disk weighting is used.  Whether thrash-protect
+  pays off on zram-only systems is still being evaluated (GitHub issue
+  #27) - zram fills up and then pushes the kernel into evicting file
+  pages, which can freeze a box just as badly.
 - Possibly the biggest problem: some parent processes may behave
   unexpectedly when the children gets suspended.  You may easily check
   this manually by starting up processes and running "kill -STOP" and
