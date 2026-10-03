@@ -71,7 +71,10 @@ compression ratio of the device.
 
 `sudo make install-sway-extras` put the sway indicator's systemd user unit in
 root's home directory, so `systemctl --user enable` reported that it did not
-exist.  It now goes to `/usr/local/lib/systemd/user/`.
+exist.  It now goes to `/usr/local/lib/systemd/user/`.  The unit also hooked
+into `sway-session.target`, which nothing defines on a stock install; it now
+uses the standard `graphical-session.target` (see `extras/README.md` for
+plain sway without a session manager).
 
 ### Changed
 

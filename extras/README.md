@@ -51,6 +51,20 @@ Enable and start the systemd user service:
 systemctl --user enable --now thrash-protect-sway-indicator.service
 ```
 
+The unit is tied to `graphical-session.target`, which session managers such
+as uwsm or sway-systemd activate.  Plain sway never does, so the service will
+not come back at the next login; start it from the sway config instead,
+after the environment it needs has been handed to systemd:
+
+```
+exec "systemctl --user import-environment SWAYSOCK WAYLAND_DISPLAY; systemctl --user start thrash-protect-sway-indicator.service"
+```
+
+If an earlier version of the unit was enabled, run `systemctl --user disable
+thrash-protect-sway-indicator.service` before enabling it again, to drop the
+dangling `sway-session.target.wants` link, and remove any copy of the unit in
+`~/.config/systemd/user/`, which would override the installed one.
+
 ### Waybar module
 
 Add to your waybar config (`~/.config/waybar/config`):
