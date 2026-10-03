@@ -69,6 +69,10 @@ laptop it froze processes four times with over 5.7 GiB of RAM available.  Free
 zram space now only counts for the RAM it can actually save, using the live
 compression ratio of the device.
 
+`sudo make install-sway-extras` put the sway indicator's systemd user unit in
+root's home directory, so `systemctl --user enable` reported that it did not
+exist.  It now goes to `/usr/local/lib/systemd/user/`.
+
 ### Changed
 
 The packaged systemd unit now asks for `Nice=-15` and `OOMScoreAdjust=-900`,

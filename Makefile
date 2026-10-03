@@ -48,14 +48,15 @@ endif
 	[ -d "$(PREFIX)/lib/systemd/system" ] || [ -d "$(INSTALL_ROOT)/etc/init" ] || [ -d "$(INSTALL_ROOT)/lib/systemd/system" ] || [ -x "$(INSTALL_ROOT)/sbin/openrc-run" ] || install systemv/thrash-protect "$(INSTALL_ROOT)/etc/init.d/thrash-protect"
 
 SWAY_EXTRAS_DIR = $(PREFIX)/local/lib/thrash-protect
+SYSTEMD_USER_UNIT_DIR = $(PREFIX)/local/lib/systemd/user
 
 install-sway-extras:
 	install -d "$(SWAY_EXTRAS_DIR)"
 	install -m 755 extras/sway-frozen-indicator.py "$(SWAY_EXTRAS_DIR)/sway-frozen-indicator.py"
 	install -m 755 extras/waybar-thrash-protect.py "$(SWAY_EXTRAS_DIR)/waybar-thrash-protect.py"
 	install -m 644 extras/waybar-thrash-protect.css "$(SWAY_EXTRAS_DIR)/waybar-thrash-protect.css"
-	install -d "$(HOME)/.config/systemd/user"
-	install -m 644 extras/thrash-protect-sway-indicator.service "$(HOME)/.config/systemd/user/"
+	install -d "$(SYSTEMD_USER_UNIT_DIR)"
+	install -m 644 extras/thrash-protect-sway-indicator.service "$(SYSTEMD_USER_UNIT_DIR)/"
 
 ## Interactive release: prompts for version, shows changelog, creates signed tag
 release:

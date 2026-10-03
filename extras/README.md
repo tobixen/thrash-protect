@@ -38,7 +38,8 @@ sudo make install-sway-extras
 ```
 
 This installs the scripts to `/usr/local/lib/thrash-protect/` and the
-systemd user unit to `~/.config/systemd/user/`.
+systemd user unit to `/usr/local/lib/systemd/user/`, where every user's
+`systemctl --user` finds it.
 
 ## Setup
 
