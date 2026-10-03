@@ -53,6 +53,22 @@ and a process that behaves for a whole expiry window starts over.  Expiry is
 now checked once per cycle rather than only when something is resumed, so an
 escalated hold really does lapse during a long event.
 
+zram swap was detected as an SSD, and every page compressed into it was
+weighted eight times as heavily as the same page compressed into zswap.  On a
+zram-only laptop that froze processes on bursts of writes to zram with almost
+nothing coming back - 37 times in eleven hours of ordinary use, with no memory
+pressure to speak of; weighted like zswap it would have been 3.  zram is now
+recognised as its own storage type (`--storage-type zram`) and counted like
+zswap.  A zram device that shares the box with disk swap still gets the disk
+weighting, as the kernel counts both in the same counters.
+
+The OOM predictor counted free zram space as headroom on top of free RAM,
+although zram lives in that same RAM, and it read every page moved into zram as
+a loss of more than two pages even when the move freed memory.  On a zram
+laptop it froze processes four times with over 5.7 GiB of RAM available.  Free
+zram space now only counts for the RAM it can actually save, using the live
+compression ratio of the device.
+
 ### Changed
 
 The packaged systemd unit now asks for `Nice=-15` and `OOMScoreAdjust=-900`,

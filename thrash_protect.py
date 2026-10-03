@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import random  ## for the test_mode
+import re
 import signal
 import time
 from collections import deque, namedtuple
@@ -639,7 +640,7 @@ Example usage:
     p.add_argument(
         "--storage-type",
         dest="storage_type",
-        choices=["auto", "ssd", "hdd"],
+        choices=["auto", "ssd", "hdd", "zram"],
         default=None,
         help="Swap storage type for threshold tuning (default: auto-detect)",
     )
@@ -957,13 +958,16 @@ def get_workingset_refaults() -> tuple[int, int] | None:
 
 
 def detect_swap_storage_type() -> str | None:
-    """Detect whether swap storage is SSD or HDD.
+    """Detect whether swap storage is SSD, HDD or zram.
 
     Reads /proc/swaps for active swap devices, resolves each to a block device,
     and checks /sys/block/<dev>/queue/rotational (0=SSD, 1=HDD).
 
-    Returns "ssd", "hdd", or None if detection fails.
-    If any swap is on HDD, returns "hdd" (conservative).
+    Returns "ssd", "hdd", "zram", or None if detection fails.
+    If any swap is on HDD, returns "hdd" (conservative).  zram reports
+    rotational=0 but is compressed RAM; it is only reported as "zram" when no
+    disk swap sits beside it, since both are counted in pswpin/pswpout and
+    cannot be told apart there.
     """
     try:
         with open("/proc/swaps") as f:
@@ -972,21 +976,39 @@ def detect_swap_storage_type() -> str | None:
         return None
 
     found_ssd = False
+    found_zram = False
+    found_unknown = False
     for line in lines[1:]:  # skip header
         parts = line.split()
         if not parts:
             continue
         device = parts[0]
 
+        if zram_device_name(*parts[:2]):
+            found_zram = True
+            continue
+
         rotational = _get_device_rotational(device)
         if rotational is None:
+            ## e.g. a swap file: no rotational flag of its own, but disk all the same
+            found_unknown = True
             continue
         if rotational == 1:
             return "hdd"
         if rotational == 0:
             found_ssd = True
 
-    return "ssd" if found_ssd else None
+    if found_ssd or (found_zram and found_unknown):
+        return "ssd"
+    return "zram" if found_zram else None
+
+
+def zram_device_name(device: str, swap_type: str) -> str | None:
+    """The zramN name of a /proc/swaps entry if it is a zram device, else None."""
+    if swap_type != "partition":
+        return None
+    name = os.path.basename(os.path.realpath(device))
+    return name if re.fullmatch(r"zram\d+", name) else None
 
 
 def _get_device_rotational(device: str) -> int | None:
@@ -1038,6 +1060,56 @@ def _get_device_rotational(device: str) -> int | None:
 #########################
 ## OOM Protection
 #########################
+
+
+## Compression ratio assumed for a zram device holding no data yet.  lz4
+## typically manages 2-3:1 and zstd 3-4:1, so 2 errs towards less headroom.
+ZRAM_DEFAULT_RATIO = 2.0
+## Below this much stored data the measured ratio is dominated by allocator
+## overhead, and swings far enough between ticks to look like a collapse.
+ZRAM_MIN_RATIO_SAMPLE = 64 * 1024 * 1024
+
+
+def read_zram_swap() -> tuple[int, int, float] | None:
+    """Size and usage (kB) of all zram swap devices, and their compression ratio.
+
+    The ratio is stored data over RAM actually used, overhead included, from
+    /sys/block/<dev>/mm_stat, at least 1.  Until enough data is stored to
+    measure it, ZRAM_DEFAULT_RATIO is used.  Returns None if no zram device is
+    swapping.
+    """
+    try:
+        with open("/proc/swaps") as f:
+            lines = f.readlines()[1:]
+    except OSError:
+        return None
+
+    size = used = orig_bytes = mem_used_bytes = 0
+    found = False
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        name = zram_device_name(parts[0], parts[1])
+        if not name:
+            continue
+        found = True
+        size += int(parts[2])
+        used += int(parts[3])
+        try:
+            with open(f"/sys/block/{name}/mm_stat") as f:
+                stat = f.read().split()
+            orig_bytes += int(stat[0])
+            mem_used_bytes += int(stat[2])
+        except (OSError, IndexError, ValueError):
+            pass
+
+    if not found:
+        return None
+    if orig_bytes < ZRAM_MIN_RATIO_SAMPLE or not mem_used_bytes:
+        return size, used, ZRAM_DEFAULT_RATIO
+    ## Incompressible data saves nothing, but zram never costs more than the data.
+    return size, used, max(1.0, orig_bytes / mem_used_bytes)
 
 
 def read_meminfo() -> tuple[int, int, int, int] | None:
@@ -1104,8 +1176,10 @@ class MemoryExhaustionPredictor:
         observation_window: int = 60,
         horizon: int = 600,
         low_pct: float = 100.0,
+        zram: bool = False,
     ) -> None:
         self.swap_weight = swap_weight
+        self.zram = zram
         self.observation_window = observation_window
         self.horizon = horizon
         self.low_pct = low_pct
@@ -1148,6 +1222,20 @@ class MemoryExhaustionPredictor:
         mem_available, swap_free, mem_total, swap_total = meminfo
         available = mem_available + swap_free * self.swap_weight
         total = mem_total + swap_total * self.swap_weight
+        zram_note = ""
+        zram = read_zram_swap() if self.zram else None
+        if zram:
+            ## zram lives in the RAM that MemAvailable already counts.  Moving
+            ## a page into it frees only (1 - 1/ratio) of the page, so that is
+            ## all its free space is worth - and it is cheap, so unweighted.
+            ## This also stops a page moved into zram from counting as a
+            ## decline of 2 + 1/ratio pages when it is really a net gain.
+            zram_size, zram_used, ratio = zram
+            zram_free = zram_size - zram_used
+            net = max(0.0, 1.0 - 1.0 / ratio)
+            available -= zram_free * self.swap_weight - zram_free * net
+            total -= zram_size * self.swap_weight - zram_size * net
+            zram_note = f" zram_ratio={ratio:.2f}"
         now = time.time()
 
         self._observations.append((now, available))
@@ -1167,7 +1255,7 @@ class MemoryExhaustionPredictor:
         summary = (
             f"OOM predictor: mem_avail={mem_available}kB swap_free={swap_free}kB "
             f"available={available:.0f} total={total:.0f} ({avail_pct:.1f}%) "
-            f"observations={len(self._observations)}"
+            f"observations={len(self._observations)}{zram_note}"
         )
         if total > 0 and avail_pct >= self.low_pct:
             if diagnostic_log and _tp.diagnostic_heartbeat_due("oom_predictor", now):
@@ -1276,12 +1364,15 @@ def init_config(args: argparse.Namespace | None = None) -> None:
     resolved_storage = cfg["storage_type"]
     if resolved_storage == "auto":
         resolved_storage = detect_swap_storage_type()
-    if resolved_storage == "ssd" and "swap_page_threshold" not in explicitly_set:
-        cfg["swap_page_threshold"] = 64
+    ## zram is compressed RAM, like zswap, so its pages get zswap's weight of 1
+    ## and the same 512-page effective threshold.
+    storage_page_threshold = {"ssd": 64, "zram": 512}.get(resolved_storage)
+    if storage_page_threshold and "swap_page_threshold" not in explicitly_set:
+        cfg["swap_page_threshold"] = storage_page_threshold
         # Recompute derived pgmajfault threshold if also not explicit
         if "pgmajfault_scan_threshold" not in explicitly_set:
             cfg["pgmajfault_scan_threshold"] = cfg["swap_page_threshold"] * 4
-        logging.debug("SSD detected: swap_page_threshold adjusted to 64")
+        logging.debug(f"{resolved_storage} detected: swap_page_threshold adjusted to {storage_page_threshold}")
     cfg["_resolved_storage_type"] = resolved_storage
 
     # Resolve OOM swap weight based on storage type if not explicitly set
@@ -1302,6 +1393,8 @@ def init_config(args: argparse.Namespace | None = None) -> None:
     if cfg["pswp_weight"] is None:
         if resolved_storage == "hdd":
             cfg["pswp_weight"] = 128.0
+        elif resolved_storage == "zram":
+            cfg["pswp_weight"] = 1.0
         else:
             cfg["pswp_weight"] = 8.0  # SSD or unknown
 
@@ -1324,6 +1417,7 @@ def init_config(args: argparse.Namespace | None = None) -> None:
             observation_window=config.oom_observation_window,
             horizon=config.oom_horizon,
             low_pct=config.oom_low_pct,
+            zram=read_zram_swap() is not None,
         )
     else:
         _tp.memory_predictor = None
