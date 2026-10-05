@@ -1554,6 +1554,20 @@ class TestSwapStorageDetection:
         assert thrash_protect.config.pswp_weight == 1.0
         assert thrash_protect.config.swap_page_threshold * thrash_protect.config.pswp_weight == 512
 
+    def test_zram_with_explicit_threshold_keeps_ssd_weight(self):
+        """An explicit swap_page_threshold (the example config shipped 4) was
+        no longer scaled by any weight on zram: 4 pages instead of 32."""
+        with patch("thrash_protect.detect_swap_storage_type", return_value="zram"):
+            thrash_protect.init_config(argparse.Namespace(config=None, swap_page_threshold=4))
+        assert thrash_protect.config.pswp_weight == 8.0
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+    def test_zram_with_explicit_threshold_and_weight(self):
+        with patch("thrash_protect.detect_swap_storage_type", return_value="zram"):
+            thrash_protect.init_config(argparse.Namespace(config=None, swap_page_threshold=4, pswp_weight=2.0))
+        assert thrash_protect.config.pswp_weight == 2.0
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
     def test_zram_storage_type_cli(self):
         parser = thrash_protect.create_argument_parser()
         assert parser.parse_args(["--storage-type", "zram"]).storage_type == "zram"

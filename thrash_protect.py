@@ -1365,7 +1365,8 @@ def init_config(args: argparse.Namespace | None = None) -> None:
     if resolved_storage == "auto":
         resolved_storage = detect_swap_storage_type()
     ## zram is compressed RAM, like zswap, so its pages get zswap's weight of 1
-    ## and the same 512-page effective threshold.
+    ## and the same 512-page effective threshold.  An explicit threshold keeps
+    ## the SSD weight below, as it was set with that weight in mind.
     storage_page_threshold = {"ssd": 64, "zram": 512}.get(resolved_storage)
     if storage_page_threshold and "swap_page_threshold" not in explicitly_set:
         cfg["swap_page_threshold"] = storage_page_threshold
@@ -1393,7 +1394,7 @@ def init_config(args: argparse.Namespace | None = None) -> None:
     if cfg["pswp_weight"] is None:
         if resolved_storage == "hdd":
             cfg["pswp_weight"] = 128.0
-        elif resolved_storage == "zram":
+        elif resolved_storage == "zram" and "swap_page_threshold" not in explicitly_set:
             cfg["pswp_weight"] = 1.0
         else:
             cfg["pswp_weight"] = 8.0  # SSD or unknown
