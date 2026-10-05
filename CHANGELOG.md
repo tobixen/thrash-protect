@@ -77,7 +77,14 @@ nothing coming back - 37 times in eleven hours of ordinary use, with no memory
 pressure to speak of; weighted like zswap it would have been 3.  zram is now
 recognised as its own storage type (`--storage-type zram`) and counted like
 zswap.  A zram device that shares the box with disk swap still gets the disk
-weighting, as the kernel counts both in the same counters.
+weighting, as the kernel counts both in the same counters, and so does an
+explicitly configured `swap_page_threshold`, which was chosen with that
+weighting in mind.
+
+The example configuration files set `swap_page_threshold = 4`, the HDD value,
+so a copy of them in `/etc` defeated the SSD auto-detection: on an SSD it
+triggered at 32 pages instead of 512.  The setting is now commented out.  If
+you copied an example file, remove that line from your copy.
 
 The OOM predictor counted free zram space as headroom on top of free RAM,
 although zram lives in that same RAM, and it read every page moved into zram as

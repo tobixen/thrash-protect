@@ -6,8 +6,9 @@ thrash-protect:
   # Sleep interval between checks in seconds (default: 0.5)
   interval: 0.5
 
-  # Number of swap pages to trigger action (default: 4)
-  swap_page_threshold: 4
+  # Number of swap pages to trigger action (default: auto-detected from the
+  # swap storage type: 4 on HDD or unknown, 64 on SSD, 512 on zram)
+  # swap_page_threshold: 4
 
   # Major page faults before process scan (default: swap_page_threshold * 4)
   # pgmajfault_scan_threshold: 16
