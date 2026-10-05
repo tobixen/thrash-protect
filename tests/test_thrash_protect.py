@@ -2941,6 +2941,59 @@ class TestLogMessages:
         assert "pswp_in=3 pswp_out=4" in line
         assert "disk_in" not in line
 
+    @pytest.mark.parametrize("debug, level", [(False, logging.INFO), (True, logging.DEBUG)])
+    def test_info_is_logged_without_diagnostic(self, debug, level):
+        """The root logger sat at WARNING unless --diagnostic was given, so
+        'memory exhaustion predicted' never reached the journal."""
+        old_level = logging.root.level
+        try:
+            logging.root.setLevel(logging.WARNING)
+            thrash_protect.setup_logging(debug=debug)
+            assert logging.root.level == level
+        finally:
+            logging.root.setLevel(old_level)
+
+    @pytest.mark.parametrize("argv, level", [([], logging.INFO), (["--debug"], logging.DEBUG)])
+    def test_main_sets_level_before_and_after_init_config(self, argv, level):
+        """INFO before init_config(), so its 'auto-enabled' message survives."""
+        levels = []
+        old_level = logging.root.level
+        try:
+            logging.root.setLevel(logging.WARNING)
+            with (
+                patch("sys.argv", ["thrash-protect", *argv]),
+                patch("thrash_protect.init_config", side_effect=lambda args: levels.append(logging.root.level)),
+                patch.object(thrash_protect.config, "debug_logging", "--debug" in argv),
+                patch("thrash_protect.unfreeze_from_tmpfile"),
+                patch("thrash_protect.thrash_protect"),
+                patch("thrash_protect.cleanup"),
+            ):
+                thrash_protect.main()
+            assert levels == [logging.INFO]
+            assert logging.root.level == level
+        finally:
+            logging.root.setLevel(old_level)
+
+    @patch("thrash_protect.kill")
+    @patch("thrash_protect.unlink")
+    def test_freeze_and_unfreeze_are_info(self, unlink, kill, caplog):
+        with patch("thrash_protect.open", new=FileMockup().open):
+            with caplog.at_level(logging.INFO):
+                thrash_protect.freeze_something((10, 20))
+                thrash_protect.unfreeze_something()
+        info = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+        assert any("froze pid 10" in m for m in info)
+        assert any("unfreez" in m and "10" in m for m in info)
+
+    def test_nothing_to_freeze_is_debug(self, caplog):
+        """Repeated every tick of a long thrash with nothing left to stop."""
+        selector = MagicMock()
+        selector.scan.return_value = None
+        with patch.object(thrash_protect._tp, "process_selector", selector):
+            with caplog.at_level(logging.INFO):
+                assert thrash_protect.freeze_something() == ()
+        assert not [r for r in caplog.records if "nothing to freeze" in r.getMessage()]
+
 
 class TestDiagnosticVolume:
     """--diagnostic wrote 184k lines in 11 hours, 99.9% of them 'no trigger'.
