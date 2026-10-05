@@ -214,31 +214,7 @@ reported `1.1.2`.  A build whose version cannot be trusted is a bad thing to be
 debugging an incident against — and it has a second consequence: `init_config()`
 auto-enables diagnostic logging when `__version__` contains `dev`, `alpha`,
 `beta`, `rc` or `.dirty`, so a stale dist-info reporting a release version
-silently turns the auto-diagnostics *off* on a branch build.  That is the same
-bug as the item below.
-
-### Every INFO message is unreachable unless --diagnostic is on
-
-`logging.root.setLevel()` is called in exactly two places, both conditional:
-DEBUG under `debug_logging`, INFO under `diagnostic_logging`.  The module never
-calls `logging.basicConfig()`, so with both off — the shipped default — the root
-logger sits at Python's default WARNING and every `logging.info()` in the program
-is discarded.  That includes `OOM protection: memory exhaustion predicted in %.0f
-seconds`, which is the single most useful line the daemon emits and the one a
-sysadmin would go looking for after a freeze.
-
-Found while writing
-[incident-2026-09-03-swap-exhaustion.md](incident-2026-09-03-swap-exhaustion.md),
-where it invalidated a conclusion drawn from the *absence* of that line.  It also
-means the `--diagnostic` flag conflates two things a user would want separately:
-"tell me when you act" and "log every interval's arithmetic".
-
-Fix is a one-liner (`logging.basicConfig(level=logging.INFO)` in `main()`, or an
-unconditional `setLevel(INFO)` before the conditionals), but it changes what a
-default install writes to the journal, so it wants a deliberate decision about
-which lines are INFO and which should drop to DEBUG.  Note the freeze itself is
-currently logged at DEBUG (`logging.debug("froze pid %s")`), which is the
-opposite of where it belongs.
+silently turns the auto-diagnostics *off* on a branch build.
 
 ### Parent Process Freezing / Job Control (GitHub #12)
 
@@ -276,6 +252,25 @@ The v1.1 OOM protection uses a simple two-point linear projection. Future improv
 - Exponential smoothing or weighted moving average for more stable predictions
 - Adaptive horizon based on system memory size
 - Per-cgroup memory tracking for targeted predictions
+
+### zram loose ends
+
+Unverified side effects of making thrash-protect zram-aware, to be checked
+against `--diagnostic` logs from a zram box before changing anything:
+
+- `pgmajfault_scan_threshold` is derived as `swap_page_threshold * 4`, so on
+  zram it went from 256 (when zram counted as SSD) to 2048, and the page-fault
+  scan runs far less often.  Major faults on zram are zram swap-ins, which are
+  cheap, so the higher bar may well be right.
+- The OOM predictor values free zram space with the compression ratio measured
+  on that tick.  A swing from 3.1 to 2.9 on 8 GiB of free zram moves "available"
+  by about 180 MB at once, which the short scale might read as a trend.  If the
+  logs show it, smooth the ratio over the observation window.
+- `detect_swap_storage_type()` reports "ssd" for zram next to swap it cannot
+  classify, and a swap *file* is always unclassifiable (`rotational` is only
+  read for block devices).  A swap file on a spinning disk next to zram
+  therefore gets the SSD weight of 8 instead of 128.  Resolving a swap file to
+  the block device holding it would fix both this and the plain swap-file case.
 
 ### Visual Feedback When Throttling (GitHub #38)
 

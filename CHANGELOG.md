@@ -9,6 +9,23 @@ For changes prior to v1.0.0, see the ChangeLog file in the v0.15.8 release.
 
 ## [Unreleased]
 
+Most of this release is about thrash-protect suspending processes when it
+should not:
+
+* on a busy but healthy box reading a lot of file data;
+* on zram swap, where it both over-weighted swap traffic and miscounted free
+  memory;
+* and, after an OOM-driven suspension, resuming the process again at once
+  while swap was full.
+
+### Added
+
+* `--psi-swap-floor`, `--io-pressure-threshold` and
+  `--io-pressure-veto`/`--no-io-pressure-veto` - see the first item under Fixed.
+* `--oom-hold-ticks`, holding releases after an OOM-driven suspension.
+* `--blacklist-escalation-cap`, bounding the growing hold on repeat offenders.
+* `--storage-type zram`, auto-detected.
+
 ### Fixed
 
 Thrash-protect could suspend processes on a busy system that was not
@@ -60,7 +77,14 @@ nothing coming back - 37 times in eleven hours of ordinary use, with no memory
 pressure to speak of; weighted like zswap it would have been 3.  zram is now
 recognised as its own storage type (`--storage-type zram`) and counted like
 zswap.  A zram device that shares the box with disk swap still gets the disk
-weighting, as the kernel counts both in the same counters.
+weighting, as the kernel counts both in the same counters, and so does an
+explicitly configured `swap_page_threshold`, which was chosen with that
+weighting in mind.
+
+The example configuration files set `swap_page_threshold = 4`, the HDD value,
+so a copy of them in `/etc` defeated the SSD auto-detection: on an SSD it
+triggered at 32 pages instead of 512.  The setting is now commented out.  If
+you copied an example file, remove that line from your copy.
 
 The OOM predictor counted free zram space as headroom on top of free RAM,
 although zram lives in that same RAM, and it read every page moved into zram as
@@ -70,6 +94,16 @@ zram space now only counts for the RAM it can actually save, using the live
 compression ratio of the device.
 
 ### Changed
+
+Informational messages are now logged by default.  Without `--diagnostic` the
+log level used to be left at warning, so a default install never logged
+suspending or resuming a process (other than to its own log file), nor the OOM
+predictor's "memory exhaustion predicted", which is the line to look for after
+an unexpected suspension.  A default install therefore writes to the journal
+on every suspension and resumption - during a long thrash that can be every
+half second.  `--diagnostic` adds the per-interval arithmetic and the
+process-selection scoring on top.  "Nothing to freeze found" is demoted to
+debug, as it can repeat every tick during a long thrash.
 
 The packaged systemd unit now asks for `Nice=-15` and `OOMScoreAdjust=-900`,
 and limits its own restart rate.  The daemon has to be able to observe and act
@@ -96,14 +130,20 @@ line per check instead of up to five, and quiet checks are reduced to a
 once-a-minute heartbeat.  Anything near a threshold, and every check while
 something is suspended, is still logged.
 
+### Removed
+
+The `ubuntu` Makefile target.  It needed debhelper and took its version from
+`debian/changelog` rather than from `make`, and it did not work reliably; the
+`debian` target builds a package that installs on Ubuntu as well.
+
 ## [1.1.2] - 2026-04-12
 
 SSDs are different things than HDDs.  Some observations:
 
 * It may take a long time to fill up a swap partition on an old
-  spinning disk, but SSDs gets filled up really fast.
+  spinning disk, but SSDs get filled up really fast.
 * Thrash-protect is checking the IO-load to figure how badly thrashed
-  a computer is.  This is not tuned for SSD - the box typically don't
+  a computer is.  This is not tuned for SSD - the box typically doesn't
   appear to be thrashed at all until it's suddenly out of memory (and
   at that time, thrash-protect goes crazy stopping basically
   everything)
@@ -154,6 +194,10 @@ This release is partially working around or solving some of those problems.
 - Bare `except:` clauses replaced with `except Exception:` (4 occurrences).
   E722 now enforced via ruff.
 
+## [1.1.1] - 2026-04-12
+
+See v1.1.2.
+
 ## [1.1.0] - 2026-04-12
 
 See v1.1.2.  I again forgot my good-old-rule to never release anything right before bedtime.  Only change between v1.1.0 and v1.1.2 is the last-minute polishing of the CHANGELOG entry.
@@ -190,6 +234,19 @@ My priority now is to produce rpm and deb packages.  This is done via the Makefi
 ### Changed
 
 - Auto-detect version from `.tag.*` files so package targets work without `version=X.Y.Z`
+
+## [1.0.3] - 2026-02-12
+
+### Fixed
+
+- **cgroup freezing**: thrash-protect could freeze its own cgroup and deadlock;
+  it now falls back to SIGSTOP for that one process.  A failed cgroup unfreeze
+  no longer loses track of the frozen item, and frozen cgroups are recorded in
+  `/tmp/thrash-protect-frozen-cgroup-list` so they are released after a crash.
+
+## [1.0.2] - 2026-02-11
+
+First attempt at the version auto-detection described under 1.0.4.
 
 ## [1.0.1] - 2026-02-10
 
@@ -248,7 +305,7 @@ The v1.0.0 release solves all those problems for me, as well as bringing many ot
 - **Optional dependencies**: PyYAML for YAML config, tomli for TOML config on Python < 3.11.
 - **GitHub Actions**: CI for linting/testing, automatic PyPI release on tags.
 - **Pre-commit hooks**: ruff linting and formatting, lychee link checker.
-- **Documentation**: `docs/CODE_REVIEW.md`, `docs/TODO.md`, `docs/cgroup-enhancement-ideas.md`.  (oh, I didn't read through the CHANGELOG before releasing - this documentation is probably obsoleted already)
+- **Documentation**: `docs/CODE_REVIEW.md`, `docs/TODO.md`, `docs/cgroup-enhancement-ideas.md`.
 - **Diagnostic logging**: `--diagnostic` flag enables detailed logging of process selection
   decisions, swap/PSI values, and scoring. Zero-cost when disabled (no string formatting).
 
@@ -285,3 +342,15 @@ The v1.0.0 release solves all those problems for me, as well as bringing many ot
 
 See the ChangeLog file in this release for the complete history of changes
 from v0.6 (2013) through v0.15.8.
+
+[Unreleased]: https://github.com/tobixen/thrash-protect/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/tobixen/thrash-protect/compare/v1.1.1...v1.1.2
+[1.1.1]: https://github.com/tobixen/thrash-protect/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/tobixen/thrash-protect/compare/v1.0.5...v1.1.0
+[1.0.5]: https://github.com/tobixen/thrash-protect/compare/v1.0.4...v1.0.5
+[1.0.4]: https://github.com/tobixen/thrash-protect/compare/v1.0.3...v1.0.4
+[1.0.3]: https://github.com/tobixen/thrash-protect/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/tobixen/thrash-protect/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/tobixen/thrash-protect/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/tobixen/thrash-protect/compare/v0.15.8...v1.0.0
+[0.15.8]: https://github.com/tobixen/thrash-protect/releases/tag/v0.15.8
