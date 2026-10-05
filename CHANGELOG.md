@@ -71,6 +71,16 @@ compression ratio of the device.
 
 ### Changed
 
+Informational messages are now logged by default.  Without `--diagnostic` the
+log level used to be left at warning, so a default install never logged
+suspending or resuming a process (other than to its own log file), nor the OOM
+predictor's "memory exhaustion predicted", which is the line to look for after
+an unexpected suspension.  A default install therefore writes to the journal
+on every suspension and resumption - during a long thrash that can be every
+half second.  `--diagnostic` adds the per-interval arithmetic and the
+process-selection scoring on top.  "Nothing to freeze found" is demoted to
+debug, as it can repeat every tick during a long thrash.
+
 The packaged systemd unit now asks for `Nice=-15` and `OOMScoreAdjust=-900`,
 and limits its own restart rate.  The daemon has to be able to observe and act
 while the machine is stalled, which is exactly when it is least likely to be

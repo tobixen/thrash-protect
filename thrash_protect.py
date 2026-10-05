@@ -2493,7 +2493,7 @@ class ThrashProtectState:
         pids_to_freeze = normalize_pids(pids_to_freeze or self.process_selector.scan())
         if not pids_to_freeze:
             ## process disappeared. ignore failure
-            logging.info("nothing to freeze found, or the process we were going to suspend has already exited")
+            logging.debug("nothing to freeze found, or the process we were going to suspend has already exited")
             return ()
         if getpid() in pids_to_freeze:
             logging.error("Oups.  Own pid is next on the list of processes to freeze.  This is very bad.  Skipping.")
@@ -2522,7 +2522,7 @@ class ThrashProtectState:
                 self.frozen_items.append(("cgroup", cgroup_path, pids_to_freeze))
             self.frozen_cgroup_paths.add(cgroup_path)
             for pid_to_freeze in pids_to_freeze:
-                logging.debug("froze pid %s (via cgroup)" % str(pid_to_freeze))
+                logging.info("froze pid %s (via cgroup)" % str(pid_to_freeze))
                 log_frozen(pid_to_freeze)
             return pids_to_freeze
 
@@ -2542,7 +2542,7 @@ class ThrashProtectState:
         for pid_to_freeze in pids_to_freeze:
             ## Logging after freezing - as logging itself may be resource- and timeconsuming.
             ## Perhaps we should even fork it out.
-            logging.debug("froze pid %s" % str(pid_to_freeze))
+            logging.info("froze pid %s" % str(pid_to_freeze))
             log_frozen(pid_to_freeze)
         return pids_to_freeze
 
@@ -2603,7 +2603,7 @@ class ThrashProtectState:
 
         if cgroup_path:
             # Unfreeze via cgroup
-            logging.debug("pids to unfreeze (via cgroup): %s" % pids_to_unfreeze)
+            logging.info("unfreezing pids %s (via cgroup)" % pids_to_unfreeze)
             if not unfreeze_cgroup(cgroup_path):
                 logging.warning("failed to unfreeze cgroup %s, re-inserting" % cgroup_path)
                 self.frozen_items.insert(pop_index if pop_index == 0 else len(self.frozen_items), item)
@@ -2611,7 +2611,7 @@ class ThrashProtectState:
             self.frozen_cgroup_paths.discard(cgroup_path)
         else:
             # Unfreeze via SIGCONT
-            logging.debug("pids to unfreeze: %s" % pids_to_unfreeze)
+            logging.info("unfreezing pids %s" % pids_to_unfreeze)
             for pid_to_unfreeze in reversed(pids_to_unfreeze):
                 try:
                     logging.debug("going to unfreeze %s" % str(pid_to_unfreeze))
@@ -2793,19 +2793,23 @@ def thrash_protect(args: argparse.Namespace | None = None) -> None:
     return _tp.run(args)
 
 
+def setup_logging(debug: bool) -> None:
+    """INFO is what the daemon did (froze, unfroze, predicted exhaustion) and is
+    always logged; --diagnostic adds per-interval arithmetic on top, at INFO."""
+    logging.root.setLevel(logging.DEBUG if debug else logging.INFO)
+
+
 def main() -> None:
     """Main entry point for thrash-protect."""
     p = create_argument_parser()
     args = p.parse_args()
 
+    # Before init_config(), so that its own INFO messages are not lost
+    setup_logging(debug=False)
+
     # Initialize configuration from all sources (CLI > file > env > defaults)
     init_config(args)
-
-    # Set up logging level
-    if config.debug_logging:
-        logging.root.setLevel(logging.DEBUG)
-    elif config.diagnostic_logging:
-        logging.root.setLevel(logging.INFO)
+    setup_logging(debug=config.debug_logging)
 
     unfreeze_from_tmpfile()
 
