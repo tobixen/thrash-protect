@@ -1213,6 +1213,35 @@ class TestIOStarvationFalsePositive:
         with patch("thrash_protect.open", new=mock.open):
             assert thrash_protect.get_workingset_refaults() == (0, 0)
 
+    def test_system_state_reads_vmstat_once(self):
+        """One SystemState sample opens /proc/vmstat exactly once.
+
+        The daemon polls faster the busier the box gets; parsing the same
+        file three times per interval adds to the load it is reacting to.
+        """
+        vmstat = (
+            b"pgmajfault 28682345\n"
+            b"pswpin 11\n"
+            b"pswpout 22\n"
+            b"zswpin 33\n"
+            b"zswpout 44\n"
+            b"workingset_refault_anon 55\n"
+            b"workingset_refault_file 66\n"
+        )
+        mock = FileMockup({"/proc/vmstat": vmstat})
+        opened = []
+
+        def counting_open(fn, mode="r"):
+            opened.append(fn)
+            return mock.open(fn, mode)
+
+        with patch("thrash_protect.open", new=counting_open):
+            state = thrash_protect.SystemState()
+        assert opened.count("/proc/vmstat") == 1
+        assert state.pagefaults == 28682345
+        assert state.swapcount == (11, 22, 33, 44)
+        assert state.refaults == (55, 66)
+
     def test_get_io_pressure(self):
         """Parse /proc/pressure/io in the same shape as memory pressure."""
         io = (

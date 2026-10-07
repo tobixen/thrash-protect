@@ -924,7 +924,37 @@ def get_io_pressure() -> dict[str, dict[str, float | int]] | None:
     return _read_psi("/proc/pressure/io")
 
 
-def get_workingset_refaults() -> tuple[int, int] | None:
+## The /proc/vmstat counters SystemState samples.  Collected in one pass so
+## that each interval opens and parses the file once, not once per consumer.
+VMSTAT_KEYS = frozenset(
+    {
+        "pgmajfault",
+        "pswpin",
+        "pswpout",
+        "zswpin",
+        "zswpout",
+        "workingset_refault_anon",
+        "workingset_refault_file",
+    }
+)
+
+
+def read_vmstat() -> dict[str, int]:
+    """Read the counters of VMSTAT_KEYS from /proc/vmstat in a single pass.
+
+    Keys missing on the running kernel are simply absent from the result.
+    Read and parse errors propagate; callers decide what a failure means.
+    """
+    counters: dict[str, int] = {}
+    with open("/proc/vmstat") as vmstat:
+        for line in vmstat:
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] in VMSTAT_KEYS:
+                counters[parts[0]] = int(parts[1])
+    return counters
+
+
+def get_workingset_refaults(vmstat: dict[str, int] | None = None) -> tuple[int, int] | None:
     """Read (anon, file) workingset refault counters from /proc/vmstat.
 
     A refault is a page we evicted and then had to read back.  The anon
@@ -939,17 +969,15 @@ def get_workingset_refaults() -> tuple[int, int] | None:
     zeros of an old kernel are stable across samples, whereas a one-off
     failure would otherwise make the *next* interval subtract zero and so
     compute its ratio against the lifetime counters.
+
+    Pass an already parsed ``vmstat`` (from read_vmstat) to avoid a re-read.
     """
-    counters = {"workingset_refault_anon": 0, "workingset_refault_file": 0}
-    try:
-        with open("/proc/vmstat") as vmstat:
-            for line in vmstat:
-                parts = line.split()
-                if len(parts) >= 2 and parts[0] in counters:
-                    counters[parts[0]] = int(parts[1])
-    except (FileNotFoundError, PermissionError, OSError, ValueError):
-        return None
-    return (counters["workingset_refault_anon"], counters["workingset_refault_file"])
+    if vmstat is None:
+        try:
+            vmstat = read_vmstat()
+        except (OSError, ValueError):
+            return None
+    return (vmstat.get("workingset_refault_anon", 0), vmstat.get("workingset_refault_file", 0))
 
 
 #########################
@@ -1482,24 +1510,23 @@ class SystemState:
 
     def __init__(self) -> None:
         self.timestamp: float = time.time()
-        self.pagefaults: int | None = self.get_pagefaults()
-        self.swapcount: tuple[int, ...] = self.get_swapcount()
+        vmstat = read_vmstat()  # one read per interval, shared by the three below
+        self.pagefaults: int | None = self.get_pagefaults(vmstat)
+        self.swapcount: tuple[int, ...] = self.get_swapcount(vmstat)
         self.psi: dict[str, dict[str, float | int]] | None = get_memory_pressure()  # None if PSI not available
         self.io_psi = get_io_pressure()  # None if PSI not available
-        self.refaults = get_workingset_refaults()  # (0, 0) on kernels below 5.9
+        self.refaults = get_workingset_refaults(vmstat)  # (0, 0) on kernels below 5.9
         self.cooldown_counter: int = 0
         self.unfrozen_pid: tuple[int, ...] | list[int] | None = None
         self.timer_alert: bool = False
 
-    def get_pagefaults(self) -> int | None:
-        with open("/proc/vmstat") as vmstat:
-            line = ""
-            while line is not None:
-                line = vmstat.readline()
-                if line.startswith("pgmajfault "):
-                    return int(line[12:])
+    def get_pagefaults(self, vmstat: dict[str, int] | None = None) -> int | None:
+        """Major page fault counter (pgmajfault) from /proc/vmstat."""
+        if vmstat is None:
+            vmstat = read_vmstat()
+        return vmstat.get("pgmajfault")
 
-    def get_swapcount(self) -> tuple[int, ...]:
+    def get_swapcount(self, vmstat: dict[str, int] | None = None) -> tuple[int, ...]:
         """Read swap counters from /proc/vmstat.
 
         Returns a 4-tuple: (pswpin, pswpout, zswpin, zswpout)
@@ -1507,13 +1534,9 @@ class SystemState:
           - zswpin/zswpout: pages decompressed from / compressed into zswap pool
         zswp* counters are present on Linux 6.3+ and default to 0 on older kernels.
         """
-        counters = {"pswpin": 0, "pswpout": 0, "zswpin": 0, "zswpout": 0}
-        with open("/proc/vmstat") as vmstat:
-            for line in vmstat:
-                parts = line.split()
-                if len(parts) >= 2 and parts[0] in counters:
-                    counters[parts[0]] = int(parts[1])
-        return (counters["pswpin"], counters["pswpout"], counters["zswpin"], counters["zswpout"])
+        if vmstat is None:
+            vmstat = read_vmstat()
+        return tuple(vmstat.get(key, 0) for key in ("pswpin", "pswpout", "zswpin", "zswpout"))
 
     def check_swap_threshold(self, prev: SystemState) -> bool:
         self.cooldown_counter = prev.cooldown_counter

@@ -95,11 +95,13 @@ Two follow-ups from the review of that work:
   Against the 1-vCPU Aug-09 host at `iofull` 84.8 %, `full` separates the two
   cases cleanly and the veto correctly stayed out of the way.  Switching to
   `some` would have vetoed a real emergency.
-- `/proc/vmstat` is now parsed three times per interval (`get_pagefaults`,
+- ~~`/proc/vmstat` is now parsed three times per interval (`get_pagefaults`,
   `get_swapcount`, `get_workingset_refaults`), in a daemon that polls faster
   the busier it gets.  One read into a dict of the handful of keys of interest
   would do — related to fix 5 in the incident document, which criticises
-  thrash-protect for adding to the IO load it is reacting to.
+  thrash-protect for adding to the IO load it is reacting to.~~
+  **Done:** `read_vmstat()` reads the file once per `SystemState` sample and
+  the three consumers take the parsed dict.
 
 ### Fork Bomb Protection (GitHub #39)
 

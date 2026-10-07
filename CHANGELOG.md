@@ -144,6 +144,9 @@ line per check instead of up to five, and quiet checks are reduced to a
 once-a-minute heartbeat.  Anything near a threshold, and every check while
 something is suspended, is still logged.
 
+`/proc/vmstat` is now read once per interval instead of three times, the
+parsed counters being shared by the page-fault, swap and refault checks.
+
 ### Removed
 
 The `ubuntu` Makefile target.  It needed debhelper and took its version from
