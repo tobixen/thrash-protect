@@ -277,9 +277,9 @@ The v1.1 OOM protection uses a simple two-point linear projection. Future improv
 - Adaptive horizon based on system memory size
 - Per-cgroup memory tracking for targeted predictions
 
-### Visual Feedback When Throttling (GitHub #38)
+### ~~Visual Feedback When Throttling (GitHub #38)~~ ✅ Done
 
-Feature request: provide visual feedback (e.g. mouse cursor change) when thrash-protect is actively throttling processes.  Currently possible via monitoring the state file `/tmp/thrash-protect-frozen-pid-list` or the log file.  A separate desktop integration tool/script could provide this, but it's likely out of scope for thrash-protect itself.
+Feature request: provide visual feedback (e.g. mouse cursor change) when thrash-protect is actively throttling processes.  Solved outside the daemon by the waybar module and sway window-title indicator in `extras/`.  Other desktop environments are open to contributions.
 
 ## Low Priority
 
@@ -370,5 +370,5 @@ Consider adding:
 | #27 | Configuration for ZRAM/SSD swap | Open | High: SSD/ZRAM Default Settings |
 | #28 | Detect thrashing using PSI | **Closed** | ✅ Done |
 | #29 | Audio stuttering | **Closed** | N/A |
-| #38 | Mouse cursor visual feedback | Open | Medium: Visual Feedback |
+| #38 | Mouse cursor visual feedback | **Closed** | ✅ Done (`extras/`) |
 | #39 | Fork bomb protection | Open | High: Fork Bomb Protection |

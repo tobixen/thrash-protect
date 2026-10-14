@@ -69,6 +69,20 @@ laptop it froze processes four times with over 5.7 GiB of RAM available.  Free
 zram space now only counts for the RAM it can actually save, using the live
 compression ratio of the device.
 
+`sudo make install-sway-extras` put the sway indicator's systemd user unit in
+root's home directory, so `systemctl --user enable` reported that it did not
+exist.  It now goes to `/usr/local/lib/systemd/user/`.  The unit also hooked
+into `sway-session.target`, which nothing defines on a stock install; it now
+uses the standard `graphical-session.target` (see `extras/README.md` for
+plain sway without a session manager).
+
+The sway indicator rarely marked anything: it looked for a window owned by
+the frozen process itself, but the processes thrash-protect freezes are
+usually browser renderers, programs in a terminal and the like, which own no
+window.  It now marks the window of the nearest ancestor, and for a process
+in a tmux pane, the terminal of each tmux client showing that pane.  Where
+that ancestor owns several windows, all of them are marked `[FROZEN?]`.
+
 ### Changed
 
 The packaged systemd unit now asks for `Nice=-15` and `OOMScoreAdjust=-900`,
