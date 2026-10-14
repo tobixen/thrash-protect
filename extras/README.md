@@ -15,7 +15,15 @@ Both scripts use only the Python standard library (no external dependencies).
 ### sway-frozen-indicator.py
 
 Polls the frozen PID file and modifies sway window titles:
-- Frozen windows get a `[FROZEN]` prefix
+- The window of a frozen process gets a `[FROZEN]` prefix.  A process that
+  owns no window (a browser renderer, a program in a terminal) marks the
+  window of its nearest ancestor that does; a process in a tmux pane marks
+  the terminal of each tmux client showing that pane (default tmux socket
+  only)
+- When that ancestor owns several windows (a browser, `foot --server`,
+  single-instance kitty), all of them get `[FROZEN?]`, since the process tree
+  cannot tell which one is affected
+- Freezes shorter than the one-second poll interval may go unnoticed
 - Titles are restored when the process is unfrozen
 - All titles are restored on exit (SIGTERM/SIGINT)
 
