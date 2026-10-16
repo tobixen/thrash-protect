@@ -216,6 +216,7 @@ CONFIG_SCHEMA = {
     "blacklist_max_skip_count": (int, "THRASH_PROTECT_BLACKLIST_MAX_SKIP_COUNT", ["blacklist-max-skip-count"]),
     "blacklist_escalation_cap": (int, "THRASH_PROTECT_BLACKLIST_ESCALATION_CAP", ["blacklist-escalation-cap"]),
     "oom_hold_ticks": (int, "THRASH_PROTECT_OOM_HOLD_TICKS", ["oom-hold-ticks"]),
+    "fork_bomb_threshold": (int, "THRASH_PROTECT_FORK_BOMB_THRESHOLD", ["fork-bomb-threshold"]),
 }
 
 
@@ -335,6 +336,7 @@ def get_defaults() -> dict[str, Any]:
         "blacklist_max_skip_count": 3,  # Unfreeze cycles a blacklisted item gets skipped
         "blacklist_escalation_cap": 8,  # Max allowance is this many times max_skip_count
         "oom_hold_ticks": 4,  # Ticks an OOM-driven freeze is held despite quiet swap
+        "fork_bomb_threshold": 300,  # Same-name process family size treated as a fork bomb; 0 disables
     }
 
 
@@ -724,6 +726,14 @@ Example usage:
         metavar="N",
         help="Ticks an OOM-driven freeze is held even when swap is quiet (default: 4)",
     )
+    p.add_argument(
+        "--fork-bomb-threshold",
+        dest="fork_bomb_threshold",
+        type=int,
+        metavar="N",
+        help="Treat a growing family of N or more processes of the same name as a fork bomb, "
+        "suspend its newest members and set oom_score_adj 1000 on all of them; 0 disables (default: 300)",
+    )
 
     return p
 
@@ -846,6 +856,44 @@ def apply_score_adjustments(score: float, cmd: str) -> float:
     if cmd in config.cmd_blacklist:
         score *= config.blacklist_score_multiplier
     return score
+
+
+def _is_jobctrl_chain(pids: tuple[int, ...] | list[int]) -> bool:
+    """Whether pids are paced one by one when frozen or resumed: a process
+    with its shell parents, so job control sees them in order.  A fork bomb
+    item is longer than any such chain, and pacing it would block the loop."""
+    return 1 < len(pids) <= MAX_JOBCTRL_CHAIN + 1
+
+
+def stop_descendants(pids: tuple[int, ...]) -> list[int]:
+    """SIGSTOP every descendant of the (already stopped) pids.
+
+    A stopped process cannot fork, so walking the tree top-down after
+    stopping each level catches everything forked since the pids were
+    selected.  Bounded by MAX_FORK_BOMB_CHASE.
+    """
+    stopped: list[int] = []
+    seen = set(pids)
+    queue = list(pids)
+    while queue and len(stopped) < MAX_FORK_BOMB_CHASE:
+        pid = queue.pop()
+        for children_file in glob.glob("/proc/%d/task/*/children" % pid):
+            try:
+                with open(children_file) as f:
+                    children = [int(c) for c in f.read().split()]
+            except (OSError, ValueError):
+                continue
+            for child in children:
+                if child in seen or len(stopped) >= MAX_FORK_BOMB_CHASE:
+                    continue
+                seen.add(child)
+                try:
+                    kill(child, signal.SIGSTOP)
+                except ProcessLookupError:
+                    continue
+                stopped.append(child)
+                queue.append(child)
+    return stopped
 
 
 def unpack_frozen_item(item: tuple[str, ...]) -> tuple[str, str | None, tuple[int, ...]]:
@@ -1753,6 +1801,12 @@ class SystemState:
 ## the selected process.
 MAX_JOBCTRL_CHAIN = 32
 
+## How many processes of a fork bomb are frozen in one go.  Every frozen pid
+## is logged and persisted individually.
+MAX_FORK_BOMB_FREEZE = 64
+## How many descendants of those are stopped after them
+MAX_FORK_BOMB_CHASE = 256
+
 
 class ProcessSelector:
     """Base class for process selector classes.
@@ -2159,6 +2213,132 @@ class PageFaultingProcessSelector(ProcessSelector):
             return self.checkParents(*worstpid)
 
 
+class ForkBombPids(tuple):
+    """Pids selected by ForkBombProcessSelector.  freeze_something() also
+    stops their descendants, which they may have forked since the scan."""
+
+
+class ForkBombProcessSelector(ProcessSelector):
+    """
+    Detects fork bombs and runaway recursive scripts.
+
+    The kernel OOM killer scores processes one by one, so a few thousand
+    small processes are never picked, and the per-process selectors find
+    nothing worth freezing in any single one of them either.  This selector
+    groups processes into families: a process belongs to the family of its
+    parent when both have the same name, and orphans of the same name share
+    a family per subreaper.  A family of fork_bomb_threshold members or more
+    that has grown by a tenth of that since the previous scan is taken for a
+    fork bomb.  A big but steady pool, such as a prefork server's workers,
+    is left alone.  The family's leaves - members with no children in it -
+    are frozen, at most MAX_FORK_BOMB_FREEZE at a time, and freeze_something()
+    then stops whatever they forked meanwhile.  Freezing the leaf of a chain
+    of nested scripts stops the chain from growing.  The whole family also
+    gets oom_score_adj 1000, which is never reverted, so the kernel OOM
+    killer, if it comes to that, kills the fork bomb rather than everything
+    else on the box.
+    """
+
+    def __init__(self) -> None:
+        self.adjusted: set[int] = set()
+        ## Number of processes at the last scan that found nothing
+        self.quiet_count: int | None = None
+        ## Sizes of the big families at the previous scan
+        self.family_sizes: dict[tuple[str, int, int], int] = {}
+
+    def scan(self) -> tuple[int, ...] | None:
+        threshold = config.fork_bomb_threshold
+        if threshold <= 0:
+            return None
+        stat_files = glob.glob("/proc/*/stat")
+        count = len(stat_files)
+        ## Cheap gate: a family that was not there at the last quiet scan
+        ## needs that many more processes on the box
+        if count < threshold or (self.quiet_count is not None and count < self.quiet_count + threshold // 2):
+            if self.quiet_count is not None:
+                self.quiet_count = min(self.quiet_count, count)
+            return None
+
+        own = (getpid(), getppid())
+        procs: dict[int, ProcessSelector.procstat] = {}
+        for fn in stat_files:
+            try:
+                pid = int(fn.split("/")[2])
+            except ValueError:
+                continue
+            stats = self.readStat(fn)
+            if stats and stats.state not in ("Z", "X") and pid not in own and not self._never_freeze(pid, stats):
+                procs[pid] = stats
+
+        ## family root: the outermost ancestor of the same name
+        roots: dict[int, int] = {}
+        for pid in procs:
+            chain = []
+            seen = set()
+            p = pid
+            while p not in roots:
+                chain.append(p)
+                seen.add(p)
+                parent = procs[p].ppid
+                if parent not in procs or procs[parent].cmd != procs[p].cmd or parent in seen:
+                    roots[p] = p
+                    break
+                p = parent
+            for q in chain:
+                roots[q] = roots[p]
+
+        families: dict[tuple[str, int, int], list[int]] = {}
+        for pid, root in roots.items():
+            ppid = procs[root].ppid
+            ## orphans of the same name share one family per subreaper
+            ## (init and systemd managers are not in procs)
+            orphan = ppid not in procs
+            key = (procs[pid].cmd, ppid if orphan else 0, 0 if orphan else root)
+            families.setdefault(key, []).append(pid)
+
+        previous = self.family_sizes
+        self.family_sizes = {k: len(v) for k, v in families.items() if len(v) >= threshold // 2}
+        growing = [
+            (k, v)
+            for k, v in families.items()
+            if len(v) >= threshold and len(v) - previous.get(k, len(v)) >= threshold // 10
+        ]
+        if not growing:
+            ## a fork bomb seen for the first time will have grown the box
+            ## past the gate by the next scan
+            self.quiet_count = count
+            return None
+        key, members = max(growing, key=lambda kv: len(kv[1]))
+
+        member_set = set(members)
+        parents = {procs[pid].ppid for pid in members if procs[pid].ppid in member_set}
+        leaves = []
+        for pid in sorted((pid for pid in members if pid not in parents), reverse=True):
+            if not self._is_frozen(pid, procs[pid]):
+                leaves.append(pid)
+                if len(leaves) >= MAX_FORK_BOMB_FREEZE:
+                    break
+        if not leaves:
+            ## contained - every leaf is already frozen
+            self.quiet_count = count
+            return None
+        self.quiet_count = None
+
+        logging.warning(
+            "fork bomb suspected: %d processes named %r in one family, freezing the %d newest"
+            % (len(members), key[0], len(leaves))
+        )
+        for pid in member_set - self.adjusted:
+            try:
+                with open("/proc/%d/oom_score_adj" % pid, "w") as f:
+                    f.write("1000")
+            except OSError:
+                continue
+            self.adjusted.add(pid)
+        self.adjusted &= set(procs)
+        return ForkBombPids(leaves)
+
+
 class GlobalProcessSelector(ProcessSelector):
     """
     This is a collection of the various process selectors.
@@ -2195,6 +2375,9 @@ class GlobalProcessSelector(ProcessSelector):
         )
         self.collection: list[ProcessSelector] = selectors
         self.scan_method_count: int = 0
+        ## Checked before the round-robin: a fork bomb outgrows anything
+        ## the other selectors could free one process at a time
+        self.fork_bomb_selector: ForkBombProcessSelector = ForkBombProcessSelector()
 
     def update(self, prev: SystemState, cur: SystemState) -> None:
         if cur.unfrozen_pid:
@@ -2204,6 +2387,12 @@ class GlobalProcessSelector(ProcessSelector):
 
     def scan(self) -> tuple[int, ...] | None:
         logging.debug("scan_processes")
+
+        ret = self.fork_bomb_selector.scan()
+        if ret:
+            if diagnostic_log:
+                diagnostic_log(f"selected pids {ret} via ForkBombProcessSelector")
+            return ret
 
         ## a for loop here to make sure we fall back on the next method if the first method fails to find anything.
         for i in range(0, len(self.collection)):
@@ -2535,7 +2724,8 @@ class ThrashProtectState:
         return not cooldown_counter and not self.oom_hold_counter
 
     def freeze_something(self, pids_to_freeze: tuple[int, ...] | list[int] | int | None = None) -> tuple[int, ...]:
-        pids_to_freeze = normalize_pids(pids_to_freeze or self.process_selector.scan())
+        selected = pids_to_freeze or self.process_selector.scan()
+        pids_to_freeze = normalize_pids(selected)
         if not pids_to_freeze:
             ## process disappeared. ignore failure
             logging.debug("nothing to freeze found, or the process we were going to suspend has already exited")
@@ -2576,10 +2766,12 @@ class ThrashProtectState:
             try:
                 debug_check_state(pid_to_freeze, 0)
                 kill(pid_to_freeze, signal.SIGSTOP)
-                if len(pids_to_freeze) > 1:
+                if _is_jobctrl_chain(pids_to_freeze):
                     time.sleep(config.max_acceptable_time_delta / 3)
             except ProcessLookupError:
                 continue
+        if isinstance(selected, ForkBombPids):
+            pids_to_freeze += tuple(stop_descendants(pids_to_freeze))
         # Check if already frozen (avoid duplicates)
         if not any(item[0] == "sigstop" and item[1] == pids_to_freeze for item in self.frozen_items):
             self.frozen_items.append(("sigstop", pids_to_freeze))
@@ -2663,7 +2855,7 @@ class ThrashProtectState:
                     logging.debug("going to unfreeze %s" % str(pid_to_unfreeze))
                     debug_check_state(pid_to_unfreeze, 1)
                     kill(pid_to_unfreeze, signal.SIGCONT)
-                    if len(pids_to_unfreeze) > 1:
+                    if _is_jobctrl_chain(pids_to_unfreeze):
                         time.sleep(config.max_acceptable_time_delta)
                 except ProcessLookupError:
                     ## ignore failure

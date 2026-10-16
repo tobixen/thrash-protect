@@ -19,6 +19,7 @@ import thrash_protect
 # Save reference to real function before autouse fixture patches it
 _real_detect_swap_storage_type = thrash_protect.detect_swap_storage_type
 _real_read_zram_swap = thrash_protect.read_zram_swap
+_real_fork_bomb_scan = thrash_protect.ForkBombProcessSelector.scan
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +33,10 @@ def reset_global_state():
     thrash_protect._tp.reset()
     with patch("thrash_protect.detect_swap_storage_type", return_value=None):
         with patch("thrash_protect.read_zram_swap", return_value=None):
-            yield
+            # The fork bomb selector writes oom_score_adj; tests that mock
+            # readStat but not /proc would otherwise hit real processes.
+            with patch("thrash_protect.ForkBombProcessSelector.scan", return_value=None):
+                yield
     # Clean up after test
     thrash_protect._tp.reset()
 
@@ -3349,3 +3353,184 @@ class TestZramAwarePredictor:
         with patch("thrash_protect.read_zram_swap", return_value=None):
             thrash_protect.init_config(argparse.Namespace(config=None))
         assert thrash_protect._tp.memory_predictor.zram is False
+
+
+class TestForkBombSelector:
+    """A runaway recursive shell script on 2026-10-16 built a chain of
+    some 75 000 nested bash processes.  The kernel OOM killer never picked
+    one of them (each was small, with oom_score_adj 0) and killed 54
+    unrelated processes instead, while the per-process selectors froze
+    an innocent process each tick.  See
+    docs/incident-2026-10-16-fork-chain.md."""
+
+    @staticmethod
+    def _stat(pid, cmd, ppid, state="S"):
+        return b"%d (%s) %s %d %d %d 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" % (
+            pid,
+            cmd.encode(),
+            state.encode(),
+            ppid,
+            pid,
+            pid,
+        )
+
+    def _scan(self, selector, procs):
+        files = {"/proc/%d/stat" % pid: self._stat(pid, *p) for pid, p in procs.items()}
+        mockup = FileMockup(files)
+        with patch("thrash_protect.open", new=mockup.open):
+            with patch("thrash_protect.glob.glob", return_value=list(files)):
+                result = _real_fork_bomb_scan(selector)
+        adjusted = {int(fn.split("/")[2]) for fn in mockup.file_mocks if fn.endswith("/oom_score_adj")}
+        return result, adjusted
+
+    def _run(self, procs, threshold=100, before=None):
+        """procs: {pid: (cmd, ppid[, state])}.  Scans twice, first `before`
+        (default: procs without the 100 highest pids, so families have
+        grown), then procs.  Returns (result, set of pids whose
+        oom_score_adj was written by the second scan)."""
+        thrash_protect.init_config(argparse.Namespace(config=None, fork_bomb_threshold=threshold))
+        if before is None:
+            before = {pid: p for pid, p in procs.items() if pid <= max(procs) - 100}
+        selector = thrash_protect.ForkBombProcessSelector()
+        assert self._scan(selector, before) == (None, set())
+        return self._scan(selector, procs)
+
+    @staticmethod
+    def _desktop():
+        """tmux with twenty interactive shells, one of them running the chain root."""
+        procs = {10: ("tmux: server", 1)}
+        procs.update(dict.fromkeys(range(20, 40), ("bash", 10)))
+        return procs
+
+    def test_deep_chain_freezes_its_leaf(self):
+        procs = self._desktop()
+        procs[1000] = ("bash", 20)
+        procs.update({pid: ("bash", pid - 1) for pid in range(1001, 1500)})
+        result, adjusted = self._run(procs)
+        assert result == (1499,)
+        assert adjusted == set(range(20, 21)) | set(range(1000, 1500))
+
+    def test_below_threshold_is_ignored(self):
+        procs = self._desktop()
+        procs.update({pid: ("bash", pid - 1) for pid in range(1001, 1050)})
+        procs[1000] = ("bash", 20)
+        assert self._run(procs) == (None, set())
+
+    def test_interactive_shells_alone_are_no_fork_bomb(self):
+        procs = self._desktop()
+        procs.update(dict.fromkeys(range(100, 300), ("bash", 10)))
+        assert self._run(procs, threshold=300) == (None, set())
+
+    def test_wide_orphan_bomb_is_bounded(self):
+        """`:(){ :|:& };:` orphans its processes to the subreaper."""
+        procs = self._desktop()
+        procs.update(dict.fromkeys(range(1000, 1400), (":", 1)))
+        result, adjusted = self._run(procs)
+        assert len(result) == thrash_protect.MAX_FORK_BOMB_FREEZE
+        assert set(result) <= set(range(1000, 1400))
+        assert adjusted == set(range(1000, 1400))
+
+    def test_contained_chain_is_left_to_other_selectors(self):
+        """Once the leaf is stopped the chain cannot grow; reporting it again
+        would starve the other selectors."""
+        procs = self._desktop()
+        procs[1000] = ("bash", 20)
+        procs.update({pid: ("bash", pid - 1) for pid in range(1001, 1499)})
+        procs[1499] = ("bash", 1498, "T")
+        assert self._run(procs)[0] is None
+
+    def test_threshold_zero_disables(self):
+        procs = self._desktop()
+        procs[1000] = ("bash", 20)
+        procs.update({pid: ("bash", pid - 1) for pid in range(1001, 1500)})
+        assert self._run(procs, threshold=0) == (None, set())
+
+    def test_config_default(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect.config.fork_bomb_threshold == 300
+
+    @patch("thrash_protect.ForkBombProcessSelector.scan", return_value=(1499,))
+    def test_global_selector_checks_fork_bombs_first(self, _scan):
+        selector = thrash_protect.GlobalProcessSelector()
+        selector.scan_method_count = 3
+        for c in selector.collection:
+            c.scan = MagicMock(return_value=(7,))
+        assert selector.scan() == (1499,)
+        assert selector.scan_method_count == 3
+        for c in selector.collection:
+            c.scan.assert_not_called()
+
+    def _chain(self):
+        procs = self._desktop()
+        procs[1000] = ("bash", 20)
+        procs.update({pid: ("bash", pid - 1) for pid in range(1001, 1500)})
+        return procs
+
+    def test_steady_family_is_no_fork_bomb(self):
+        """A prefork server's pool is big but does not grow between scans."""
+        procs = self._desktop()
+        procs[500] = ("postgres", 1)
+        procs.update(dict.fromkeys(range(501, 900), ("postgres", 500)))
+        assert self._run(procs, before=procs) == (None, set())
+
+    def test_first_sighting_waits_for_growth(self):
+        assert self._run(self._chain(), before={}) == (None, set())
+
+    def test_zombies_are_no_family(self):
+        procs = self._desktop()
+        procs[500] = ("worker", 10)
+        procs.update(dict.fromkeys(range(501, 1000), ("worker", 500, "Z")))
+        assert self._run(procs) == (None, set())
+
+    def test_zombie_leaf_is_skipped(self):
+        procs = self._chain()
+        procs[1499] = ("bash", 1498, "Z")
+        assert self._run(procs)[0] == (1498,)
+
+    def test_cgroup_frozen_leaf_is_contained(self):
+        frozen = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-x.invalid.scope"
+        thrash_protect._tp.frozen_cgroup_paths.add(frozen)
+        with patch("thrash_protect.get_cgroup_path", side_effect=lambda pid: frozen if pid == 1499 else None):
+            assert self._run(self._chain())[0] is None
+
+    def test_nothing_left_after_filtering(self):
+        procs = {1: ("systemd", 0), 5: ("systemd", 1), 6: ("kworker/0:1", 2)}
+        assert self._run(procs, threshold=2, before={}) == (None, set())
+
+    def test_gate_baseline_follows_a_shrinking_box(self):
+        thrash_protect.init_config(argparse.Namespace(config=None, fork_bomb_threshold=100))
+        selector = thrash_protect.ForkBombProcessSelector()
+        selector.quiet_count = 10000
+        procs = self._desktop()
+        procs.update(dict.fromkeys(range(100, 500), ("cat", 10)))
+        assert self._scan(selector, procs) == (None, set())
+        assert selector.quiet_count == len(procs)
+
+    @patch("thrash_protect.log_frozen")
+    @patch("thrash_protect.time.sleep")
+    @patch("thrash_protect.kill")
+    def test_freeze_chases_descendants(self, kill, sleep, _log):
+        """The leaf forks on between the scan and the SIGSTOP; once it is
+        stopped, its descendants are stopped one by one."""
+        children = {1499: "1500 ", 1500: "1501 1502 ", 1501: "", 1502: ""}
+        files = {"/proc/%d/task/%d/children" % (p, p): c.encode() for p, c in children.items()}
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            with patch(
+                "thrash_protect.glob.glob",
+                side_effect=lambda pat: [f for f in files if f.startswith(pat.split("*")[0])],
+            ):
+                with patch("thrash_protect.should_use_cgroup_freeze", return_value=None):
+                    frozen = thrash_protect.freeze_something(thrash_protect.ForkBombPids((1499,)))
+        assert set(frozen) == {1499, 1500, 1501, 1502}
+        assert {c.args[0] for c in kill.call_args_list} == {1499, 1500, 1501, 1502}
+        sleep.assert_not_called()
+        assert thrash_protect._tp.frozen_items == [("sigstop", frozen)]
+
+    @patch("thrash_protect.log_unfrozen")
+    @patch("thrash_protect.time.sleep")
+    @patch("thrash_protect.kill")
+    def test_unfreezing_many_pids_does_not_sleep(self, kill, sleep, _log):
+        thrash_protect._tp.frozen_items = [("sigstop", tuple(range(1000, 1064)))]
+        thrash_protect.unfreeze_something()
+        assert kill.call_count == 64
+        sleep.assert_not_called()

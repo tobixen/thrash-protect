@@ -107,6 +107,11 @@ Two follow-ups from the review of that work:
 
 Thrash-protect does not protect sufficiently against fork bombs.  It should be more aggressive in suspending parent processes when a fork bomb is detected (rapid process creation from the same parent).
 
+**Partly done:** `ForkBombProcessSelector` (`--fork-bomb-threshold`) catches
+large families of same-named processes, such as runaway recursive scripts.  See
+[incident-2026-10-16-fork-chain.md](incident-2026-10-16-fork-chain.md).  Wide
+fork bombs and the batch-job case below are still open.
+
 Related to #12 (parent process freezing).
 
 The same rollup is needed for a non-malicious case: a fork-heavy batch job
