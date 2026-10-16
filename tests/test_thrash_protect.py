@@ -1329,6 +1329,8 @@ class TestCgroupPressureSelector:
         cgroup_path = thrash_protect.get_cgroup_path(pid)
         if not cgroup_path:
             pytest.skip("No cgroup path available")
+        if not os.path.exists("/sys/fs/cgroup/cgroup.controllers"):
+            pytest.skip("cgroupfs not mounted (e.g. a build sandbox)")
 
         # First call
         pressure1 = selector.get_cgroup_pressure(cgroup_path)
@@ -1398,6 +1400,8 @@ class TestCgroupFreezing:
         # Should return a path or None (depending on system configuration)
         if cgroup_path:
             assert cgroup_path.startswith("/sys/fs/cgroup/")
+            if not os.path.exists("/sys/fs/cgroup/cgroup.controllers"):
+                pytest.skip("cgroupfs not mounted (e.g. a build sandbox)")
             assert os.path.exists(cgroup_path)
 
     def test_get_cgroup_path_nonexistent(self):
