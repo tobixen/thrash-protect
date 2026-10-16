@@ -20,6 +20,8 @@ should not:
 
 ### Added
 
+* A Nix flake with a package and a NixOS module
+  (`services.thrash-protect`).
 * `--psi-swap-floor`, `--io-pressure-threshold` and
   `--io-pressure-veto`/`--no-io-pressure-veto` - see the first item under Fixed.
 * `--oom-hold-ticks`, holding releases after an OOM-driven suspension.
