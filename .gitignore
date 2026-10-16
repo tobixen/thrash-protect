@@ -34,3 +34,7 @@ debian/thrash-protect/
 .idea/
 *.swp
 *~
+
+# nix build output
+/result
+/result-*

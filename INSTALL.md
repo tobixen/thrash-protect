@@ -49,6 +49,32 @@ script as a service.
 Archlinux users may also install through AUR.  rpm and deb packages
 will be made available on request.  There are some logic in the Makefile for creating such packages, but it's poorly tested.
 
+NixOS users can use the flake, which provides a package and a module:
+
+```nix
+{
+  inputs.thrash-protect.url = "github:tobixen/thrash-protect";
+
+  outputs = { nixpkgs, thrash-protect, ... }: {
+    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        thrash-protect.nixosModules.default
+        {
+          services.thrash-protect.enable = true;
+          # Optional; keys as in thrash-protect.yaml.example
+          services.thrash-protect.settings.interval = 0.5;
+        }
+      ];
+    };
+  };
+}
+```
+
+Without flakes, import `nix/module.nix` from a checkout or tarball.
+`nix flake check` builds the package, runs the unit tests and boots a
+VM with the service enabled.
+
 
 Usage
 -----
@@ -207,3 +233,4 @@ The subdirectories contains various logic for deploying the script:
 * systemd - contains a service config file for running the script under systemd
 * upstart - contains the config file for starting up the script under the (Ubuntu) upstart system
 * debian - contains files necessary for "debianization" and creating .deb-packages for ubuntu and debian
+* nix - contains the package, NixOS module and VM test used by flake.nix

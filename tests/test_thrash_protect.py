@@ -19,6 +19,7 @@ import thrash_protect
 # Save reference to real function before autouse fixture patches it
 _real_detect_swap_storage_type = thrash_protect.detect_swap_storage_type
 _real_read_zram_swap = thrash_protect.read_zram_swap
+_real_fork_bomb_scan = thrash_protect.ForkBombProcessSelector.scan
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +33,10 @@ def reset_global_state():
     thrash_protect._tp.reset()
     with patch("thrash_protect.detect_swap_storage_type", return_value=None):
         with patch("thrash_protect.read_zram_swap", return_value=None):
-            yield
+            # The fork bomb selector writes oom_score_adj; tests that mock
+            # readStat but not /proc would otherwise hit real processes.
+            with patch("thrash_protect.ForkBombProcessSelector.scan", return_value=None):
+                yield
     # Clean up after test
     thrash_protect._tp.reset()
 
@@ -183,6 +187,34 @@ class TestUnitTest:
             result = thrash_protect.ProcessSelector().checkParents(100)
             assert result == (99, 100), f"Expected (99, 100), got {result}"
 
+    @staticmethod
+    def _bash_stat(pid, ppid):
+        return b"%d (bash) S %d %d %d 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" % (
+            pid,
+            ppid,
+            pid,
+            pid,
+        )
+
+    def test_check_parents_deep_chain(self):
+        """A runaway recursive shell script builds a chain of thousands of
+        nested bash processes.  Walking it must neither hit Python's
+        recursion limit nor return the whole chain."""
+        files = {"/proc/%d/stat" % pid: self._bash_stat(pid, pid - 1) for pid in range(1001, 6001)}
+        files["/proc/1000/stat"] = self._bash_stat(1000, 1)
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            result = thrash_protect.ProcessSelector().checkParents(6000)
+        assert result[-1] == 6000
+        assert result == tuple(range(6001 - len(result), 6001))
+        assert len(result) <= thrash_protect.MAX_JOBCTRL_CHAIN + 1
+
+    def test_check_parents_ppid_cycle(self):
+        """A ppid cycle (pid reuse between two reads) must terminate."""
+        files = {"/proc/50/stat": self._bash_stat(50, 51), "/proc/51/stat": self._bash_stat(51, 50)}
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            result = thrash_protect.ProcessSelector().checkParents(50)
+        assert result == (51, 50)
+
     def test_is_kernel_thread(self):
         """Test _is_kernel_thread() detects kthreadd and its children."""
         ps = thrash_protect.ProcessSelector()
@@ -194,6 +226,24 @@ class TestUnitTest:
         assert ps._is_kernel_thread(123, procstat(cmd="kworker/0:1", state="S", majflt=0, ppid=2))
         # normal userspace process
         assert not ps._is_kernel_thread(1000, procstat(cmd="cat", state="R", majflt=100, ppid=999))
+
+    def test_never_freeze(self):
+        """Kernel threads, init and systemd user managers are never candidates."""
+        ps = thrash_protect.ProcessSelector()
+        procstat = ps.procstat
+        assert ps._never_freeze(123, procstat(cmd="kworker/0:1", state="S", majflt=0, ppid=2))
+        assert ps._never_freeze(1, procstat(cmd="systemd", state="S", majflt=0, ppid=0))
+        assert ps._never_freeze(919, procstat(cmd="systemd", state="S", majflt=500, ppid=1))
+        assert not ps._never_freeze(1000, procstat(cmd="cat", state="R", majflt=100, ppid=999))
+
+    @patch("thrash_protect.glob.glob", return_value=["/proc/919/stat", "/proc/1000/stat"])
+    def test_pagefault_selector_skips_user_manager(self, _glob):
+        files = {
+            "/proc/919/stat": b"919 (systemd) S 1 919 919 0 -1 0 0 0 900 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/1000/stat": b"1000 (cat) S 1 1000 1000 0 -1 0 0 0 7 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+        }
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            assert thrash_protect.PageFaultingProcessSelector().scan() == (1000,)
 
     def test_is_frozen_sigstop(self):
         """Test _is_frozen detects SIGSTOP-frozen processes."""
@@ -1213,6 +1263,35 @@ class TestIOStarvationFalsePositive:
         with patch("thrash_protect.open", new=mock.open):
             assert thrash_protect.get_workingset_refaults() == (0, 0)
 
+    def test_system_state_reads_vmstat_once(self):
+        """One SystemState sample opens /proc/vmstat exactly once.
+
+        The daemon polls faster the busier the box gets; parsing the same
+        file three times per interval adds to the load it is reacting to.
+        """
+        vmstat = (
+            b"pgmajfault 28682345\n"
+            b"pswpin 11\n"
+            b"pswpout 22\n"
+            b"zswpin 33\n"
+            b"zswpout 44\n"
+            b"workingset_refault_anon 55\n"
+            b"workingset_refault_file 66\n"
+        )
+        mock = FileMockup({"/proc/vmstat": vmstat})
+        opened = []
+
+        def counting_open(fn, mode="r"):
+            opened.append(fn)
+            return mock.open(fn, mode)
+
+        with patch("thrash_protect.open", new=counting_open):
+            state = thrash_protect.SystemState()
+        assert opened.count("/proc/vmstat") == 1
+        assert state.pagefaults == 28682345
+        assert state.swapcount == (11, 22, 33, 44)
+        assert state.refaults == (55, 66)
+
     def test_get_io_pressure(self):
         """Parse /proc/pressure/io in the same shape as memory pressure."""
         io = (
@@ -1250,6 +1329,8 @@ class TestCgroupPressureSelector:
         cgroup_path = thrash_protect.get_cgroup_path(pid)
         if not cgroup_path:
             pytest.skip("No cgroup path available")
+        if not os.path.exists("/sys/fs/cgroup/cgroup.controllers"):
+            pytest.skip("cgroupfs not mounted (e.g. a build sandbox)")
 
         # First call
         pressure1 = selector.get_cgroup_pressure(cgroup_path)
@@ -1319,6 +1400,8 @@ class TestCgroupFreezing:
         # Should return a path or None (depending on system configuration)
         if cgroup_path:
             assert cgroup_path.startswith("/sys/fs/cgroup/")
+            if not os.path.exists("/sys/fs/cgroup/cgroup.controllers"):
+                pytest.skip("cgroupfs not mounted (e.g. a build sandbox)")
             assert os.path.exists(cgroup_path)
 
     def test_get_cgroup_path_nonexistent(self):
@@ -1369,6 +1452,15 @@ class TestCgroupFreezing:
         mock_freezable.return_value = True
         result = thrash_protect.should_use_cgroup_freeze(12345)
         assert result is None
+
+    @patch("thrash_protect.get_cgroup_path")
+    @patch("thrash_protect.is_cgroup_freezable")
+    def test_should_not_freeze_user_manager_scope(self, mock_freezable, mock_cgroup):
+        """init.scope under user@N.service holds the user's systemd manager;
+        freezing it stalls every user service and the session with it."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/init.scope"
+        mock_freezable.return_value = True
+        assert thrash_protect.should_use_cgroup_freeze(12345) is None
 
     @patch("thrash_protect.get_cgroup_path")
     @patch("thrash_protect.is_cgroup_freezable")
@@ -1553,6 +1645,20 @@ class TestSwapStorageDetection:
             thrash_protect.init_config(argparse.Namespace(config=None))
         assert thrash_protect.config.pswp_weight == 1.0
         assert thrash_protect.config.swap_page_threshold * thrash_protect.config.pswp_weight == 512
+
+    def test_zram_with_explicit_threshold_keeps_ssd_weight(self):
+        """An explicit swap_page_threshold (the example config shipped 4) was
+        no longer scaled by any weight on zram: 4 pages instead of 32."""
+        with patch("thrash_protect.detect_swap_storage_type", return_value="zram"):
+            thrash_protect.init_config(argparse.Namespace(config=None, swap_page_threshold=4))
+        assert thrash_protect.config.pswp_weight == 8.0
+        thrash_protect.init_config(argparse.Namespace(config=None))
+
+    def test_zram_with_explicit_threshold_and_weight(self):
+        with patch("thrash_protect.detect_swap_storage_type", return_value="zram"):
+            thrash_protect.init_config(argparse.Namespace(config=None, swap_page_threshold=4, pswp_weight=2.0))
+        assert thrash_protect.config.pswp_weight == 2.0
+        thrash_protect.init_config(argparse.Namespace(config=None))
 
     def test_zram_storage_type_cli(self):
         parser = thrash_protect.create_argument_parser()
@@ -2170,10 +2276,11 @@ class TestCgroupFreezeBugFixes:
         mock_freeze.assert_called_once_with(target_cgroup)
         assert result == (200,)
 
+    @patch("thrash_protect.os.path.isdir", return_value=True)
     @patch("thrash_protect.unfreeze_cgroup", return_value=False)
     @patch("thrash_protect.open")
     @patch("thrash_protect.unlink")
-    def test_unfreeze_cgroup_failure_reinserts(self, unlink, mock_open, mock_unfreeze):
+    def test_unfreeze_cgroup_failure_reinserts(self, unlink, mock_open, mock_unfreeze, _isdir):
         """When unfreeze_cgroup fails, the item should be re-inserted into frozen_items."""
         cgroup_path = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc.scope"
         thrash_protect._tp.frozen_items = [("cgroup", cgroup_path, (100,))]
@@ -2190,6 +2297,22 @@ class TestCgroupFreezeBugFixes:
         assert thrash_protect._tp.num_unfreezes == 0
         # cgroup_path should still be in frozen_cgroup_paths
         assert cgroup_path in thrash_protect._tp.frozen_cgroup_paths
+
+    @patch("thrash_protect.unfreeze_cgroup", return_value=False)
+    @patch("thrash_protect.open")
+    @patch("thrash_protect.unlink")
+    def test_unfreeze_vanished_cgroup_drops_item(self, unlink, mock_open, mock_unfreeze):
+        """A cgroup that no longer exists has no processes left to resume.
+        Re-inserting it retried every tick and blocked every other unfreeze."""
+        gone = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/gone.invalid.scope"
+        thrash_protect._tp.frozen_items = [("cgroup", gone, (100,)), ("sigstop", (200,))]
+        thrash_protect._tp.frozen_cgroup_paths.add(gone)
+
+        result = thrash_protect.unfreeze_something()
+
+        assert result == [100]
+        assert thrash_protect._tp.frozen_items == [("sigstop", (200,))]
+        assert gone not in thrash_protect._tp.frozen_cgroup_paths
 
     @patch("thrash_protect.unfreeze_cgroup", return_value=True)
     @patch("thrash_protect.open")
@@ -2941,6 +3064,59 @@ class TestLogMessages:
         assert "pswp_in=3 pswp_out=4" in line
         assert "disk_in" not in line
 
+    @pytest.mark.parametrize("debug, level", [(False, logging.INFO), (True, logging.DEBUG)])
+    def test_info_is_logged_without_diagnostic(self, debug, level):
+        """The root logger sat at WARNING unless --diagnostic was given, so
+        'memory exhaustion predicted' never reached the journal."""
+        old_level = logging.root.level
+        try:
+            logging.root.setLevel(logging.WARNING)
+            thrash_protect.setup_logging(debug=debug)
+            assert logging.root.level == level
+        finally:
+            logging.root.setLevel(old_level)
+
+    @pytest.mark.parametrize("argv, level", [([], logging.INFO), (["--debug"], logging.DEBUG)])
+    def test_main_sets_level_before_and_after_init_config(self, argv, level):
+        """INFO before init_config(), so its 'auto-enabled' message survives."""
+        levels = []
+        old_level = logging.root.level
+        try:
+            logging.root.setLevel(logging.WARNING)
+            with (
+                patch("sys.argv", ["thrash-protect", *argv]),
+                patch("thrash_protect.init_config", side_effect=lambda args: levels.append(logging.root.level)),
+                patch.object(thrash_protect.config, "debug_logging", "--debug" in argv),
+                patch("thrash_protect.unfreeze_from_tmpfile"),
+                patch("thrash_protect.thrash_protect"),
+                patch("thrash_protect.cleanup"),
+            ):
+                thrash_protect.main()
+            assert levels == [logging.INFO]
+            assert logging.root.level == level
+        finally:
+            logging.root.setLevel(old_level)
+
+    @patch("thrash_protect.kill")
+    @patch("thrash_protect.unlink")
+    def test_freeze_and_unfreeze_are_info(self, unlink, kill, caplog):
+        with patch("thrash_protect.open", new=FileMockup().open):
+            with caplog.at_level(logging.INFO):
+                thrash_protect.freeze_something((10, 20))
+                thrash_protect.unfreeze_something()
+        info = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+        assert any("froze pid 10" in m for m in info)
+        assert any("unfreez" in m and "10" in m for m in info)
+
+    def test_nothing_to_freeze_is_debug(self, caplog):
+        """Repeated every tick of a long thrash with nothing left to stop."""
+        selector = MagicMock()
+        selector.scan.return_value = None
+        with patch.object(thrash_protect._tp, "process_selector", selector):
+            with caplog.at_level(logging.INFO):
+                assert thrash_protect.freeze_something() == ()
+        assert not [r for r in caplog.records if "nothing to freeze" in r.getMessage()]
+
 
 class TestDiagnosticVolume:
     """--diagnostic wrote 184k lines in 11 hours, 99.9% of them 'no trigger'.
@@ -3181,3 +3357,313 @@ class TestZramAwarePredictor:
         with patch("thrash_protect.read_zram_swap", return_value=None):
             thrash_protect.init_config(argparse.Namespace(config=None))
         assert thrash_protect._tp.memory_predictor.zram is False
+
+
+class TestForkBombSelector:
+    """A runaway recursive shell script on 2026-10-16 built a chain of
+    some 75 000 nested bash processes.  The kernel OOM killer never picked
+    one of them (each was small, with oom_score_adj 0) and killed 54
+    unrelated processes instead, while the per-process selectors froze
+    an innocent process each tick.  See
+    docs/incident-2026-10-16-fork-chain.md."""
+
+    @staticmethod
+    def _stat(pid, cmd, ppid, state="S"):
+        return b"%d (%s) %s %d %d %d 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" % (
+            pid,
+            cmd.encode(),
+            state.encode(),
+            ppid,
+            pid,
+            pid,
+        )
+
+    def _scan(self, selector, procs):
+        files = {"/proc/%d/stat" % pid: self._stat(pid, *p) for pid, p in procs.items()}
+        mockup = FileMockup(files)
+        with patch("thrash_protect.open", new=mockup.open):
+            with patch("thrash_protect.glob.glob", return_value=list(files)):
+                result = _real_fork_bomb_scan(selector)
+        adjusted = {int(fn.split("/")[2]) for fn in mockup.file_mocks if fn.endswith("/oom_score_adj")}
+        return result, adjusted
+
+    def _run(self, procs, threshold=100, before=None):
+        """procs: {pid: (cmd, ppid[, state])}.  Scans twice, first `before`
+        (default: procs without the 100 highest pids, so families have
+        grown), then procs.  Returns (result, set of pids whose
+        oom_score_adj was written by the second scan)."""
+        thrash_protect.init_config(argparse.Namespace(config=None, fork_bomb_threshold=threshold))
+        if before is None:
+            before = {pid: p for pid, p in procs.items() if pid <= max(procs) - 100}
+        selector = thrash_protect.ForkBombProcessSelector()
+        assert self._scan(selector, before) == (None, set())
+        return self._scan(selector, procs)
+
+    @staticmethod
+    def _desktop():
+        """tmux with twenty interactive shells, one of them running the chain root."""
+        procs = {10: ("tmux: server", 1)}
+        procs.update(dict.fromkeys(range(20, 40), ("bash", 10)))
+        return procs
+
+    def test_deep_chain_freezes_its_leaf(self):
+        procs = self._desktop()
+        procs[1000] = ("bash", 20)
+        procs.update({pid: ("bash", pid - 1) for pid in range(1001, 1500)})
+        result, adjusted = self._run(procs)
+        assert result == (1499,)
+        assert adjusted == set(range(20, 21)) | set(range(1000, 1500))
+
+    def test_below_threshold_is_ignored(self):
+        procs = self._desktop()
+        procs.update({pid: ("bash", pid - 1) for pid in range(1001, 1050)})
+        procs[1000] = ("bash", 20)
+        assert self._run(procs) == (None, set())
+
+    def test_interactive_shells_alone_are_no_fork_bomb(self):
+        procs = self._desktop()
+        procs.update(dict.fromkeys(range(100, 300), ("bash", 10)))
+        assert self._run(procs, threshold=300) == (None, set())
+
+    def test_wide_orphan_bomb_is_bounded(self):
+        """`:(){ :|:& };:` orphans its processes to the subreaper."""
+        procs = self._desktop()
+        procs.update(dict.fromkeys(range(1000, 1400), (":", 1)))
+        result, adjusted = self._run(procs)
+        assert len(result) == thrash_protect.MAX_FORK_BOMB_FREEZE
+        assert set(result) <= set(range(1000, 1400))
+        assert adjusted == set(range(1000, 1400))
+
+    def test_contained_chain_is_left_to_other_selectors(self):
+        """Once the leaf is stopped the chain cannot grow; reporting it again
+        would starve the other selectors."""
+        procs = self._desktop()
+        procs[1000] = ("bash", 20)
+        procs.update({pid: ("bash", pid - 1) for pid in range(1001, 1499)})
+        procs[1499] = ("bash", 1498, "T")
+        assert self._run(procs)[0] is None
+
+    def test_threshold_zero_disables(self):
+        procs = self._desktop()
+        procs[1000] = ("bash", 20)
+        procs.update({pid: ("bash", pid - 1) for pid in range(1001, 1500)})
+        assert self._run(procs, threshold=0) == (None, set())
+
+    def test_config_default(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect.config.fork_bomb_threshold == 300
+
+    @patch("thrash_protect.ForkBombProcessSelector.scan", return_value=(1499,))
+    def test_global_selector_checks_fork_bombs_first(self, _scan):
+        selector = thrash_protect.GlobalProcessSelector()
+        selector.scan_method_count = 3
+        for c in selector.collection:
+            c.scan = MagicMock(return_value=(7,))
+        assert selector.scan() == (1499,)
+        assert selector.scan_method_count == 3
+        for c in selector.collection:
+            c.scan.assert_not_called()
+
+    def _chain(self):
+        procs = self._desktop()
+        procs[1000] = ("bash", 20)
+        procs.update({pid: ("bash", pid - 1) for pid in range(1001, 1500)})
+        return procs
+
+    def test_steady_family_is_no_fork_bomb(self):
+        """A prefork server's pool is big but does not grow between scans."""
+        procs = self._desktop()
+        procs[500] = ("postgres", 1)
+        procs.update(dict.fromkeys(range(501, 900), ("postgres", 500)))
+        assert self._run(procs, before=procs) == (None, set())
+
+    def test_first_sighting_waits_for_growth(self):
+        assert self._run(self._chain(), before={}) == (None, set())
+
+    def test_zombies_are_no_family(self):
+        procs = self._desktop()
+        procs[500] = ("worker", 10)
+        procs.update(dict.fromkeys(range(501, 1000), ("worker", 500, "Z")))
+        assert self._run(procs) == (None, set())
+
+    def test_zombie_leaf_is_skipped(self):
+        procs = self._chain()
+        procs[1499] = ("bash", 1498, "Z")
+        assert self._run(procs)[0] == (1498,)
+
+    def test_cgroup_frozen_leaf_is_contained(self):
+        frozen = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-x.invalid.scope"
+        thrash_protect._tp.frozen_cgroup_paths.add(frozen)
+        with patch("thrash_protect.get_cgroup_path", side_effect=lambda pid: frozen if pid == 1499 else None):
+            assert self._run(self._chain())[0] is None
+
+    def test_nothing_left_after_filtering(self):
+        procs = {1: ("systemd", 0), 5: ("systemd", 1), 6: ("kworker/0:1", 2)}
+        assert self._run(procs, threshold=2, before={}) == (None, set())
+
+    def test_gate_baseline_follows_a_shrinking_box(self):
+        thrash_protect.init_config(argparse.Namespace(config=None, fork_bomb_threshold=100))
+        selector = thrash_protect.ForkBombProcessSelector()
+        selector.quiet_count = 10000
+        procs = self._desktop()
+        procs.update(dict.fromkeys(range(100, 500), ("cat", 10)))
+        assert self._scan(selector, procs) == (None, set())
+        assert selector.quiet_count == len(procs)
+
+    @patch("thrash_protect.log_frozen")
+    @patch("thrash_protect.time.sleep")
+    @patch("thrash_protect.kill")
+    def test_freeze_chases_descendants(self, kill, sleep, _log):
+        """The leaf forks on between the scan and the SIGSTOP; once it is
+        stopped, its descendants are stopped one by one."""
+        children = {1499: "1500 ", 1500: "1501 1502 ", 1501: "", 1502: ""}
+        files = {"/proc/%d/task/%d/children" % (p, p): c.encode() for p, c in children.items()}
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            with patch(
+                "thrash_protect.glob.glob",
+                side_effect=lambda pat: [f for f in files if f.startswith(pat.split("*")[0])],
+            ):
+                with patch("thrash_protect.should_use_cgroup_freeze", return_value=None):
+                    frozen = thrash_protect.freeze_something(thrash_protect.ForkBombPids((1499,)))
+        assert set(frozen) == {1499, 1500, 1501, 1502}
+        assert {c.args[0] for c in kill.call_args_list} == {1499, 1500, 1501, 1502}
+        sleep.assert_not_called()
+        assert thrash_protect._tp.frozen_items == [("sigstop", frozen)]
+
+    @patch("thrash_protect.log_unfrozen")
+    @patch("thrash_protect.time.sleep")
+    @patch("thrash_protect.kill")
+    def test_unfreezing_many_pids_does_not_sleep(self, kill, sleep, _log):
+        thrash_protect._tp.frozen_items = [("sigstop", tuple(range(1000, 1064)))]
+        thrash_protect.unfreeze_something()
+        assert kill.call_count == 64
+        sleep.assert_not_called()
+
+    def test_orphans_in_other_cgroups_are_separate(self):
+        """A bash service started by systemd is an orphan of pid 1 like the
+        chain's root; it must not join the chain's family (found on a test VM,
+        where the test driver was frozen along with the chain)."""
+        procs = self._desktop()
+        procs[50] = ("bash", 1)
+        procs[1000] = ("bash", 1)
+        procs.update({pid: ("bash", pid - 1) for pid in range(1001, 1500)})
+        cgroups = {50: "/sys/fs/cgroup/system.slice/other.service"}
+        with patch(
+            "thrash_protect.get_cgroup_path",
+            side_effect=lambda pid: cgroups.get(pid, "/sys/fs/cgroup/system.slice/fb.service"),
+        ):
+            result, adjusted = self._run(procs)
+        assert result == (1499,)
+        assert 50 not in adjusted
+
+    def test_hold_config_default(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect.config.fork_bomb_hold == 60
+
+    @patch("thrash_protect.log_unfrozen")
+    @patch("thrash_protect.log_frozen")
+    @patch("thrash_protect.kill")
+    @patch("thrash_protect.should_use_cgroup_freeze", return_value=None)
+    @patch("thrash_protect.glob.glob", return_value=[])
+    def test_fork_bomb_freeze_is_held(self, _glob, _cg, kill, _logf, _logu):
+        """Resuming a fork bomb restarts it.  On a test VM every freeze was
+        released after the OOM hold, and the chain grew on to an OOM."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        with patch("thrash_protect.time.monotonic", return_value=1000.0):
+            thrash_protect.freeze_something(thrash_protect.ForkBombPids((1499,)))
+            thrash_protect.freeze_something((77,))
+        with patch("thrash_protect.time.monotonic", return_value=1059.0):
+            assert thrash_protect.unfreeze_something() == [77]
+            assert thrash_protect.unfreeze_something() is None
+            assert thrash_protect._tp.frozen_items == [("sigstop", (1499,))]
+        with patch("thrash_protect.time.monotonic", return_value=1061.0):
+            assert thrash_protect.unfreeze_something() == [1499]
+        assert thrash_protect._tp.frozen_items == []
+
+    def test_orphans_sharing_a_cgroup_form_one_family(self):
+        procs = self._desktop()
+        procs.update(dict.fromkeys(range(1000, 1400), (":", 1)))
+        with patch("thrash_protect.get_cgroup_path", return_value="/sys/fs/cgroup/user.slice/bomb.scope"):
+            result, adjusted = self._run(procs)
+        assert len(result) == thrash_protect.MAX_FORK_BOMB_FREEZE
+        assert adjusted == set(range(1000, 1400))
+
+    def test_orphans_gone_before_cgroup_read_are_dropped(self):
+        procs = self._desktop()
+        procs.update(dict.fromkeys(range(1000, 1400), (":", 1)))
+        cg = lambda pid: None if pid % 2 else "/sys/fs/cgroup/user.slice/bomb.scope"  # noqa: E731
+        real_read = thrash_protect.ProcessSelector.readStat
+        alive = lambda self, sfn: None if sfn in range(1001, 1400, 2) else real_read(self, sfn)  # noqa: E731
+        with patch("thrash_protect.get_cgroup_path", side_effect=cg):
+            with patch("thrash_protect.ProcessSelector.readStat", new=alive):
+                result, adjusted = self._run(procs)
+        assert adjusted == set(range(1000, 1400, 2))
+
+    def test_cgroups_read_only_for_big_orphan_groups(self):
+        """Every service is an orphan of init; reading all their cgroups on
+        every scan would double the cost of a scan."""
+        procs = self._desktop()
+        procs.update({pid: ("svc%d" % pid, 1) for pid in range(100, 300)})
+        procs[1000] = ("bash", 20)
+        procs.update({pid: ("bash", pid - 1) for pid in range(1001, 1500)})
+        with patch("thrash_protect.get_cgroup_path", return_value=None) as cg:
+            self._run(procs)
+        assert cg.call_count == 0
+
+    @patch("thrash_protect.log_frozen")
+    @patch("thrash_protect.kill")
+    @patch("thrash_protect.freeze_cgroup", return_value=True)
+    @patch(
+        "thrash_protect.should_use_cgroup_freeze",
+        return_value="/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-x.invalid.scope",
+    )
+    @patch("thrash_protect.glob.glob", return_value=[])
+    def test_fork_bomb_in_tmux_is_not_cgroup_frozen(self, _glob, _cg, freeze_cgroup, kill, _log):
+        """The tmux scope holds every pane of the server, including the one
+        the operator would kill the fork bomb from."""
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        thrash_protect.freeze_something(thrash_protect.ForkBombPids((1499,)))
+        freeze_cgroup.assert_not_called()
+        kill.assert_called_once_with(1499, signal.SIGSTOP)
+
+    def _freeze_two(self, kill_patch_ok=True):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        with patch("thrash_protect.time.monotonic", return_value=1000.0):
+            thrash_protect.freeze_something(thrash_protect.ForkBombPids((1499,)))
+            thrash_protect.freeze_something((77,))
+
+    @patch("thrash_protect.log_unfrozen")
+    @patch("thrash_protect.log_frozen")
+    @patch("thrash_protect.kill")
+    @patch("thrash_protect.should_use_cgroup_freeze", return_value=None)
+    @patch("thrash_protect.glob.glob", return_value=[])
+    def test_held_and_blacklisted(self, _glob, _cg, kill, _logf, _logu):
+        """The deadlock guard may force out a blacklisted item, never a held one."""
+        self._freeze_two()
+        thrash_protect._tp.freeze_blacklist.should_skip_unfreeze = lambda pids: pids == (77,)
+        with patch("thrash_protect.time.monotonic", return_value=1010.0):
+            assert thrash_protect.unfreeze_something() == [77]
+            assert thrash_protect.unfreeze_something() is None
+
+    @patch("thrash_protect.log_frozen")
+    @patch("thrash_protect.kill")
+    @patch("thrash_protect.should_use_cgroup_freeze", return_value=None)
+    @patch("thrash_protect.glob.glob", return_value=[])
+    def test_refreeze_keeps_the_deadline(self, _glob, _cg, kill, _log):
+        self._freeze_two()
+        with patch("thrash_protect.time.monotonic", return_value=1050.0):
+            thrash_protect.freeze_something(thrash_protect.ForkBombPids((1499,)))
+        assert thrash_protect._tp.held_until == {("sigstop", (1499,)): 1060.0}
+
+    @patch("thrash_protect.unlink")
+    @patch("thrash_protect.log_frozen")
+    @patch("thrash_protect.kill")
+    @patch("thrash_protect.should_use_cgroup_freeze", return_value=None)
+    @patch("thrash_protect.glob.glob", return_value=[])
+    def test_cleanup_and_reset_drop_holds(self, _glob, _cg, kill, _log, _unlink):
+        self._freeze_two()
+        thrash_protect._tp.cleanup()
+        assert thrash_protect._tp.held_until == {}
+        self._freeze_two()
+        thrash_protect._tp.reset()
+        assert thrash_protect._tp.held_until == {}

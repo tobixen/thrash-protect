@@ -216,6 +216,8 @@ CONFIG_SCHEMA = {
     "blacklist_max_skip_count": (int, "THRASH_PROTECT_BLACKLIST_MAX_SKIP_COUNT", ["blacklist-max-skip-count"]),
     "blacklist_escalation_cap": (int, "THRASH_PROTECT_BLACKLIST_ESCALATION_CAP", ["blacklist-escalation-cap"]),
     "oom_hold_ticks": (int, "THRASH_PROTECT_OOM_HOLD_TICKS", ["oom-hold-ticks"]),
+    "fork_bomb_threshold": (int, "THRASH_PROTECT_FORK_BOMB_THRESHOLD", ["fork-bomb-threshold"]),
+    "fork_bomb_hold": (float, "THRASH_PROTECT_FORK_BOMB_HOLD", ["fork-bomb-hold"]),
 }
 
 
@@ -335,6 +337,8 @@ def get_defaults() -> dict[str, Any]:
         "blacklist_max_skip_count": 3,  # Unfreeze cycles a blacklisted item gets skipped
         "blacklist_escalation_cap": 8,  # Max allowance is this many times max_skip_count
         "oom_hold_ticks": 4,  # Ticks an OOM-driven freeze is held despite quiet swap
+        "fork_bomb_threshold": 300,  # Same-name process family size treated as a fork bomb; 0 disables
+        "fork_bomb_hold": 60.0,  # Seconds a frozen fork bomb stays frozen
     }
 
 
@@ -724,6 +728,21 @@ Example usage:
         metavar="N",
         help="Ticks an OOM-driven freeze is held even when swap is quiet (default: 4)",
     )
+    p.add_argument(
+        "--fork-bomb-threshold",
+        dest="fork_bomb_threshold",
+        type=int,
+        metavar="N",
+        help="Treat a growing family of N or more processes of the same name as a fork bomb, "
+        "suspend its newest members and set oom_score_adj 1000 on all of them; 0 disables (default: 300)",
+    )
+    p.add_argument(
+        "--fork-bomb-hold",
+        dest="fork_bomb_hold",
+        type=float,
+        metavar="SECONDS",
+        help="Keep a frozen fork bomb frozen this long, whatever the memory situation (default: 60)",
+    )
 
     return p
 
@@ -812,6 +831,9 @@ def should_use_cgroup_freeze(pid: int) -> str | None:
     # the entire login session (124+ processes)
     if "/user@" not in cgroup_path:
         return None
+    # Reject init.scope, which holds the user's systemd manager
+    if cgroup_path.endswith("/init.scope"):
+        return None
     return cgroup_path
 
 
@@ -843,6 +865,44 @@ def apply_score_adjustments(score: float, cmd: str) -> float:
     if cmd in config.cmd_blacklist:
         score *= config.blacklist_score_multiplier
     return score
+
+
+def _is_jobctrl_chain(pids: tuple[int, ...] | list[int]) -> bool:
+    """Whether pids are paced one by one when frozen or resumed: a process
+    with its shell parents, so job control sees them in order.  A fork bomb
+    item is longer than any such chain, and pacing it would block the loop."""
+    return 1 < len(pids) <= MAX_JOBCTRL_CHAIN + 1
+
+
+def stop_descendants(pids: tuple[int, ...]) -> list[int]:
+    """SIGSTOP every descendant of the (already stopped) pids.
+
+    A stopped process cannot fork, so walking the tree top-down after
+    stopping each level catches everything forked since the pids were
+    selected.  Bounded by MAX_FORK_BOMB_CHASE.
+    """
+    stopped: list[int] = []
+    seen = set(pids)
+    queue = list(pids)
+    while queue and len(stopped) < MAX_FORK_BOMB_CHASE:
+        pid = queue.pop()
+        for children_file in glob.glob("/proc/%d/task/*/children" % pid):
+            try:
+                with open(children_file) as f:
+                    children = [int(c) for c in f.read().split()]
+            except (OSError, ValueError):
+                continue
+            for child in children:
+                if child in seen or len(stopped) >= MAX_FORK_BOMB_CHASE:
+                    continue
+                seen.add(child)
+                try:
+                    kill(child, signal.SIGSTOP)
+                except ProcessLookupError:
+                    continue
+                stopped.append(child)
+                queue.append(child)
+    return stopped
 
 
 def unpack_frozen_item(item: tuple[str, ...]) -> tuple[str, str | None, tuple[int, ...]]:
@@ -924,7 +984,37 @@ def get_io_pressure() -> dict[str, dict[str, float | int]] | None:
     return _read_psi("/proc/pressure/io")
 
 
-def get_workingset_refaults() -> tuple[int, int] | None:
+## The /proc/vmstat counters SystemState samples.  Collected in one pass so
+## that each interval opens and parses the file once, not once per consumer.
+VMSTAT_KEYS = frozenset(
+    {
+        "pgmajfault",
+        "pswpin",
+        "pswpout",
+        "zswpin",
+        "zswpout",
+        "workingset_refault_anon",
+        "workingset_refault_file",
+    }
+)
+
+
+def read_vmstat() -> dict[str, int]:
+    """Read the counters of VMSTAT_KEYS from /proc/vmstat in a single pass.
+
+    Keys missing on the running kernel are simply absent from the result.
+    Read and parse errors propagate; callers decide what a failure means.
+    """
+    counters: dict[str, int] = {}
+    with open("/proc/vmstat") as vmstat:
+        for line in vmstat:
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] in VMSTAT_KEYS:
+                counters[parts[0]] = int(parts[1])
+    return counters
+
+
+def get_workingset_refaults(vmstat: dict[str, int] | None = None) -> tuple[int, int] | None:
     """Read (anon, file) workingset refault counters from /proc/vmstat.
 
     A refault is a page we evicted and then had to read back.  The anon
@@ -939,17 +1029,15 @@ def get_workingset_refaults() -> tuple[int, int] | None:
     zeros of an old kernel are stable across samples, whereas a one-off
     failure would otherwise make the *next* interval subtract zero and so
     compute its ratio against the lifetime counters.
+
+    Pass an already parsed ``vmstat`` (from read_vmstat) to avoid a re-read.
     """
-    counters = {"workingset_refault_anon": 0, "workingset_refault_file": 0}
-    try:
-        with open("/proc/vmstat") as vmstat:
-            for line in vmstat:
-                parts = line.split()
-                if len(parts) >= 2 and parts[0] in counters:
-                    counters[parts[0]] = int(parts[1])
-    except (FileNotFoundError, PermissionError, OSError, ValueError):
-        return None
-    return (counters["workingset_refault_anon"], counters["workingset_refault_file"])
+    if vmstat is None:
+        try:
+            vmstat = read_vmstat()
+        except (OSError, ValueError):
+            return None
+    return (vmstat.get("workingset_refault_anon", 0), vmstat.get("workingset_refault_file", 0))
 
 
 #########################
@@ -1365,7 +1453,8 @@ def init_config(args: argparse.Namespace | None = None) -> None:
     if resolved_storage == "auto":
         resolved_storage = detect_swap_storage_type()
     ## zram is compressed RAM, like zswap, so its pages get zswap's weight of 1
-    ## and the same 512-page effective threshold.
+    ## and the same 512-page effective threshold.  An explicit threshold keeps
+    ## the SSD weight below, as it was set with that weight in mind.
     storage_page_threshold = {"ssd": 64, "zram": 512}.get(resolved_storage)
     if storage_page_threshold and "swap_page_threshold" not in explicitly_set:
         cfg["swap_page_threshold"] = storage_page_threshold
@@ -1393,7 +1482,7 @@ def init_config(args: argparse.Namespace | None = None) -> None:
     if cfg["pswp_weight"] is None:
         if resolved_storage == "hdd":
             cfg["pswp_weight"] = 128.0
-        elif resolved_storage == "zram":
+        elif resolved_storage == "zram" and "swap_page_threshold" not in explicitly_set:
             cfg["pswp_weight"] = 1.0
         else:
             cfg["pswp_weight"] = 8.0  # SSD or unknown
@@ -1481,24 +1570,23 @@ class SystemState:
 
     def __init__(self) -> None:
         self.timestamp: float = time.time()
-        self.pagefaults: int | None = self.get_pagefaults()
-        self.swapcount: tuple[int, ...] = self.get_swapcount()
+        vmstat = read_vmstat()  # one read per interval, shared by the three below
+        self.pagefaults: int | None = self.get_pagefaults(vmstat)
+        self.swapcount: tuple[int, ...] = self.get_swapcount(vmstat)
         self.psi: dict[str, dict[str, float | int]] | None = get_memory_pressure()  # None if PSI not available
         self.io_psi = get_io_pressure()  # None if PSI not available
-        self.refaults = get_workingset_refaults()  # (0, 0) on kernels below 5.9
+        self.refaults = get_workingset_refaults(vmstat)  # (0, 0) on kernels below 5.9
         self.cooldown_counter: int = 0
         self.unfrozen_pid: tuple[int, ...] | list[int] | None = None
         self.timer_alert: bool = False
 
-    def get_pagefaults(self) -> int | None:
-        with open("/proc/vmstat") as vmstat:
-            line = ""
-            while line is not None:
-                line = vmstat.readline()
-                if line.startswith("pgmajfault "):
-                    return int(line[12:])
+    def get_pagefaults(self, vmstat: dict[str, int] | None = None) -> int | None:
+        """Major page fault counter (pgmajfault) from /proc/vmstat."""
+        if vmstat is None:
+            vmstat = read_vmstat()
+        return vmstat.get("pgmajfault")
 
-    def get_swapcount(self) -> tuple[int, ...]:
+    def get_swapcount(self, vmstat: dict[str, int] | None = None) -> tuple[int, ...]:
         """Read swap counters from /proc/vmstat.
 
         Returns a 4-tuple: (pswpin, pswpout, zswpin, zswpout)
@@ -1506,13 +1594,9 @@ class SystemState:
           - zswpin/zswpout: pages decompressed from / compressed into zswap pool
         zswp* counters are present on Linux 6.3+ and default to 0 on older kernels.
         """
-        counters = {"pswpin": 0, "pswpout": 0, "zswpin": 0, "zswpout": 0}
-        with open("/proc/vmstat") as vmstat:
-            for line in vmstat:
-                parts = line.split()
-                if len(parts) >= 2 and parts[0] in counters:
-                    counters[parts[0]] = int(parts[1])
-        return (counters["pswpin"], counters["pswpout"], counters["zswpin"], counters["zswpout"])
+        if vmstat is None:
+            vmstat = read_vmstat()
+        return tuple(vmstat.get(key, 0) for key in ("pswpin", "pswpout", "zswpin", "zswpout"))
 
     def check_swap_threshold(self, prev: SystemState) -> bool:
         self.cooldown_counter = prev.cooldown_counter
@@ -1722,6 +1806,17 @@ class SystemState:
         return True
 
 
+## How many job-control parents (shells) checkParents() freezes along with
+## the selected process.
+MAX_JOBCTRL_CHAIN = 32
+
+## How many processes of a fork bomb are frozen in one go.  Every frozen pid
+## is logged and persisted individually.
+MAX_FORK_BOMB_FREEZE = 64
+## How many descendants of those are stopped after them
+MAX_FORK_BOMB_CHASE = 256
+
+
 class ProcessSelector:
     """Base class for process selector classes.
 
@@ -1740,6 +1835,13 @@ class ProcessSelector:
     def _is_kernel_thread(pid: int, stats: ProcessSelector.procstat) -> bool:
         """Kernel threads have kthreadd (pid 2) as parent, or are kthreadd itself."""
         return pid == 2 or stats.ppid == 2
+
+    @staticmethod
+    def _never_freeze(pid: int, stats: ProcessSelector.procstat) -> bool:
+        """Processes no selector may pick: kernel threads, init, and the
+        per-user systemd managers.  A frozen user manager stalls every user
+        service and the desktop session along with it."""
+        return pid == 1 or stats.cmd == "systemd" or ProcessSelector._is_kernel_thread(pid, stats)
 
     @staticmethod
     def _is_frozen(pid: int, stats: ProcessSelector.procstat) -> bool:
@@ -1791,21 +1893,27 @@ class ProcessSelector:
         suspended, the bash job control kicks in and causes havoc.
         Hence, we should check if the cmd of the parent process is
         'bash'.
+
+        The walk is iterative and stops after MAX_JOBCTRL_CHAIN parents:
+        a runaway recursive shell script can nest thousands of shells.
+        Freezing the innermost ones stops the chain from growing.  The
+        shell right above the cut does see its child stop, but that deep
+        in a chain it is a script rather than an interactive shell.
         """
         if ppid is None:
             stats = self.readStat(pid)
             if not stats:
                 return ()
             ppid = stats.ppid
-        if ppid <= 1:
-            return (pid,)
-        pstats = self.readStat(ppid)
-        # Strip leading '-' from login shells (e.g., '-bash' -> 'bash')
-        cmd_to_check = pstats.cmd.lstrip("-") if pstats else None
-        if pstats and cmd_to_check in config.cmd_jobctrllist:
-            return self.checkParents(ppid, pstats.ppid) + (pid,)
-        else:
-            return (pid,)
+        chain = [pid]
+        while ppid > 1 and len(chain) <= MAX_JOBCTRL_CHAIN and ppid not in chain:
+            pstats = self.readStat(ppid)
+            # Strip leading '-' from login shells (e.g., '-bash' -> 'bash')
+            if not pstats or pstats.cmd.lstrip("-") not in config.cmd_jobctrllist:
+                break
+            chain.append(ppid)
+            ppid = pstats.ppid
+        return tuple(reversed(chain))
 
 
 class OOMScoreProcessSelector(ProcessSelector):
@@ -1829,7 +1937,7 @@ class OOMScoreProcessSelector(ProcessSelector):
                 stats = self.readStat(pid)
                 if not stats:
                     continue
-                if self._is_kernel_thread(pid, stats):
+                if self._never_freeze(pid, stats):
                     continue
                 if self._is_frozen(pid, stats):
                     logging.debug(
@@ -2000,7 +2108,7 @@ class CgroupPressureProcessSelector(ProcessSelector):
                 continue
 
             # Skip kernel threads
-            if self._is_kernel_thread(pid, stats):
+            if self._never_freeze(pid, stats):
                 continue
 
             # Skip already frozen
@@ -2089,7 +2197,7 @@ class PageFaultingProcessSelector(ProcessSelector):
             stats = self.readStat(fn)
             if not stats:
                 continue
-            if self._is_kernel_thread(pid, stats):
+            if self._never_freeze(pid, stats):
                 continue
             if stats.majflt > 0 and not self._is_frozen(pid, stats):
                 prev = self.pagefault_by_pid.get(pid, 0)
@@ -2112,6 +2220,152 @@ class PageFaultingProcessSelector(ProcessSelector):
         ## (TODO: hardcoded constants)
         if max > 4.0 / (self.cooldown_counter + 1.0):
             return self.checkParents(*worstpid)
+
+
+class ForkBombPids(tuple):
+    """Pids selected by ForkBombProcessSelector.  freeze_something() also
+    stops their descendants, which they may have forked since the scan."""
+
+
+class ForkBombProcessSelector(ProcessSelector):
+    """
+    Detects fork bombs and runaway recursive scripts.
+
+    The kernel OOM killer scores processes one by one, so a few thousand
+    small processes are never picked, and the per-process selectors find
+    nothing worth freezing in any single one of them either.  This selector
+    groups processes into families: a process belongs to the family of its
+    parent when both have the same name, and orphans of the same name share
+    a family per subreaper and cgroup.  A family of fork_bomb_threshold members or more
+    that has grown by a tenth of that since the previous scan is taken for a
+    fork bomb.  A big but steady pool, such as a prefork server's workers,
+    is left alone.  The family's leaves - members with no children in it -
+    are frozen, at most MAX_FORK_BOMB_FREEZE at a time, and freeze_something()
+    then stops whatever they forked meanwhile.  They stay frozen for
+    fork_bomb_hold seconds.  Freezing the leaf of a chain
+    of nested scripts stops the chain from growing.  The whole family also
+    gets oom_score_adj 1000, which is never reverted, so the kernel OOM
+    killer, if it comes to that, kills the fork bomb rather than everything
+    else on the box.
+    """
+
+    def __init__(self) -> None:
+        self.adjusted: set[int] = set()
+        ## Number of processes at the last scan that found nothing
+        self.quiet_count: int | None = None
+        ## Sizes of the big families at the previous scan
+        self.family_sizes: dict[tuple[str, int, int, str | None], int] = {}
+
+    def scan(self) -> tuple[int, ...] | None:
+        threshold = config.fork_bomb_threshold
+        if threshold <= 0:
+            return None
+        stat_files = glob.glob("/proc/*/stat")
+        count = len(stat_files)
+        ## Cheap gate: a family that was not there at the last quiet scan
+        ## needs that many more processes on the box
+        if count < threshold or (self.quiet_count is not None and count < self.quiet_count + threshold // 2):
+            if self.quiet_count is not None:
+                self.quiet_count = min(self.quiet_count, count)
+            return None
+
+        own = (getpid(), getppid())
+        procs: dict[int, ProcessSelector.procstat] = {}
+        for fn in stat_files:
+            try:
+                pid = int(fn.split("/")[2])
+            except ValueError:
+                continue
+            stats = self.readStat(fn)
+            if stats and stats.state not in ("Z", "X") and pid not in own and not self._never_freeze(pid, stats):
+                procs[pid] = stats
+
+        ## family root: the outermost ancestor of the same name
+        roots: dict[int, int] = {}
+        for pid in procs:
+            chain = []
+            seen = set()
+            p = pid
+            while p not in roots:
+                chain.append(p)
+                seen.add(p)
+                parent = procs[p].ppid
+                if parent not in procs or procs[parent].cmd != procs[p].cmd or parent in seen:
+                    roots[p] = p
+                    break
+                p = parent
+            for q in chain:
+                roots[q] = roots[p]
+
+        ## orphans of the same name share one family per subreaper (init and
+        ## systemd managers are not in procs)
+        groups: dict[tuple[str, int, int], list[int]] = {}
+        for pid, root in roots.items():
+            ppid = procs[root].ppid
+            key3 = (procs[pid].cmd, ppid, 0) if ppid not in procs else (procs[pid].cmd, 0, root)
+            groups.setdefault(key3, []).append(pid)
+
+        ## ... and per cgroup, which keeps a bash service started by systemd
+        ## out of the family of a fork bomb whose root is also a child of
+        ## init.  Only big orphan groups are split, as every service on the
+        ## box is an orphan.  Members gone before their cgroup is read are
+        ## left out; without cgroup v2 nothing is split.
+        families: dict[tuple[str, int, int, str | None], list[int]] = {}
+        root_cgroups: dict[int, Any] = {}
+        gone = object()
+        for key3, members in groups.items():
+            if key3[1] == 0 or len(members) < threshold // 2:
+                families[(*key3, None)] = members
+                continue
+            for pid in members:
+                root = roots[pid]
+                if root not in root_cgroups:
+                    cgroup = get_cgroup_path(root)
+                    root_cgroups[root] = cgroup if cgroup or self.readStat(root) else gone
+                if root_cgroups[root] is not gone:
+                    families.setdefault((*key3, root_cgroups[root]), []).append(pid)
+
+        previous = self.family_sizes
+        self.family_sizes = {k: len(v) for k, v in families.items() if len(v) >= threshold // 2}
+        growing = [
+            (k, v)
+            for k, v in families.items()
+            if len(v) >= threshold and len(v) - previous.get(k, len(v)) >= threshold // 10
+        ]
+        if not growing:
+            ## a fork bomb seen for the first time will have grown the box
+            ## past the gate by the next scan
+            self.quiet_count = count
+            return None
+        key, members = max(growing, key=lambda kv: len(kv[1]))
+
+        member_set = set(members)
+        parents = {procs[pid].ppid for pid in members if procs[pid].ppid in member_set}
+        leaves = []
+        for pid in sorted((pid for pid in members if pid not in parents), reverse=True):
+            if not self._is_frozen(pid, procs[pid]):
+                leaves.append(pid)
+                if len(leaves) >= MAX_FORK_BOMB_FREEZE:
+                    break
+        if not leaves:
+            ## contained - every leaf is already frozen
+            self.quiet_count = count
+            return None
+        self.quiet_count = None
+
+        logging.warning(
+            "fork bomb suspected: %d processes named %r in one family, freezing the %d newest"
+            % (len(members), key[0], len(leaves))
+        )
+        for pid in member_set - self.adjusted:
+            try:
+                with open("/proc/%d/oom_score_adj" % pid, "w") as f:
+                    f.write("1000")
+            except OSError:
+                continue
+            self.adjusted.add(pid)
+        self.adjusted &= set(procs)
+        return ForkBombPids(leaves)
 
 
 class GlobalProcessSelector(ProcessSelector):
@@ -2150,6 +2404,9 @@ class GlobalProcessSelector(ProcessSelector):
         )
         self.collection: list[ProcessSelector] = selectors
         self.scan_method_count: int = 0
+        ## Checked before the round-robin: a fork bomb outgrows anything
+        ## the other selectors could free one process at a time
+        self.fork_bomb_selector: ForkBombProcessSelector = ForkBombProcessSelector()
 
     def update(self, prev: SystemState, cur: SystemState) -> None:
         if cur.unfrozen_pid:
@@ -2159,6 +2416,12 @@ class GlobalProcessSelector(ProcessSelector):
 
     def scan(self) -> tuple[int, ...] | None:
         logging.debug("scan_processes")
+
+        ret = self.fork_bomb_selector.scan()
+        if ret:
+            if diagnostic_log:
+                diagnostic_log(f"selected pids {ret} via ForkBombProcessSelector")
+            return ret
 
         ## a for loop here to make sure we fall back on the next method if the first method fails to find anything.
         for i in range(0, len(self.collection)):
@@ -2411,6 +2674,9 @@ class ThrashProtectState:
         ## note_oom_freeze() for why the swap-based cooldown cannot serve here.
         self.oom_hold_counter: int = 0
         self.frozen_cgroup_paths: set[str] = set()
+        ## Frozen fork bomb items and when they may be resumed.  Resuming a
+        ## fork bomb restarts it, so these are held past the OOM hold.
+        self.held_until: dict[tuple[str, ...], float] = {}
         self.num_unfreezes: int = 0
         self.freeze_blacklist: FreezeBlacklist = FreezeBlacklist()
         self.process_selector: GlobalProcessSelector = GlobalProcessSelector(blacklist=self.freeze_blacklist)
@@ -2426,6 +2692,7 @@ class ThrashProtectState:
         self.frozen_items = []
         self.oom_hold_counter = 0
         self.frozen_cgroup_paths.clear()
+        self.held_until = {}
         self.num_unfreezes = 0
         self.freeze_blacklist = FreezeBlacklist()
         self.process_selector = GlobalProcessSelector(blacklist=self.freeze_blacklist)
@@ -2490,10 +2757,11 @@ class ThrashProtectState:
         return not cooldown_counter and not self.oom_hold_counter
 
     def freeze_something(self, pids_to_freeze: tuple[int, ...] | list[int] | int | None = None) -> tuple[int, ...]:
-        pids_to_freeze = normalize_pids(pids_to_freeze or self.process_selector.scan())
+        selected = pids_to_freeze or self.process_selector.scan()
+        pids_to_freeze = normalize_pids(selected)
         if not pids_to_freeze:
             ## process disappeared. ignore failure
-            logging.info("nothing to freeze found, or the process we were going to suspend has already exited")
+            logging.debug("nothing to freeze found, or the process we were going to suspend has already exited")
             return ()
         if getpid() in pids_to_freeze:
             logging.error("Oups.  Own pid is next on the list of processes to freeze.  This is very bad.  Skipping.")
@@ -2502,7 +2770,9 @@ class ThrashProtectState:
         # Check if any process in the chain should use cgroup freezing
         # (for tmux/screen sessions where SIGSTOP doesn't work properly)
         cgroup_path = None
-        for pid in pids_to_freeze:
+        ## A fork bomb is stopped by SIGSTOP and stop_descendants(): a tmux
+        ## scope also holds the panes the operator would deal with it from.
+        for pid in () if isinstance(selected, ForkBombPids) else pids_to_freeze:
             cgroup_path = should_use_cgroup_freeze(pid)
             if cgroup_path:
                 break
@@ -2522,7 +2792,7 @@ class ThrashProtectState:
                 self.frozen_items.append(("cgroup", cgroup_path, pids_to_freeze))
             self.frozen_cgroup_paths.add(cgroup_path)
             for pid_to_freeze in pids_to_freeze:
-                logging.debug("froze pid %s (via cgroup)" % str(pid_to_freeze))
+                logging.info("froze pid %s (via cgroup)" % str(pid_to_freeze))
                 log_frozen(pid_to_freeze)
             return pids_to_freeze
 
@@ -2531,28 +2801,37 @@ class ThrashProtectState:
             try:
                 debug_check_state(pid_to_freeze, 0)
                 kill(pid_to_freeze, signal.SIGSTOP)
-                if len(pids_to_freeze) > 1:
+                if _is_jobctrl_chain(pids_to_freeze):
                     time.sleep(config.max_acceptable_time_delta / 3)
             except ProcessLookupError:
                 continue
+        if isinstance(selected, ForkBombPids):
+            pids_to_freeze += tuple(stop_descendants(pids_to_freeze))
         # Check if already frozen (avoid duplicates)
         if not any(item[0] == "sigstop" and item[1] == pids_to_freeze for item in self.frozen_items):
             self.frozen_items.append(("sigstop", pids_to_freeze))
+        if isinstance(selected, ForkBombPids):
+            self._hold(("sigstop", pids_to_freeze))
 
         for pid_to_freeze in pids_to_freeze:
             ## Logging after freezing - as logging itself may be resource- and timeconsuming.
             ## Perhaps we should even fork it out.
-            logging.debug("froze pid %s" % str(pid_to_freeze))
+            logging.info("froze pid %s" % str(pid_to_freeze))
             log_frozen(pid_to_freeze)
         return pids_to_freeze
 
+    def _hold(self, item: tuple[str, ...]) -> None:
+        """Keep a frozen fork bomb item frozen for config.fork_bomb_hold seconds."""
+        self.held_until.setdefault(item, time.monotonic() + config.fork_bomb_hold)
+
     def _pick_unfreeze_item(self) -> tuple[tuple[str, ...], int] | None:
-        """Pick the next item to unfreeze, skipping blacklisted items.
+        """Pick the next item to unfreeze, skipping blacklisted and held items.
 
         Returns (item, pop_index) or None if nothing to unfreeze.
-        Blacklisted items with remaining skip budget are put back at the
-        opposite end of the list.  If all items are blacklisted, the first
-        candidate is unfrozen anyway to avoid deadlock.
+        Blacklisted and held items are put back at the opposite end of the
+        list.  If every item that is not held is blacklisted, the first
+        blacklisted one is unfrozen anyway to avoid deadlock.  A held fork
+        bomb is never forced out that way; its hold expires on its own.
         """
         if not self.frozen_items:
             return None
@@ -2571,6 +2850,13 @@ class ThrashProtectState:
             _, _, pids = unpack_frozen_item(item)
             pids = tuple(normalize_pids(pids))
 
+            if self.held_until.get(item, 0) > time.monotonic():
+                if pop_index == -1:
+                    self.frozen_items.insert(0, item)
+                else:
+                    self.frozen_items.append(item)
+                continue
+
             if self.freeze_blacklist.should_skip_unfreeze(pids):
                 if first_skipped is None:
                     first_skipped = item
@@ -2581,13 +2867,15 @@ class ThrashProtectState:
                     self.frozen_items.append(item)
                 continue
 
+            self.held_until.pop(item, None)
             return item, pop_index
 
         # All items were skipped — unfreeze the first one we skipped (deadlock guard)
         if first_skipped is not None:
             # It's already been re-inserted; remove and return it
             self.frozen_items.remove(first_skipped)
-            logging.debug("all frozen items blacklisted, force-unfreezing one to avoid deadlock")
+            self.held_until.pop(first_skipped, None)
+            logging.debug("all frozen items not held are blacklisted, force-unfreezing one to avoid deadlock")
             return first_skipped, pop_index
 
         return None
@@ -2603,21 +2891,22 @@ class ThrashProtectState:
 
         if cgroup_path:
             # Unfreeze via cgroup
-            logging.debug("pids to unfreeze (via cgroup): %s" % pids_to_unfreeze)
-            if not unfreeze_cgroup(cgroup_path):
+            logging.info("unfreezing pids %s (via cgroup)" % pids_to_unfreeze)
+            # A cgroup that has vanished has no processes left to resume
+            if not unfreeze_cgroup(cgroup_path) and os.path.isdir(cgroup_path):
                 logging.warning("failed to unfreeze cgroup %s, re-inserting" % cgroup_path)
                 self.frozen_items.insert(pop_index if pop_index == 0 else len(self.frozen_items), item)
                 return None
             self.frozen_cgroup_paths.discard(cgroup_path)
         else:
             # Unfreeze via SIGCONT
-            logging.debug("pids to unfreeze: %s" % pids_to_unfreeze)
+            logging.info("unfreezing pids %s" % pids_to_unfreeze)
             for pid_to_unfreeze in reversed(pids_to_unfreeze):
                 try:
                     logging.debug("going to unfreeze %s" % str(pid_to_unfreeze))
                     debug_check_state(pid_to_unfreeze, 1)
                     kill(pid_to_unfreeze, signal.SIGCONT)
-                    if len(pids_to_unfreeze) > 1:
+                    if _is_jobctrl_chain(pids_to_unfreeze):
                         time.sleep(config.max_acceptable_time_delta)
                 except ProcessLookupError:
                     ## ignore failure
@@ -2634,6 +2923,7 @@ class ThrashProtectState:
         self.oom_hold_counter = 0
         self.freeze_blacklist.clear()
         self.frozen_cgroup_paths.clear()
+        self.held_until.clear()
         for item in self.frozen_items:
             item_type, cgroup_path, pids = unpack_frozen_item(item)
             if item_type == "cgroup":
@@ -2793,19 +3083,23 @@ def thrash_protect(args: argparse.Namespace | None = None) -> None:
     return _tp.run(args)
 
 
+def setup_logging(debug: bool) -> None:
+    """INFO is what the daemon did (froze, unfroze, predicted exhaustion) and is
+    always logged; --diagnostic adds per-interval arithmetic on top, at INFO."""
+    logging.root.setLevel(logging.DEBUG if debug else logging.INFO)
+
+
 def main() -> None:
     """Main entry point for thrash-protect."""
     p = create_argument_parser()
     args = p.parse_args()
 
+    # Before init_config(), so that its own INFO messages are not lost
+    setup_logging(debug=False)
+
     # Initialize configuration from all sources (CLI > file > env > defaults)
     init_config(args)
-
-    # Set up logging level
-    if config.debug_logging:
-        logging.root.setLevel(logging.DEBUG)
-    elif config.diagnostic_logging:
-        logging.root.setLevel(logging.INFO)
+    setup_logging(debug=config.debug_logging)
 
     unfreeze_from_tmpfile()
 
