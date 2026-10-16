@@ -1746,6 +1746,11 @@ class SystemState:
         return True
 
 
+## How many job-control parents (shells) checkParents() freezes along with
+## the selected process.
+MAX_JOBCTRL_CHAIN = 32
+
+
 class ProcessSelector:
     """Base class for process selector classes.
 
@@ -1815,21 +1820,27 @@ class ProcessSelector:
         suspended, the bash job control kicks in and causes havoc.
         Hence, we should check if the cmd of the parent process is
         'bash'.
+
+        The walk is iterative and stops after MAX_JOBCTRL_CHAIN parents:
+        a runaway recursive shell script can nest thousands of shells.
+        Freezing the innermost ones stops the chain from growing.  The
+        shell right above the cut does see its child stop, but that deep
+        in a chain it is a script rather than an interactive shell.
         """
         if ppid is None:
             stats = self.readStat(pid)
             if not stats:
                 return ()
             ppid = stats.ppid
-        if ppid <= 1:
-            return (pid,)
-        pstats = self.readStat(ppid)
-        # Strip leading '-' from login shells (e.g., '-bash' -> 'bash')
-        cmd_to_check = pstats.cmd.lstrip("-") if pstats else None
-        if pstats and cmd_to_check in config.cmd_jobctrllist:
-            return self.checkParents(ppid, pstats.ppid) + (pid,)
-        else:
-            return (pid,)
+        chain = [pid]
+        while ppid > 1 and len(chain) <= MAX_JOBCTRL_CHAIN and ppid not in chain:
+            pstats = self.readStat(ppid)
+            # Strip leading '-' from login shells (e.g., '-bash' -> 'bash')
+            if not pstats or pstats.cmd.lstrip("-") not in config.cmd_jobctrllist:
+                break
+            chain.append(ppid)
+            ppid = pstats.ppid
+        return tuple(reversed(chain))
 
 
 class OOMScoreProcessSelector(ProcessSelector):

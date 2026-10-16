@@ -183,6 +183,34 @@ class TestUnitTest:
             result = thrash_protect.ProcessSelector().checkParents(100)
             assert result == (99, 100), f"Expected (99, 100), got {result}"
 
+    @staticmethod
+    def _bash_stat(pid, ppid):
+        return b"%d (bash) S %d %d %d 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" % (
+            pid,
+            ppid,
+            pid,
+            pid,
+        )
+
+    def test_check_parents_deep_chain(self):
+        """A runaway recursive shell script builds a chain of thousands of
+        nested bash processes.  Walking it must neither hit Python's
+        recursion limit nor return the whole chain."""
+        files = {"/proc/%d/stat" % pid: self._bash_stat(pid, pid - 1) for pid in range(1001, 6001)}
+        files["/proc/1000/stat"] = self._bash_stat(1000, 1)
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            result = thrash_protect.ProcessSelector().checkParents(6000)
+        assert result[-1] == 6000
+        assert result == tuple(range(6001 - len(result), 6001))
+        assert len(result) <= thrash_protect.MAX_JOBCTRL_CHAIN + 1
+
+    def test_check_parents_ppid_cycle(self):
+        """A ppid cycle (pid reuse between two reads) must terminate."""
+        files = {"/proc/50/stat": self._bash_stat(50, 51), "/proc/51/stat": self._bash_stat(51, 50)}
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            result = thrash_protect.ProcessSelector().checkParents(50)
+        assert result == (51, 50)
+
     def test_is_kernel_thread(self):
         """Test _is_kernel_thread() detects kthreadd and its children."""
         ps = thrash_protect.ProcessSelector()

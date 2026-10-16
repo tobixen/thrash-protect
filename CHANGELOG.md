@@ -107,6 +107,12 @@ window.  It now marks the window of the nearest ancestor, and for a process
 in a tmux pane, the terminal of each tmux client showing that pane.  Where
 that ancestor owns several windows, all of them are marked `[FROZEN?]`.
 
+A runaway shell script that kept calling itself built a chain of over a
+thousand nested bash processes, and thrash-protect crashed with a
+`RecursionError` when it looked up the shells above the process it was about
+to suspend.  The lookup is now a loop, and it suspends at most 32 shells
+along with the process.
+
 ### Changed
 
 Informational messages are now logged by default.  Without `--diagnostic` the
