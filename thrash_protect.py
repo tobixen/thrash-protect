@@ -217,6 +217,7 @@ CONFIG_SCHEMA = {
     "blacklist_escalation_cap": (int, "THRASH_PROTECT_BLACKLIST_ESCALATION_CAP", ["blacklist-escalation-cap"]),
     "oom_hold_ticks": (int, "THRASH_PROTECT_OOM_HOLD_TICKS", ["oom-hold-ticks"]),
     "fork_bomb_threshold": (int, "THRASH_PROTECT_FORK_BOMB_THRESHOLD", ["fork-bomb-threshold"]),
+    "fork_bomb_hold": (float, "THRASH_PROTECT_FORK_BOMB_HOLD", ["fork-bomb-hold"]),
 }
 
 
@@ -337,6 +338,7 @@ def get_defaults() -> dict[str, Any]:
         "blacklist_escalation_cap": 8,  # Max allowance is this many times max_skip_count
         "oom_hold_ticks": 4,  # Ticks an OOM-driven freeze is held despite quiet swap
         "fork_bomb_threshold": 300,  # Same-name process family size treated as a fork bomb; 0 disables
+        "fork_bomb_hold": 60.0,  # Seconds a frozen fork bomb stays frozen
     }
 
 
@@ -733,6 +735,13 @@ Example usage:
         metavar="N",
         help="Treat a growing family of N or more processes of the same name as a fork bomb, "
         "suspend its newest members and set oom_score_adj 1000 on all of them; 0 disables (default: 300)",
+    )
+    p.add_argument(
+        "--fork-bomb-hold",
+        dest="fork_bomb_hold",
+        type=float,
+        metavar="SECONDS",
+        help="Keep a frozen fork bomb frozen this long, whatever the memory situation (default: 60)",
     )
 
     return p
@@ -2227,12 +2236,13 @@ class ForkBombProcessSelector(ProcessSelector):
     nothing worth freezing in any single one of them either.  This selector
     groups processes into families: a process belongs to the family of its
     parent when both have the same name, and orphans of the same name share
-    a family per subreaper.  A family of fork_bomb_threshold members or more
+    a family per subreaper and cgroup.  A family of fork_bomb_threshold members or more
     that has grown by a tenth of that since the previous scan is taken for a
     fork bomb.  A big but steady pool, such as a prefork server's workers,
     is left alone.  The family's leaves - members with no children in it -
     are frozen, at most MAX_FORK_BOMB_FREEZE at a time, and freeze_something()
-    then stops whatever they forked meanwhile.  Freezing the leaf of a chain
+    then stops whatever they forked meanwhile.  They stay frozen for
+    fork_bomb_hold seconds.  Freezing the leaf of a chain
     of nested scripts stops the chain from growing.  The whole family also
     gets oom_score_adj 1000, which is never reverted, so the kernel OOM
     killer, if it comes to that, kills the fork bomb rather than everything
@@ -2244,7 +2254,7 @@ class ForkBombProcessSelector(ProcessSelector):
         ## Number of processes at the last scan that found nothing
         self.quiet_count: int | None = None
         ## Sizes of the big families at the previous scan
-        self.family_sizes: dict[tuple[str, int, int], int] = {}
+        self.family_sizes: dict[tuple[str, int, int, str | None], int] = {}
 
     def scan(self) -> tuple[int, ...] | None:
         threshold = config.fork_bomb_threshold
@@ -2287,14 +2297,33 @@ class ForkBombProcessSelector(ProcessSelector):
             for q in chain:
                 roots[q] = roots[p]
 
-        families: dict[tuple[str, int, int], list[int]] = {}
+        ## orphans of the same name share one family per subreaper (init and
+        ## systemd managers are not in procs)
+        groups: dict[tuple[str, int, int], list[int]] = {}
         for pid, root in roots.items():
             ppid = procs[root].ppid
-            ## orphans of the same name share one family per subreaper
-            ## (init and systemd managers are not in procs)
-            orphan = ppid not in procs
-            key = (procs[pid].cmd, ppid if orphan else 0, 0 if orphan else root)
-            families.setdefault(key, []).append(pid)
+            key3 = (procs[pid].cmd, ppid, 0) if ppid not in procs else (procs[pid].cmd, 0, root)
+            groups.setdefault(key3, []).append(pid)
+
+        ## ... and per cgroup, which keeps a bash service started by systemd
+        ## out of the family of a fork bomb whose root is also a child of
+        ## init.  Only big orphan groups are split, as every service on the
+        ## box is an orphan.  Members gone before their cgroup is read are
+        ## left out; without cgroup v2 nothing is split.
+        families: dict[tuple[str, int, int, str | None], list[int]] = {}
+        root_cgroups: dict[int, Any] = {}
+        gone = object()
+        for key3, members in groups.items():
+            if key3[1] == 0 or len(members) < threshold // 2:
+                families[(*key3, None)] = members
+                continue
+            for pid in members:
+                root = roots[pid]
+                if root not in root_cgroups:
+                    cgroup = get_cgroup_path(root)
+                    root_cgroups[root] = cgroup if cgroup or self.readStat(root) else gone
+                if root_cgroups[root] is not gone:
+                    families.setdefault((*key3, root_cgroups[root]), []).append(pid)
 
         previous = self.family_sizes
         self.family_sizes = {k: len(v) for k, v in families.items() if len(v) >= threshold // 2}
@@ -2645,6 +2674,9 @@ class ThrashProtectState:
         ## note_oom_freeze() for why the swap-based cooldown cannot serve here.
         self.oom_hold_counter: int = 0
         self.frozen_cgroup_paths: set[str] = set()
+        ## Frozen fork bomb items and when they may be resumed.  Resuming a
+        ## fork bomb restarts it, so these are held past the OOM hold.
+        self.held_until: dict[tuple[str, ...], float] = {}
         self.num_unfreezes: int = 0
         self.freeze_blacklist: FreezeBlacklist = FreezeBlacklist()
         self.process_selector: GlobalProcessSelector = GlobalProcessSelector(blacklist=self.freeze_blacklist)
@@ -2660,6 +2692,7 @@ class ThrashProtectState:
         self.frozen_items = []
         self.oom_hold_counter = 0
         self.frozen_cgroup_paths.clear()
+        self.held_until = {}
         self.num_unfreezes = 0
         self.freeze_blacklist = FreezeBlacklist()
         self.process_selector = GlobalProcessSelector(blacklist=self.freeze_blacklist)
@@ -2737,7 +2770,9 @@ class ThrashProtectState:
         # Check if any process in the chain should use cgroup freezing
         # (for tmux/screen sessions where SIGSTOP doesn't work properly)
         cgroup_path = None
-        for pid in pids_to_freeze:
+        ## A fork bomb is stopped by SIGSTOP and stop_descendants(): a tmux
+        ## scope also holds the panes the operator would deal with it from.
+        for pid in () if isinstance(selected, ForkBombPids) else pids_to_freeze:
             cgroup_path = should_use_cgroup_freeze(pid)
             if cgroup_path:
                 break
@@ -2775,6 +2810,8 @@ class ThrashProtectState:
         # Check if already frozen (avoid duplicates)
         if not any(item[0] == "sigstop" and item[1] == pids_to_freeze for item in self.frozen_items):
             self.frozen_items.append(("sigstop", pids_to_freeze))
+        if isinstance(selected, ForkBombPids):
+            self._hold(("sigstop", pids_to_freeze))
 
         for pid_to_freeze in pids_to_freeze:
             ## Logging after freezing - as logging itself may be resource- and timeconsuming.
@@ -2783,13 +2820,18 @@ class ThrashProtectState:
             log_frozen(pid_to_freeze)
         return pids_to_freeze
 
+    def _hold(self, item: tuple[str, ...]) -> None:
+        """Keep a frozen fork bomb item frozen for config.fork_bomb_hold seconds."""
+        self.held_until.setdefault(item, time.monotonic() + config.fork_bomb_hold)
+
     def _pick_unfreeze_item(self) -> tuple[tuple[str, ...], int] | None:
-        """Pick the next item to unfreeze, skipping blacklisted items.
+        """Pick the next item to unfreeze, skipping blacklisted and held items.
 
         Returns (item, pop_index) or None if nothing to unfreeze.
-        Blacklisted items with remaining skip budget are put back at the
-        opposite end of the list.  If all items are blacklisted, the first
-        candidate is unfrozen anyway to avoid deadlock.
+        Blacklisted and held items are put back at the opposite end of the
+        list.  If every item that is not held is blacklisted, the first
+        blacklisted one is unfrozen anyway to avoid deadlock.  A held fork
+        bomb is never forced out that way; its hold expires on its own.
         """
         if not self.frozen_items:
             return None
@@ -2808,6 +2850,13 @@ class ThrashProtectState:
             _, _, pids = unpack_frozen_item(item)
             pids = tuple(normalize_pids(pids))
 
+            if self.held_until.get(item, 0) > time.monotonic():
+                if pop_index == -1:
+                    self.frozen_items.insert(0, item)
+                else:
+                    self.frozen_items.append(item)
+                continue
+
             if self.freeze_blacklist.should_skip_unfreeze(pids):
                 if first_skipped is None:
                     first_skipped = item
@@ -2818,13 +2867,15 @@ class ThrashProtectState:
                     self.frozen_items.append(item)
                 continue
 
+            self.held_until.pop(item, None)
             return item, pop_index
 
         # All items were skipped — unfreeze the first one we skipped (deadlock guard)
         if first_skipped is not None:
             # It's already been re-inserted; remove and return it
             self.frozen_items.remove(first_skipped)
-            logging.debug("all frozen items blacklisted, force-unfreezing one to avoid deadlock")
+            self.held_until.pop(first_skipped, None)
+            logging.debug("all frozen items not held are blacklisted, force-unfreezing one to avoid deadlock")
             return first_skipped, pop_index
 
         return None
@@ -2872,6 +2923,7 @@ class ThrashProtectState:
         self.oom_hold_counter = 0
         self.freeze_blacklist.clear()
         self.frozen_cgroup_paths.clear()
+        self.held_until.clear()
         for item in self.frozen_items:
             item_type, cgroup_path, pids = unpack_frozen_item(item)
             if item_type == "cgroup":

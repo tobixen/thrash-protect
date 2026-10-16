@@ -70,6 +70,16 @@ With 55 000–75 000 processes, every scan was a big job, and several ran per ti
    - The pacing sleeps between the pids of a frozen item only apply to short
      job-control chains, so freezing and resuming 64 pids does not block the
      loop.
+   - A frozen fork bomb stays frozen for `--fork-bomb-hold` seconds (default
+     60).  On a test VM it was released when the OOM hold ran out, about 1.5 s
+     later.  The chain then grew from 379 to 1281 processes in eight
+     freeze/release cycles, until the kernel OOM killer stepped in.
+   - Same-named orphans are grouped by cgroup too.  Without that, a bash
+     service started by systemd fell into the family of a chain whose root
+     was also a child of init, and it was frozen along with the chain.
+   - A fork bomb is always stopped with SIGSTOP and the descendant chase,
+     never by freezing its cgroup.  In tmux, that cgroup holds every pane,
+     including the one the operator would deal with the fork bomb from.
 
 The largest same-name family on the author's desktop at the time was 11
 chrome processes.  Prefork servers (apache with a few hundred workers, postgres

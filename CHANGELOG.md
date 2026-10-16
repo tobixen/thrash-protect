@@ -24,15 +24,16 @@ should not:
   `--io-pressure-veto`/`--no-io-pressure-veto` - see the first item under Fixed.
 * `--oom-hold-ticks`, holding releases after an OOM-driven suspension.
 * Fork bomb protection (https://github.com/tobixen/thrash-protect/issues/39).
-  When 300 or more processes of the same name descend from each other, or
-  are orphaned under the same parent, and the group keeps growing, its newest
-  processes and everything they have started since are suspended first.  That
-  alone stops a runaway recursive script.  A big but steady group, such as the
-  workers of a database or web server, is left alone.  The whole group is
-  also made the kernel OOM killer's first choice (`oom_score_adj` 1000, which
-  stays after the processes are resumed), so it kills the fork bomb rather
-  than everything else on the box.  `--fork-bomb-threshold` sets the size,
-  and 0 turns it off.
+  When 300 or more processes of the same name descend from each other, or are
+  orphaned under the same parent in the same control group, and the group
+  keeps growing, its newest processes and everything they have started since
+  are suspended, and kept suspended for a minute (`--fork-bomb-hold`) whatever
+  the memory situation, since resuming a fork bomb restarts it.  That stops a
+  runaway recursive script.  A big but steady group, such as the workers of a
+  database or web server, is left alone.  The whole group is also made the
+  kernel OOM killer's first choice (`oom_score_adj` 1000, which stays after
+  the processes are resumed), so it kills the fork bomb rather than everything
+  else on the box.  `--fork-bomb-threshold` sets the size, and 0 turns it off.
 * `--blacklist-escalation-cap`, bounding the growing hold on repeat offenders.
 * `--storage-type zram`, auto-detected.
 
