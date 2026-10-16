@@ -812,6 +812,9 @@ def should_use_cgroup_freeze(pid: int) -> str | None:
     # the entire login session (124+ processes)
     if "/user@" not in cgroup_path:
         return None
+    # Reject init.scope, which holds the user's systemd manager
+    if cgroup_path.endswith("/init.scope"):
+        return None
     return cgroup_path
 
 
@@ -1771,6 +1774,13 @@ class ProcessSelector:
         return pid == 2 or stats.ppid == 2
 
     @staticmethod
+    def _never_freeze(pid: int, stats: ProcessSelector.procstat) -> bool:
+        """Processes no selector may pick: kernel threads, init, and the
+        per-user systemd managers.  A frozen user manager stalls every user
+        service and the desktop session along with it."""
+        return pid == 1 or stats.cmd == "systemd" or ProcessSelector._is_kernel_thread(pid, stats)
+
+    @staticmethod
     def _is_frozen(pid: int, stats: ProcessSelector.procstat) -> bool:
         """Check if a process is already frozen (SIGSTOP or cgroup freeze).
 
@@ -1864,7 +1874,7 @@ class OOMScoreProcessSelector(ProcessSelector):
                 stats = self.readStat(pid)
                 if not stats:
                     continue
-                if self._is_kernel_thread(pid, stats):
+                if self._never_freeze(pid, stats):
                     continue
                 if self._is_frozen(pid, stats):
                     logging.debug(
@@ -2035,7 +2045,7 @@ class CgroupPressureProcessSelector(ProcessSelector):
                 continue
 
             # Skip kernel threads
-            if self._is_kernel_thread(pid, stats):
+            if self._never_freeze(pid, stats):
                 continue
 
             # Skip already frozen
@@ -2124,7 +2134,7 @@ class PageFaultingProcessSelector(ProcessSelector):
             stats = self.readStat(fn)
             if not stats:
                 continue
-            if self._is_kernel_thread(pid, stats):
+            if self._never_freeze(pid, stats):
                 continue
             if stats.majflt > 0 and not self._is_frozen(pid, stats):
                 prev = self.pagefault_by_pid.get(pid, 0)

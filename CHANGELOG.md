@@ -113,6 +113,10 @@ thousand nested bash processes, and thrash-protect crashed with a
 to suspend.  The lookup is now a loop, and it suspends at most 32 shells
 along with the process.
 
+In the same incident thrash-protect suspended the user's own `systemd --user`
+manager, freezing its whole cgroup, and with it every user service.  Systemd
+managers and init are now never suspended.
+
 ### Changed
 
 Informational messages are now logged by default.  Without `--diagnostic` the

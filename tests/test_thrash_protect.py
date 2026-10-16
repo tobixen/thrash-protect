@@ -223,6 +223,24 @@ class TestUnitTest:
         # normal userspace process
         assert not ps._is_kernel_thread(1000, procstat(cmd="cat", state="R", majflt=100, ppid=999))
 
+    def test_never_freeze(self):
+        """Kernel threads, init and systemd user managers are never candidates."""
+        ps = thrash_protect.ProcessSelector()
+        procstat = ps.procstat
+        assert ps._never_freeze(123, procstat(cmd="kworker/0:1", state="S", majflt=0, ppid=2))
+        assert ps._never_freeze(1, procstat(cmd="systemd", state="S", majflt=0, ppid=0))
+        assert ps._never_freeze(919, procstat(cmd="systemd", state="S", majflt=500, ppid=1))
+        assert not ps._never_freeze(1000, procstat(cmd="cat", state="R", majflt=100, ppid=999))
+
+    @patch("thrash_protect.glob.glob", return_value=["/proc/919/stat", "/proc/1000/stat"])
+    def test_pagefault_selector_skips_user_manager(self, _glob):
+        files = {
+            "/proc/919/stat": b"919 (systemd) S 1 919 919 0 -1 0 0 0 900 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+            "/proc/1000/stat": b"1000 (cat) S 1 1000 1000 0 -1 0 0 0 7 0 0 0 0 0 20 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
+        }
+        with patch("thrash_protect.open", new=FileMockup(files).open):
+            assert thrash_protect.PageFaultingProcessSelector().scan() == (1000,)
+
     def test_is_frozen_sigstop(self):
         """Test _is_frozen detects SIGSTOP-frozen processes."""
         ps = thrash_protect.ProcessSelector()
@@ -1426,6 +1444,15 @@ class TestCgroupFreezing:
         mock_freezable.return_value = True
         result = thrash_protect.should_use_cgroup_freeze(12345)
         assert result is None
+
+    @patch("thrash_protect.get_cgroup_path")
+    @patch("thrash_protect.is_cgroup_freezable")
+    def test_should_not_freeze_user_manager_scope(self, mock_freezable, mock_cgroup):
+        """init.scope under user@N.service holds the user's systemd manager;
+        freezing it stalls every user service and the session with it."""
+        mock_cgroup.return_value = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/init.scope"
+        mock_freezable.return_value = True
+        assert thrash_protect.should_use_cgroup_freeze(12345) is None
 
     @patch("thrash_protect.get_cgroup_path")
     @patch("thrash_protect.is_cgroup_freezable")
