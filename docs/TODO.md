@@ -112,6 +112,16 @@ large families of same-named processes, such as runaway recursive scripts.  See
 [incident-2026-10-16-fork-chain.md](incident-2026-10-16-fork-chain.md).  Wide
 fork bombs and the batch-job case below are still open.
 
+A test against a real 1500-deep chain on 2026-10-16 found two more gaps:
+
+* Descendants stopped by `stop_descendants()` keep their `oom_score_adj`.
+  Only the family members seen in the scan get 1000.
+* A family must grow by `threshold // 10` between two consecutive fork bomb
+  scans.  Those run only on ticks that freeze something, so this is roughly
+  60 processes per second while memory is short.  A slower chain, such as
+  a memory-heavy script that takes a while per level, is never detected.
+  Comparing against an older sample instead of the previous one would help.
+
 Related to #12 (parent process freezing).
 
 The same rollup is needed for a non-malicious case: a fork-heavy batch job
