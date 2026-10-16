@@ -2649,7 +2649,8 @@ class ThrashProtectState:
         if cgroup_path:
             # Unfreeze via cgroup
             logging.info("unfreezing pids %s (via cgroup)" % pids_to_unfreeze)
-            if not unfreeze_cgroup(cgroup_path):
+            # A cgroup that has vanished has no processes left to resume
+            if not unfreeze_cgroup(cgroup_path) and os.path.isdir(cgroup_path):
                 logging.warning("failed to unfreeze cgroup %s, re-inserting" % cgroup_path)
                 self.frozen_items.insert(pop_index if pop_index == 0 else len(self.frozen_items), item)
                 return None

@@ -115,7 +115,9 @@ along with the process.
 
 In the same incident thrash-protect suspended the user's own `systemd --user`
 manager, freezing its whole cgroup, and with it every user service.  Systemd
-managers and init are now never suspended.
+managers and init are now never suspended.  When the frozen cgroup later
+disappeared, thrash-protect retried resuming it twice a second and resumed
+nothing else.  A cgroup that is gone is now dropped from the list.
 
 ### Changed
 

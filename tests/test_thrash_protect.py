@@ -2268,10 +2268,11 @@ class TestCgroupFreezeBugFixes:
         mock_freeze.assert_called_once_with(target_cgroup)
         assert result == (200,)
 
+    @patch("thrash_protect.os.path.isdir", return_value=True)
     @patch("thrash_protect.unfreeze_cgroup", return_value=False)
     @patch("thrash_protect.open")
     @patch("thrash_protect.unlink")
-    def test_unfreeze_cgroup_failure_reinserts(self, unlink, mock_open, mock_unfreeze):
+    def test_unfreeze_cgroup_failure_reinserts(self, unlink, mock_open, mock_unfreeze, _isdir):
         """When unfreeze_cgroup fails, the item should be re-inserted into frozen_items."""
         cgroup_path = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/tmux-spawn-abc.scope"
         thrash_protect._tp.frozen_items = [("cgroup", cgroup_path, (100,))]
@@ -2288,6 +2289,22 @@ class TestCgroupFreezeBugFixes:
         assert thrash_protect._tp.num_unfreezes == 0
         # cgroup_path should still be in frozen_cgroup_paths
         assert cgroup_path in thrash_protect._tp.frozen_cgroup_paths
+
+    @patch("thrash_protect.unfreeze_cgroup", return_value=False)
+    @patch("thrash_protect.open")
+    @patch("thrash_protect.unlink")
+    def test_unfreeze_vanished_cgroup_drops_item(self, unlink, mock_open, mock_unfreeze):
+        """A cgroup that no longer exists has no processes left to resume.
+        Re-inserting it retried every tick and blocked every other unfreeze."""
+        gone = "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/gone.invalid.scope"
+        thrash_protect._tp.frozen_items = [("cgroup", gone, (100,)), ("sigstop", (200,))]
+        thrash_protect._tp.frozen_cgroup_paths.add(gone)
+
+        result = thrash_protect.unfreeze_something()
+
+        assert result == [100]
+        assert thrash_protect._tp.frozen_items == [("sigstop", (200,))]
+        assert gone not in thrash_protect._tp.frozen_cgroup_paths
 
     @patch("thrash_protect.unfreeze_cgroup", return_value=True)
     @patch("thrash_protect.open")
