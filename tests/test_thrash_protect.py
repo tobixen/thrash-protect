@@ -36,7 +36,12 @@ def reset_global_state():
             # The fork bomb selector writes oom_score_adj; tests that mock
             # readStat but not /proc would otherwise hit real processes.
             with patch("thrash_protect.ForkBombProcessSelector.scan", return_value=None):
-                yield
+                # Tests use made-up pids, and the code refuses to touch its own
+                # pid and parent; above the kernel's pid_max (4194304) neither
+                # can collide, whatever pid pytest got in a build sandbox.
+                with patch("thrash_protect.getpid", return_value=4194305):
+                    with patch("thrash_protect.getppid", return_value=4194306):
+                        yield
     # Clean up after test
     thrash_protect._tp.reset()
 
