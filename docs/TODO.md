@@ -295,6 +295,16 @@ Feature request: provide visual feedback (e.g. mouse cursor change) when thrash-
 
 ## Low Priority
 
+### Nix flake checks in CI
+
+`nix flake check` builds the package, runs the unit tests in the Nix sandbox
+and boots a NixOS VM with the service enabled, but nothing runs it except a
+human.  The sandbox is where the pid-collision test failure (pytest running
+as pid 200) showed up, on a host rebuild rather than in CI.  A GitHub Actions
+job with `cachix/install-nix-action` running `nix flake check -L` would catch
+that class of breakage; the VM test needs KVM, which the hosted Ubuntu runners
+provide.
+
 ### Package Structure
 
 Consider restructuring as a proper Python package:
