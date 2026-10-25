@@ -38,6 +38,20 @@ should not:
   else on the box.  `--fork-bomb-threshold` sets the size, and 0 turns it off.
 * `--blacklist-escalation-cap`, bounding the growing hold on repeat offenders.
 * `--storage-type zram`, auto-detected.
+* `--oom-floor-pct` (default 5) and `--oom-floor-mem-pct` (default off), an
+  absolute floor for OOM protection.  The predictor only reacts to memory being used
+  up fast, so a box parked at the edge with nothing moving never triggers it -
+  on one machine available memory sat at 3 % with swap full for sixteen
+  minutes before the OOM killer ran.  Now the biggest memory consumer is
+  suspended whenever available memory plus weighted free swap is below 5 % of
+  the weighted total and available memory below 10 % of RAM;
+  `--oom-floor-mem-pct` does the same for RAM alone once swap is exhausted.
+  The aim is friction that buys time, not stopping everything: at most one
+  suspension per `--oom-hold-ticks`, and at most three processes suspended for
+  the floor (`--oom-floor-max-frozen`), after which they are only held until
+  the floor clears.  Reaching the floor is logged once, as a level rather
+  than a prediction.  On a box that runs with full swap on purpose, set
+  `--oom-floor-pct 0` to disable it.
 
 ### Fixed
 
@@ -98,6 +112,15 @@ The example configuration files set `swap_page_threshold = 4`, the HDD value,
 so a copy of them in `/etc` defeated the SSD auto-detection: on an SSD it
 triggered at 32 pages instead of 512.  The setting is now commented out.  If
 you copied an example file, remove that line from your copy.
+
+After every OOM-driven suspension the OOM predictor threw away its whole
+observation history, so its 60-second scale had no sample to compare against
+for the next 30 seconds.  With suspensions every few seconds it never had one,
+and only the short scales, which need a steep decline to fire, were left -
+blind to the slow, steady slide that ends with the OOM killer.  The history is
+now kept.  An observation from before the suspension still only counts once
+memory has kept falling since it, and at that slower pace if it is slower, so
+a suspension that stopped the decline does not trigger another.
 
 The OOM predictor counted free zram space as headroom on top of free RAM,
 although zram lives in that same RAM, and it read every page moved into zram as
