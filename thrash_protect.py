@@ -211,6 +211,9 @@ CONFIG_SCHEMA = {
     "oom_horizon": (int, "THRASH_PROTECT_OOM_HORIZON", ["oom-horizon"]),
     "oom_swap_weight": (float, "THRASH_PROTECT_OOM_SWAP_WEIGHT", ["oom-swap-weight"]),
     "oom_low_pct": (float, "THRASH_PROTECT_OOM_LOW_PCT", ["oom-low-pct"]),
+    "oom_floor_pct": (float, "THRASH_PROTECT_OOM_FLOOR_PCT", ["oom-floor-pct"]),
+    "oom_floor_mem_pct": (float, "THRASH_PROTECT_OOM_FLOOR_MEM_PCT", ["oom-floor-mem-pct"]),
+    "oom_floor_max_frozen": (int, "THRASH_PROTECT_OOM_FLOOR_MAX_FROZEN", ["oom-floor-max-frozen"]),
     "pswp_weight": (float, "THRASH_PROTECT_PSWP_WEIGHT", ["pswp-weight"]),
     "blacklist_expiry_time": (float, "THRASH_PROTECT_BLACKLIST_EXPIRY_TIME", ["blacklist-expiry-time"]),
     "blacklist_max_skip_count": (int, "THRASH_PROTECT_BLACKLIST_MAX_SKIP_COUNT", ["blacklist-max-skip-count"]),
@@ -332,6 +335,9 @@ def get_defaults() -> dict[str, Any]:
         "oom_horizon": 600,
         "oom_swap_weight": None,  # Auto-set based on storage type
         "oom_low_pct": 100.0,  # 100% = always predict; lower (e.g. 10) to predict only when <10% free
+        "oom_floor_pct": 5.0,  # Freeze below this % of weighted mem+swap, trend or not; 0 disables
+        "oom_floor_mem_pct": 0.0,  # Freeze below this % of RAM once swap is exhausted; 0 disables
+        "oom_floor_max_frozen": 3,  # Processes the floor keeps suspended at most; then it only holds
         "pswp_weight": None,  # Auto-set based on storage type (HDD=128, SSD=8)
         "blacklist_expiry_time": 60.0,  # Seconds before a blacklist entry expires
         "blacklist_max_skip_count": 3,  # Unfreeze cycles a blacklisted item gets skipped
@@ -690,6 +696,31 @@ Example usage:
         type=float,
         metavar="PERCENT",
         help="Only predict OOM when available resources are below this percentage of total (default: 100.0)",
+    )
+    p.add_argument(
+        "--oom-floor-pct",
+        dest="oom_floor_pct",
+        type=float,
+        metavar="PERCENT",
+        help="Suspend the biggest memory consumer whenever weighted available memory+swap is below this "
+        "percentage of the weighted total and available memory below twice this percentage of RAM, "
+        "whatever the trend; 0 disables it, e.g. on a box deliberately run with full swap (default: 5.0)",
+    )
+    p.add_argument(
+        "--oom-floor-mem-pct",
+        dest="oom_floor_mem_pct",
+        type=float,
+        metavar="PERCENT",
+        help="Suspend the biggest memory consumer whenever swap is exhausted and available memory is below "
+        "this percentage of RAM, whatever the trend (default: 0 = disabled)",
+    )
+    p.add_argument(
+        "--oom-floor-max-frozen",
+        dest="oom_floor_max_frozen",
+        type=int,
+        metavar="N",
+        help="Processes the floor keeps suspended at most; beyond that it only holds back releases until "
+        "the floor clears (default: 3)",
     )
     p.add_argument(
         "--pswp-weight",
@@ -1247,7 +1278,18 @@ class MemoryExhaustionPredictor:
     observation windows tolerate slower declines while shorter windows
     only trigger on rapid consumption.  This prevents false positives from
     normal memory fluctuations while still catching runaway allocations.
+
+    Projection alone never fires on a box parked at the edge with no trend,
+    so `should_freeze()` also has an absolute floor (`floor_pct`,
+    `floor_mem_pct`; 0 disables either).
     """
+
+    # Below this fraction of swap_total left, swap counts as exhausted for
+    # floor_mem_pct.  A box without swap counts as exhausted too.
+    _SWAP_EXHAUSTED_FRACTION = 0.01
+    # floor_pct also needs MemAvailable below this many times floor_pct of
+    # RAM.  See floor_breached().
+    _FLOOR_RAM_FACTOR = 2.0
 
     # Observation scales relative to the main window.
     # Each scale checks a different time range with proportional horizon.
@@ -1265,8 +1307,12 @@ class MemoryExhaustionPredictor:
         horizon: int = 600,
         low_pct: float = 100.0,
         zram: bool = False,
+        floor_pct: float = 0.0,
+        floor_mem_pct: float = 0.0,
     ) -> None:
         self.swap_weight = swap_weight
+        self.floor_pct = floor_pct
+        self.floor_mem_pct = floor_mem_pct
         self.zram = zram
         self.observation_window = observation_window
         self.horizon = horizon
@@ -1274,6 +1320,15 @@ class MemoryExhaustionPredictor:
         self._horizon_ratio = horizon / observation_window if observation_window > 0 else 10.0
         self._observations: deque[tuple[float, float]] = deque()
         self._max_age = observation_window * 1.5
+        ## (time, available) of the last observation when reset() was called.
+        self._reset_point: tuple[float, float] | None = None
+        ## (mem_available, swap_free, mem_total, swap_total, available, total)
+        ## of the latest reading, for the floor check in should_freeze().
+        self._last_reading: tuple[int, int, int, int, float, float] | None = None
+        ## What the last should_freeze() fired on: "prediction", "floor" or None.
+        self.last_trigger: str | None = None
+        ## Whether the latest reading is below the floor, allowed to act or not.
+        self.floor_active: bool = False
 
     def _find_observation_at(self, target_time: float, tolerance: float) -> tuple[float, float] | None:
         """Find the observation closest to target_time within tolerance.
@@ -1324,6 +1379,7 @@ class MemoryExhaustionPredictor:
             available -= zram_free * self.swap_weight - zram_free * net
             total -= zram_size * self.swap_weight - zram_size * net
             zram_note = f" zram_ratio={ratio:.2f}"
+        self._last_reading = (mem_available, swap_free, mem_total, swap_total, available, total)
         now = time.time()
 
         self._observations.append((now, available))
@@ -1384,6 +1440,26 @@ class MemoryExhaustionPredictor:
                 continue
 
             decline_rate = (past_available - available) / dt
+
+            ## A baseline from before the last freeze carries the pre-freeze
+            ## trend, which says nothing about whether the freeze helped.  It
+            ## is still used - throwing it away blinds the long scales for as
+            ## long as freezes keep coming - but only once the post-freeze
+            ## span is as long as the shortest window, and only at the rate
+            ## memory has fallen since the freeze, if that is slower.  A freeze
+            ## that stopped the decline thus silences every scale, while one
+            ## that did not leaves the long-term projection standing.
+            if self._reset_point is not None and past_time < self._reset_point[0]:
+                reset_time, reset_available = self._reset_point
+                since_reset = now - reset_time
+                if since_reset < self.observation_window * self._SCALES[-1]:
+                    scale_notes.append(f"{target_window:g}s: settling after freeze")
+                    continue
+                if available >= reset_available:
+                    scale_notes.append(f"{target_window:g}s: stable or rising since freeze")
+                    continue
+                decline_rate = min(decline_rate, (reset_available - available) / since_reset)
+
             if decline_rate <= 0:
                 continue
 
@@ -1404,27 +1480,79 @@ class MemoryExhaustionPredictor:
         return min_eta
 
     def reset(self) -> None:
-        """Clear observation history.
+        """Mark the point of a freeze in the observation history.
 
-        Must be called after a freeze triggered by OOM prediction.
-        The old observations reflect pre-freeze memory trends that are
-        no longer representative.  After reset, the short scale (~5s)
-        will be the first to accumulate enough data to make predictions,
-        giving fast feedback on whether the freeze helped.
+        Must be called after a freeze triggered by OOM protection.  The
+        observations before it reflect pre-freeze memory trends that are no
+        longer representative on their own, so `update_and_predict()` judges
+        any baseline older than this point by the decline since it as well.
+        The history itself is kept: clearing it, as was done before, left the
+        60 s scale without a sample for as long as freezes came more often
+        than every 30 s - exactly when the long view mattered most.
         """
-        self._observations.clear()
+        self._reset_point = self._observations[-1] if self._observations else None
 
-    def should_freeze(self) -> bool:
+    def floor_breached(self) -> str | None:
+        """Describe how the latest reading is below the absolute floor, if it is.
+
+        Independent of any trend and of `low_pct`: a box parked at the edge
+        with nothing moving is never caught by projection.
+        """
+        if self._last_reading is None:
+            return None
+        mem_available, swap_free, mem_total, swap_total, available, total = self._last_reading
+        ## The weighted total grows with the swap device: with 8 GB RAM and
+        ## 16 GB HDD swap at weight 4, 5% of it is 45% of RAM, so a box with
+        ## swap full and half its RAM free would count as at the floor.  RAM
+        ## must therefore be short too.  Twice floor_pct rather than floor_pct
+        ## itself, because on a box with modest swap the weighted figure is the
+        ## stricter one: on 2026-10-25 (32 GB RAM, 13 GB swap) swap was gone
+        ## and 2 GB available - 3.4% weighted but 6.2% of RAM.
+        if self.floor_pct > 0 and total > 0 and mem_total > 0:
+            pct = available / total * 100
+            mem_pct = mem_available / mem_total * 100
+            if pct < self.floor_pct and mem_pct < self.floor_pct * self._FLOOR_RAM_FACTOR:
+                return (
+                    f"available memory+swap at {pct:.1f}% of total, below oom_floor_pct {self.floor_pct:g}% "
+                    f"(memory at {mem_pct:.1f}% of RAM)"
+                )
+        if self.floor_mem_pct > 0 and mem_total > 0 and swap_free <= swap_total * self._SWAP_EXHAUSTED_FRACTION:
+            pct = mem_available / mem_total * 100
+            if pct < self.floor_mem_pct:
+                return (
+                    f"swap exhausted and available memory at {pct:.1f}% of RAM, "
+                    f"below oom_floor_mem_pct {self.floor_mem_pct:g}%"
+                )
+        return None
+
+    def should_freeze(self, allow_floor: bool = True) -> bool:
         """Check if proactive freezing should be triggered.
 
         Returns True if any observation scale predicts exhaustion within
-        its proportional horizon.
+        its proportional horizon, or - when `allow_floor` is true - if
+        resources are below the absolute floor.  The main loop passes
+        `allow_floor=False` while an OOM hold is armed, which paces the floor
+        to one suspension per hold period instead of one per tick.
+
+        `last_trigger` says which of the two fired.  `floor_active` follows
+        the readings whether or not the floor was allowed to act, and the
+        floor is logged at INFO only when it is first reached.
         """
         eta = self.update_and_predict()
+        breach = self.floor_breached()
+        if breach is not None and not self.floor_active:
+            logging.info("OOM protection: floor reached (a level, not a prediction): %s", breach)
+        elif breach is None and self.floor_active:
+            logging.info("OOM protection: back above the floor")
+        self.floor_active = breach is not None
+        self.last_trigger = None
         if eta is not None:
             logging.info("OOM protection: memory exhaustion predicted in %.0f seconds", eta)
-            return True
-        return False
+            self.last_trigger = "prediction"
+        elif allow_floor and breach is not None:
+            logging.debug("OOM protection: floor trigger: %s", breach)
+            self.last_trigger = "floor"
+        return self.last_trigger is not None
 
 
 class config:
@@ -1506,6 +1634,8 @@ def init_config(args: argparse.Namespace | None = None) -> None:
             observation_window=config.oom_observation_window,
             horizon=config.oom_horizon,
             low_pct=config.oom_low_pct,
+            floor_pct=config.oom_floor_pct,
+            floor_mem_pct=config.oom_floor_mem_pct,
             zram=read_zram_swap() is not None,
         )
     else:
@@ -2681,6 +2811,7 @@ class ThrashProtectState:
         self.freeze_blacklist: FreezeBlacklist = FreezeBlacklist()
         self.process_selector: GlobalProcessSelector = GlobalProcessSelector(blacklist=self.freeze_blacklist)
         self.memory_predictor: MemoryExhaustionPredictor | None = None
+        self._init_floor_state()
         ## Last time each periodic diagnostic heartbeat was written.
         self.diagnostic_heartbeats: dict[str, float] = {}
         # Lazily cached cgroup path for our own process.
@@ -2697,8 +2828,20 @@ class ThrashProtectState:
         self.freeze_blacklist = FreezeBlacklist()
         self.process_selector = GlobalProcessSelector(blacklist=self.freeze_blacklist)
         self.memory_predictor = None
+        self._init_floor_state()
         self.diagnostic_heartbeats = {}
         self._own_cgroup_path = "_unset"
+
+    def _init_floor_state(self) -> None:
+        ## The floor targets the biggest memory consumer directly: at the floor
+        ## the question is who holds the memory, not who is faulting.
+        self.floor_selector: ProcessSelector = OOMScoreProcessSelector()
+        ## pids of items the floor suspended, as freeze_something() returned them.
+        self.floor_frozen: list[tuple[int, ...]] = []
+        ## Ticks before the floor may try again after finding nothing to suspend.
+        self.floor_backoff: int = 0
+        ## Things said once per floor episode.
+        self.floor_logged: set[str] = set()
 
     def diagnostic_heartbeat_due(self, key: str, now: float, interval: float = 60.0) -> bool:
         """Whether a quiet diagnostic line for `key` should be written now.
@@ -2755,6 +2898,43 @@ class ThrashProtectState:
         no OOM hold outstanding.
         """
         return not cooldown_counter and not self.oom_hold_counter
+
+    def _floor_log_once(self, key: str, msg: str, *args: Any) -> None:
+        if key not in self.floor_logged:
+            self.floor_logged.add(key)
+            logging.info(msg, *args)
+
+    def floor_freeze(self) -> tuple[int, ...]:
+        """Act on the memory floor: suspend the biggest consumer, bounded.
+
+        Suspending frees no memory, so a box parked under the floor stays
+        there; without a bound it would lose one more process every hold
+        period until everything was stopped, which is worse than an OOM kill.
+        The aim is friction - slow the biggest consumers and buy the operator
+        time - so at most `oom_floor_max_frozen` floor-suspended items are kept,
+        and after that the floor only re-arms the hold, keeping them (and
+        everything else) suspended until it clears.  Returns the pids
+        suspended now, () if none.
+        """
+        frozen = self.get_all_frozen_pids()
+        self.floor_frozen = [pids for pids in self.floor_frozen if pids in frozen]
+        if len(self.floor_frozen) >= config.oom_floor_max_frozen:
+            self._floor_log_once(
+                "capped",
+                "OOM protection: below the floor with %d process(es) suspended for it (oom_floor_max_frozen), "
+                "holding them until it clears",
+                len(self.floor_frozen),
+            )
+            self.note_oom_freeze()
+            return ()
+        froze = self.freeze_something(self.floor_selector.scan())
+        if froze:
+            self.floor_frozen.append(froze)
+        else:
+            self._floor_log_once("nothing", "OOM protection: below the floor, but found nothing to suspend")
+            ## No hold - nothing was suspended - but no retry on every tick either.
+            self.floor_backoff = max(1, config.oom_hold_ticks)
+        return froze
 
     def freeze_something(self, pids_to_freeze: tuple[int, ...] | list[int] | int | None = None) -> tuple[int, ...]:
         selected = pids_to_freeze or self.process_selector.scan()
@@ -2968,24 +3148,30 @@ class ThrashProtectState:
 
             ## Check OOM prediction (proactive memory exhaustion protection)
             oom_predicted = False
+            floor_hit = False
             if self.memory_predictor and not busy:
-                oom_predicted = self.memory_predictor.should_freeze()
+                oom_predicted = self.memory_predictor.should_freeze(
+                    allow_floor=not self.oom_hold_counter and not self.floor_backoff
+                )
+                floor_hit = oom_predicted and self.memory_predictor.last_trigger == "floor"
+                if not self.memory_predictor.floor_active:
+                    self.floor_logged.clear()
 
             ## If we're thrashing or OOM is predicted, then freeze something.
             if busy or oom_predicted:
-                froze = self.freeze_something()
-                if oom_predicted:
-                    ## Hold it down for a few ticks - the swap-based cooldown
-                    ## counter says nothing about memory exhaustion and would
-                    ## release it on the very next tick.  Only if we actually
-                    ## suspended something: arming on a prediction that found
-                    ## nothing to freeze would block unrelated releases for
-                    ## nothing.
-                    if froze:
-                        self.note_oom_freeze()
+                froze = self.floor_freeze() if floor_hit else self.freeze_something()
+                ## Hold it down for a few ticks - the swap-based cooldown
+                ## counter says nothing about memory exhaustion and would
+                ## release it on the very next tick.  Only if we actually
+                ## suspended something: arming on a prediction that found
+                ## nothing to freeze would block unrelated releases for
+                ## nothing, and marking a freeze that did not happen would
+                ## keep the predictor settling for ever.
+                if oom_predicted and froze:
+                    self.note_oom_freeze()
                     # Old observations reflect pre-freeze memory trends and
-                    # would immediately re-trigger.  Reset so the short scale
-                    # can quickly assess whether the freeze helped.
+                    # would immediately re-trigger.  Mark the freeze so they
+                    # count only as far as the decline since confirms them.
                     self.memory_predictor.reset()
             elif self.may_unfreeze(current.cooldown_counter):
                 ## If no swapping has been observed for a while and no OOM
@@ -2998,6 +3184,8 @@ class ThrashProtectState:
             ## on which nothing could be released anyway - eat the whole hold.
             if not busy and not oom_predicted:
                 self.tick_oom_hold()
+            if not busy and self.floor_backoff:
+                self.floor_backoff -= 1
 
             ## Blacklist bookkeeping, once per iteration.  It used to live in
             ## _pick_unfreeze_item(), which the unfreeze gate above can now keep

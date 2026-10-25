@@ -88,5 +88,26 @@ thrash-protect:
   # (default: 50.0). Only consulted when io_pressure_veto is enabled.
   # io_pressure_threshold: 50.0
 
+  # Absolute floor for OOM protection (default: 5.0).  The OOM predictor
+  # only reacts to memory being consumed fast; a box sitting at the edge with
+  # nothing moving is never caught by it.  So the biggest memory consumer is
+  # also suspended whenever available memory plus weighted free swap drops
+  # below this percentage of the (weighted) total and available memory is
+  # below twice this percentage of RAM, trend or not - at most one per
+  # oom_hold_ticks, up to oom_floor_max_frozen.  Set it to 0 on a box that
+  # deliberately runs with full swap.
+  # oom_floor_pct: 5.0
+
+  # The same, but counting RAM only and only once swap is exhausted (or there
+  # is no swap): suspend when MemAvailable is below this percentage of RAM.
+  # (default: 0 = disabled)
+  # oom_floor_mem_pct: 5
+
+  # Processes the floor keeps suspended at most (default: 3).  Suspending
+  # frees no memory, so beyond this the floor stops suspending and only holds
+  # back releases until it clears, buying time for someone to step in.
+  # 0 makes the floor hold releases without suspending anything.
+  # oom_floor_max_frozen: 3
+
   # Pretend thrashing every 2^N iterations, for testing (default: 0 = disabled)
   # test_mode: 0

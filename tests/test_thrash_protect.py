@@ -2140,11 +2140,14 @@ class TestOOMProtection:
         args = parser.parse_args(["--oom-low-pct", "15.0"])
         assert args.oom_low_pct == 15.0
 
-    def test_predictor_reset_clears_observations(self):
-        """Test that reset() clears the observation history."""
+    def test_predictor_reset_keeps_observations(self):
+        """reset() must not throw away the history the long scales need.
+
+        On 2026-10-25 the deque was cleared after every OOM-driven freeze, so
+        with freezes every few seconds the 60 s scale never had a sample.
+        """
         predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
 
-        # Add some observations
         with patch("thrash_protect.read_meminfo", return_value=(4000000, 6000000, 16000000, 8000000)):
             with patch("time.time", return_value=1000.0):
                 predictor.update_and_predict()
@@ -2154,7 +2157,51 @@ class TestOOMProtection:
 
         assert len(predictor._observations) == 2
         predictor.reset()
-        assert len(predictor._observations) == 0
+        assert len(predictor._observations) == 2
+
+    @staticmethod
+    def _feed_slow_decline(predictor, start, end, rate=4000, mem_at_end=1600000):
+        """One observation per second, mem_available falling `rate` kB/s and
+        reaching `mem_at_end` at `end`; swap exhausted.  Total is 32M, so at
+        1.6M the 60 s scale projects 400 s (< 600 s horizon) while the 5 s and
+        1 s scales are well beyond their 50 s / 10 s horizons."""
+        eta = None
+        for t in range(start, end + 1):
+            mem = mem_at_end + (end - t) * rate
+            with patch("thrash_protect.read_meminfo", return_value=(mem, 0, 16000000, 8000000)):
+                with patch("time.time", return_value=float(t)):
+                    eta = predictor.update_and_predict()
+        return eta
+
+    def test_predictor_long_scale_survives_reset_when_decline_continues(self):
+        """A freeze that did not stop the decline must not blind the 60 s scale."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+        assert self._feed_slow_decline(predictor, 1000, 1060) is not None
+        predictor.reset()
+        # Same pace after the freeze: the long-scale projection still stands.
+        eta = self._feed_slow_decline(predictor, 1061, 1063, mem_at_end=1600000 - 3 * 4000)
+        assert eta is not None
+        assert eta < 600
+
+    def test_predictor_long_scale_ignores_pre_freeze_trend_when_freeze_helped(self):
+        """If memory stopped falling after the freeze, the pre-freeze trend is
+        not representative and must not re-trigger."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+        assert self._feed_slow_decline(predictor, 1000, 1060) is not None
+        predictor.reset()
+        for t in range(1061, 1066):
+            with patch("thrash_protect.read_meminfo", return_value=(1600000, 0, 16000000, 8000000)):
+                with patch("time.time", return_value=float(t)):
+                    assert predictor.update_and_predict() is None
+
+    def test_predictor_long_scale_needs_post_freeze_decline_fast_enough(self):
+        """A trickle after the freeze, far slower than before it, is judged by
+        the post-freeze rate rather than the steeper pre-freeze one."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, observation_window=60, horizon=600)
+        assert self._feed_slow_decline(predictor, 1000, 1060) is not None
+        predictor.reset()
+        # 100 kB/s after the freeze: 1.6M / 100 = 16000 s, beyond any horizon.
+        assert self._feed_slow_decline(predictor, 1061, 1065, rate=100, mem_at_end=1600000 - 500) is None
 
     def test_predictor_reset_stops_prediction(self):
         """After reset, predictor must not re-trigger on stale trends."""
@@ -2236,6 +2283,145 @@ class TestOOMProtection:
         with patch("thrash_protect.read_meminfo", return_value=(500000, 500000, 16000000, 8000000)):
             with patch("time.time", return_value=1007.0):
                 assert predictor.should_freeze() is False
+
+
+class TestOOMFloor:
+    """The absolute floor: act on a box parked at the edge with no trend.
+
+    Totals are 16M RAM + 8M swap at weight 2, so weighted total is 32M.
+    """
+
+    @staticmethod
+    def _check(predictor, meminfo, t=1000.0, **kwargs):
+        with patch("thrash_protect.read_meminfo", return_value=meminfo):
+            with patch("time.time", return_value=t):
+                return predictor.should_freeze(**kwargs)
+
+    def _flat(self, predictor, meminfo, **kwargs):
+        """Two identical readings a second apart: no trend at all."""
+        self._check(predictor, meminfo, t=1000.0)
+        return self._check(predictor, meminfo, t=1001.0, **kwargs)
+
+    def test_floor_off_unless_passed_to_the_predictor(self):
+        """The class itself has no floor; the configured default (5) is
+        passed in by init_config() - see test_floor_config_defaults_and_wiring."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0)
+        # 3% weighted available, swap exhausted, flat - the 2026-10-25 shape.
+        assert self._flat(predictor, (960000, 0, 16000000, 8000000)) is False
+
+    def test_floor_pct_triggers_without_trend(self, caplog):
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, floor_pct=5.0)
+        with caplog.at_level(logging.INFO):
+            assert self._flat(predictor, (960000, 0, 16000000, 8000000)) is True
+        messages = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+        assert any("floor" in m for m in messages), messages
+        assert not any("predicted" in m for m in messages), messages
+
+    def test_floor_pct_quiet_above_floor(self):
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, floor_pct=5.0)
+        # 2M + 0 = 2M of 32M = 6.25%
+        assert self._flat(predictor, (2000000, 0, 16000000, 8000000)) is False
+
+    def test_floor_pct_counts_weighted_swap(self):
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, floor_pct=5.0)
+        # 0.5M RAM but 4M swap free: 0.5M + 8M = 26% weighted
+        assert self._flat(predictor, (500000, 4000000, 16000000, 8000000)) is False
+
+    def test_floor_mem_pct_triggers_when_swap_exhausted(self, caplog):
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, floor_mem_pct=5.0)
+        with caplog.at_level(logging.INFO):
+            # 0.6M of 16M RAM = 3.75%, swap gone
+            assert self._flat(predictor, (600000, 0, 16000000, 8000000)) is True
+        assert any("floor" in r.getMessage() for r in caplog.records)
+
+    def test_floor_mem_pct_quiet_while_swap_left(self):
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, floor_mem_pct=5.0)
+        assert self._flat(predictor, (600000, 2000000, 16000000, 8000000)) is False
+
+    def test_floor_mem_pct_without_swap(self):
+        """No swap at all counts as swap exhausted."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, floor_mem_pct=5.0)
+        assert self._flat(predictor, (600000, 0, 16000000, 0)) is True
+
+    def test_floor_applies_from_the_first_reading(self):
+        """The predictor needs two observations; the floor needs one."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, floor_pct=5.0)
+        assert self._check(predictor, (960000, 0, 16000000, 8000000)) is True
+
+    def test_floor_ignores_low_pct_gate(self):
+        """low_pct gates the prediction only, not the floor."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, low_pct=1.0, floor_pct=5.0)
+        assert self._flat(predictor, (960000, 0, 16000000, 8000000)) is True
+
+    def test_floor_suppressed_when_not_allowed(self):
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, floor_pct=5.0)
+        assert self._flat(predictor, (960000, 0, 16000000, 8000000), allow_floor=False) is False
+
+    def test_floor_config_defaults_and_wiring(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect.config.oom_floor_pct == 5.0
+        assert thrash_protect.config.oom_floor_mem_pct == 0.0
+        thrash_protect.init_config(argparse.Namespace(config=None, oom_floor_pct=5.0, oom_floor_mem_pct=4.0))
+        assert thrash_protect._tp.memory_predictor.floor_pct == 5.0
+        assert thrash_protect._tp.memory_predictor.floor_mem_pct == 4.0
+
+    def test_floor_cli_arguments(self):
+        parser = thrash_protect.create_argument_parser()
+        args = parser.parse_args(["--oom-floor-pct", "5", "--oom-floor-mem-pct", "3.5"])
+        assert args.oom_floor_pct == 5.0
+        assert args.oom_floor_mem_pct == 3.5
+
+    def test_floor_fires_on_the_incident_numbers(self):
+        """2026-10-25: 32 GB RAM, 13 GB swap at weight 2, swap gone and 2 GB
+        available - 3.4% of the weighted total, 6.2% of RAM."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, floor_pct=5.0)
+        assert self._flat(predictor, (2000000, 0, 32178176, 13631484)) is True
+
+    def test_floor_quiet_with_ram_comfortably_free_on_big_swap(self):
+        """8 GB RAM and 16 GB HDD swap at weight 4: 5% of the weighted total is
+        3.6 GB, 45% of RAM.  3 GB free RAM with swap full is not an emergency."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=4.0, floor_pct=5.0)
+        assert self._flat(predictor, (3000000, 0, 8000000, 16000000)) is False
+
+    def test_floor_logged_once_per_episode(self, caplog):
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, floor_pct=5.0)
+        low, ok = (960000, 0, 16000000, 8000000), (4000000, 0, 16000000, 8000000)
+        with caplog.at_level(logging.INFO):
+            for t, reading in enumerate([low, low, low, ok, low]):
+                self._check(predictor, reading, t=1000.0 + t * 100)
+        floor_lines = [r for r in caplog.records if r.levelno == logging.INFO and "floor reached" in r.getMessage()]
+        assert len(floor_lines) == 2, [r.getMessage() for r in floor_lines]
+
+    def test_should_freeze_reports_which_trigger(self):
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, floor_pct=5.0)
+        assert self._flat(predictor, (960000, 0, 16000000, 8000000)) is True
+        assert predictor.last_trigger == "floor"
+        assert predictor.floor_active is True
+        assert self._check(predictor, (4000000, 0, 16000000, 8000000), t=1300.0) is False
+        assert predictor.last_trigger is None
+        assert predictor.floor_active is False
+
+    def test_floor_active_tracked_while_not_allowed(self):
+        """The episode state follows the readings even under a hold."""
+        predictor = thrash_protect.MemoryExhaustionPredictor(swap_weight=2.0, floor_pct=5.0)
+        assert self._flat(predictor, (960000, 0, 16000000, 8000000), allow_floor=False) is False
+        assert predictor.floor_active is True
+
+    def test_floor_max_frozen_config(self):
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect.config.oom_floor_max_frozen == 3
+        args = thrash_protect.create_argument_parser().parse_args(["--oom-floor-max-frozen", "5"])
+        assert args.oom_floor_max_frozen == 5
+        with patch.dict(os.environ, {"THRASH_PROTECT_OOM_FLOOR_MAX_FROZEN": "2"}):
+            thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect.config.oom_floor_max_frozen == 2
+
+    def test_floor_env_variables(self):
+        env = {"THRASH_PROTECT_OOM_FLOOR_PCT": "5", "THRASH_PROTECT_OOM_FLOOR_MEM_PCT": "2.5"}
+        with patch.dict(os.environ, env):
+            thrash_protect.init_config(argparse.Namespace(config=None))
+        assert thrash_protect.config.oom_floor_pct == 5.0
+        assert thrash_protect.config.oom_floor_mem_pct == 2.5
 
 
 class TestCgroupFreezeBugFixes:
@@ -2875,10 +3061,12 @@ class TestOOMHoldMainLoop:
     class _Done(Exception):
         pass
 
-    def _drive(self, script, oom_script, froze=(123,)):
+    def _drive(self, script, oom_script, froze=(123,), allow_floor_log=None):
         """Run run() over a scripted sequence of (busy, cooldown) ticks.
 
-        Returns (freeze_calls, unfreeze_calls, hold_after_each_tick).
+        Returns (freeze_calls, unfreeze_calls, hold_after_each_tick).  If
+        `allow_floor_log` is a list, the `allow_floor` argument of every
+        should_freeze() call is appended to it.
         """
         tp = thrash_protect.ThrashProtectState()
         thrash_protect.init_config(argparse.Namespace(config=None))
@@ -2892,7 +3080,15 @@ class TestOOMHoldMainLoop:
             return states.pop(0)
 
         predictor = MagicMock()
-        predictor.should_freeze.side_effect = lambda: oom.pop(0) if oom else False
+        predictor.last_trigger = None
+        predictor.floor_active = False
+
+        def should_freeze(allow_floor=True):
+            if allow_floor_log is not None:
+                allow_floor_log.append(allow_floor)
+            return oom.pop(0) if oom else False
+
+        predictor.should_freeze.side_effect = should_freeze
         tp.memory_predictor = predictor
         tp.process_selector = MagicMock()
         tp.freeze_something = MagicMock(return_value=froze)
@@ -2950,6 +3146,126 @@ class TestOOMHoldMainLoop:
         )
         assert freeze.call_count == 1
         assert unfreeze.call_count > 0, "a freeze that found nothing still blocked releases"
+
+    def test_floor_is_not_consulted_while_the_hold_is_armed(self):
+        """A box parked below the floor would otherwise have one more process
+        suspended on every tick; the hold paces the floor to one suspension
+        per hold period."""
+        allowed = []
+        self._drive(
+            script=[(False, 0)] * 8,
+            oom_script=[True] + [False] * 7,
+            allow_floor_log=allowed,
+        )
+        # Tick 1 freezes and arms a 4-tick hold; ticks 2-5 run under it.
+        assert allowed == [True, False, False, False, False, True, True], allowed
+
+
+class TestOOMFloorMainLoop:
+    """The floor in run(): biggest consumers first, bounded, and quiet."""
+
+    _FakeState = TestOOMHoldMainLoop._FakeState
+    _Done = TestOOMHoldMainLoop._Done
+
+    def _drive(self, floor_script, can_freeze=True, trigger="floor"):
+        """Run run() for len(floor_script) quiet ticks.  floor_script[i] says
+        whether resources are below the floor on tick i (a prediction fires
+        instead when `trigger` is "prediction").
+
+        Returns (tp, freeze_calls, unfreeze_calls, allow_floor_log).
+        """
+        tp = thrash_protect.ThrashProtectState()
+        thrash_protect.init_config(argparse.Namespace(config=None))
+        states = [self._FakeState(False, 0) for _ in range(len(floor_script) + 1)]
+        floor = list(floor_script)
+        allowed = []
+        predictor = MagicMock()
+        predictor.last_trigger = None
+        predictor.floor_active = False
+
+        def should_freeze(allow_floor=True):
+            allowed.append(allow_floor)
+            breached = floor.pop(0) if floor else False
+            predictor.floor_active = breached and trigger == "floor"
+            fire = breached and (allow_floor or trigger == "prediction")
+            predictor.last_trigger = trigger if fire else None
+            return fire
+
+        predictor.should_freeze.side_effect = should_freeze
+        tp.memory_predictor = predictor
+        tp.process_selector = MagicMock()
+        tp.floor_selector = MagicMock()
+        tp.floor_selector.scan.return_value = (4194400,)
+        next_pid = iter(range(4194400, 4194999))
+
+        def freeze_something(pids=None):
+            if not can_freeze:
+                return ()
+            pids = (next(next_pid),)
+            tp.frozen_items.append(("sigstop", pids))
+            return pids
+
+        def unfreeze_something():
+            if tp.frozen_items:
+                tp.frozen_items.pop()
+                return [1]
+            return None
+
+        tp.freeze_something = MagicMock(side_effect=freeze_something)
+        tp.unfreeze_something = MagicMock(side_effect=unfreeze_something)
+
+        def next_state():
+            if not states:
+                raise self._Done
+            return states.pop(0)
+
+        with patch("thrash_protect.SystemState", side_effect=next_state):
+            try:
+                tp.run()
+            except self._Done:
+                pass
+        return tp, tp.freeze_something, tp.unfreeze_something, allowed
+
+    def test_floor_suspends_the_biggest_consumer(self):
+        tp, freeze, _, _ = self._drive([True])
+        assert tp.floor_selector.scan.called
+        freeze.assert_called_once_with((4194400,))
+
+    def test_floor_freezes_are_capped_and_held(self):
+        """Suspending frees no memory: a box parked under the floor must not
+        lose one more process every hold period for ever."""
+        tp, freeze, unfreeze, _ = self._drive([True] * 40)
+        assert freeze.call_count == thrash_protect.config.oom_floor_max_frozen
+        assert unfreeze.call_count == 0, "released while still under the floor"
+
+    def test_cap_reached_is_logged_once(self, caplog):
+        with caplog.at_level(logging.INFO):
+            self._drive([True] * 40)
+        capped = [r for r in caplog.records if "max" in r.getMessage() and "floor" in r.getMessage()]
+        assert len(capped) == 1, [r.getMessage() for r in capped]
+
+    def test_release_resumes_once_the_floor_clears(self):
+        tp, freeze, unfreeze, _ = self._drive([True] * 20 + [False] * 15)
+        assert freeze.call_count == thrash_protect.config.oom_floor_max_frozen
+        assert not tp.frozen_items, "floor-suspended processes never released"
+
+    def test_floor_with_nothing_to_suspend_backs_off(self, caplog):
+        with caplog.at_level(logging.INFO):
+            tp, freeze, _, allowed = self._drive([True] * 20, can_freeze=False)
+        assert tp.memory_predictor.reset.call_count == 0, "reset() on a freeze that suspended nothing"
+        assert freeze.call_count <= 20 // (thrash_protect.config.oom_hold_ticks + 1) + 1
+        nothing = [r for r in caplog.records if r.levelno >= logging.INFO and "nothing" in r.getMessage()]
+        assert len(nothing) == 1, [r.getMessage() for r in nothing]
+
+    def test_prediction_with_nothing_to_suspend_does_not_reset(self):
+        tp, freeze, _, _ = self._drive([True] * 5, can_freeze=False, trigger="prediction")
+        assert freeze.call_count == 5
+        assert tp.memory_predictor.reset.call_count == 0
+
+    def test_prediction_freezes_are_not_capped(self):
+        tp, freeze, _, _ = self._drive([True] * 6, trigger="prediction")
+        assert freeze.call_count == 6
+        assert tp.memory_predictor.reset.call_count == 6
 
 
 class TestRefaultSplitDiagnostics:

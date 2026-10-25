@@ -199,6 +199,10 @@ so distinguishes working-set thrashing from a streaming read; or accept per the
 design principles that an out-of-swap box is the OOM killer's problem and say so
 in the documentation.
 
+Partly addressed: `--oom-floor-pct` (default 5) adds a level trigger, and
+`--oom-floor-mem-pct` (default off) one on RAM alone once swap is exhausted.
+A box run with full swap on purpose has to set `--oom-floor-pct 0`.
+
 ### OOM predictor observation window vs. the actual tick rate
 
 `MemoryExhaustionPredictor._find_observation_at` accepts an observation only
