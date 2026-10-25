@@ -23,7 +23,8 @@ jobs:
         run: ruff format --check .
 
   test:
-    runs-on: ubuntu-latest
+    ## ubuntu-latest no longer ships Python 3.9, so that one runs on 24.04
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
       matrix:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
