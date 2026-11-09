@@ -155,6 +155,11 @@ managers and init are now never suspended.  When the frozen cgroup later
 disappeared, thrash-protect retried resuming it twice a second and resumed
 nothing else.  A cgroup that is gone is now dropped from the list.
 
+A standalone install (`make install version=X.Y.Z`) on a box where an
+uninstalled package had left its `*.dist-info` behind reported that package's
+version rather than its own, which also kept the diagnostic logging for
+development builds switched off.  The version set at install time now wins.
+
 ### Changed
 
 Informational messages are now logged by default.  Without `--diagnostic` the

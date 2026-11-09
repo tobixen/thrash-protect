@@ -8,12 +8,16 @@ from __future__ import annotations
 ### This was a rapid prototype implementation.  I was considering to implement in C.
 ### While I have been considering this, Moore's Law has made it pretty moot.
 
-try:
-    from importlib.metadata import version as _metadata_version
+__version__ = "DEVELOPMENT"  # Replaced by Makefile during standalone install
+## The stamp goes first: a dist-info left behind by a removed package
+## would otherwise report that package's version.
+if __version__ == "DEVELOPMENT":
+    try:
+        from importlib.metadata import version as _metadata_version
 
-    __version__ = _metadata_version("thrash-protect")
-except Exception:
-    __version__ = "DEVELOPMENT"  # Replaced by Makefile during standalone install
+        __version__ = _metadata_version("thrash-protect")
+    except Exception:
+        pass
 
 __author__ = "Tobias Brox"
 __copyright__ = "Copyright 2013-2026, Tobias Brox"

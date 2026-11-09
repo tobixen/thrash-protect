@@ -221,22 +221,6 @@ fast scale's 10 s horizon rejected an `eta=14s` projection one second before the
 OOM killer ran, and that `oom_low_pct` defaults to 100.0, so 2.0 % of resources
 remaining raises no alarm on its own.
 
-### The Makefile version stamp is shadowed by a stale dist-info
-
-`make install` substitutes `__version__ = "DEVELOPMENT"` with the real version,
-and that literal is used whenever `importlib.metadata` raises — which is the
-normal case for a standalone install on a box with no `*.dist-info`.  It is
-shadowed rather than dead: the module prefers
-`importlib.metadata.version("thrash-protect")`.  Any leftover `*.dist-info` therefore answers first:
-on the incident host
-`/usr/lib/python3.14/site-packages/thrash_protect-1.1.2.dist-info` survived
-removal of the distro package, so a standalone install of a branch build still
-reported `1.1.2`.  A build whose version cannot be trusted is a bad thing to be
-debugging an incident against — and it has a second consequence: `init_config()`
-auto-enables diagnostic logging when `__version__` contains `dev`, `alpha`,
-`beta`, `rc` or `.dirty`, so a stale dist-info reporting a release version
-silently turns the auto-diagnostics *off* on a branch build.
-
 ### Parent Process Freezing / Job Control (GitHub #12)
 
 Suspending a child process causes side-effects for the parent sometimes (notably, bash job control and sudo).  Current workarounds exist (resuming session/group process IDs, freezing parent before child for bash/sudo), but a more general solution is needed.
@@ -298,6 +282,15 @@ against `--diagnostic` logs from a zram box before changing anything:
 Feature request: provide visual feedback (e.g. mouse cursor change) when thrash-protect is actively throttling processes.  Solved outside the daemon by the waybar module and sway window-title indicator in `extras/`.  Other desktop environments are open to contributions.
 
 ## Low Priority
+
+### An unstamped `make install` still reports a stale dist-info's version
+
+`make install` stamps `__version__` only when it knows a version: from a
+`.tag.*` file, `git describe` or `version=` on the command line.  From a
+tarball without `.git` none of these exist, the literal stays `DEVELOPMENT`,
+and a `*.dist-info` left behind by a removed package answers instead.  Always
+stamping something (`0+unknown`, say) would close that, but it changes what
+such installs report.
 
 ### Nix flake checks in CI
 
