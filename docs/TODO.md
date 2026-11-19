@@ -132,38 +132,19 @@ would serve #39, #12 and that case at once.  See
 [incident-2026-08-09-io-starvation.md](incident-2026-08-09-io-starvation.md),
 fix 4.
 
-### Victim preference should decay after a calm period
+### Victim choice when the box re-clogs seconds after every resume
 
-Preferring the most recently resumed process is the right thing to do when the
-box clogs again very soon after a resume — that is the whole point of the
-repeat-offender blacklist.  But the preference does not decay, and the loop is
-self-reinforcing.  The mechanism is `LastFrozenProcessSelector.last_unfrozen_pid`,
-which is never cleared except when the process exits: it keeps re-selecting the
-same pid, and `FreezeBlacklist.add()` — whose only call site is guarded on that
-selector — refreshes the entry on every hit, so the 60 s expiry window never
-elapses while the tool keeps choosing it.  (Not `BlacklistProcessSelector`, which
-an earlier draft of this item blamed; freezing via that selector never touches
-`last_refreshed`.)
-
-Since the allowance now escalates, that loop also ratchets it to the cap on every
-round, so the steady state is "the same victim skipped for up to
-`--blacklist-max-skip-count` × `--blacklist-escalation-cap` unfreeze cycles,
-every round".  Bounded — `_pick_unfreeze_item`'s deadlock guard force-releases
-when every frozen item is blacklisted — but a material change to this item's
-premise.
-
-Measured consequence, from
+The preference for the last resumed process now lapses after
+`--blacklist-expiry-time`, which settles the quiet-day pattern.  It does not
+touch the fast cycle of
 [incident-2026-09-03-swap-exhaustion.md](incident-2026-09-03-swap-exhaustion.md):
-41 of 66 freezes during the incident went to a zimbra JVM capped at `-Xmx256m`,
-which is structurally incapable of being the memory hog, while bedework's 2.4 G
-JBoss — the process the kernel eventually had to kill — was frozen once.  On two
-subsequent quiet days it was 150 of 163 freezes on a single electron renderer.
-
-Per the design principles above this is not a fairness problem, and repeatedly
-hitting one process is acceptable in itself.  It becomes a defect precisely
-because another process *was* creating havoc in the meantime.  After a longer
-calm period the right move is to choose afresh rather than return to the last
-offender.
+there the box clogged again within seconds of every resume, so the
+256 MB-capped zimbra JVM was re-picked inside the window 41 times out of 66,
+ratcheting its blacklist allowance to the cap, while bedework's 2.4 G JBoss —
+the process the kernel eventually killed — was frozen once.  A re-clog right
+after a resume is evidence against the resumed process only if refreezing it
+helps; when it does not, the next pick should go to a different selector.
+Whether that counts as a defect or as the incremental design working is open.
 
 ### Keeping the terminal alive needs page residency, not a whitelist
 

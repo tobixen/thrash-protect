@@ -218,13 +218,21 @@ the daemon's IO is procfs reads plus a buffered log append that kernel writeback
 flushes on its own priority, and `/sys/block/nvme0n1/queue/scheduler` is
 `[none]`, so there is no scheduler to honour ioprio in the first place.
 
-**5. Victim selection after a calm period.** ❌ *open* — see [TODO.md](TODO.md).
+**5. Victim selection after a calm period.** ✅ *implemented* for the calm
+case; the fast-cycle case is ❌ *open* — see [TODO.md](TODO.md).
 Preferring the most recently resumed process is right when the box clogs again
-immediately after a resume, but the preference does not decay, so after a calm
-period the tool keeps returning to the same process instead of choosing afresh.
+immediately after a resume, but the preference did not decay, so after a calm
+period the tool kept returning to the same process instead of choosing afresh.
 Fairness is not the concern; the concern is that on 2026-09-03 the 256 MB-capped
 zimbra JVM took 62 % of the freezes while bedework's 2.4 G JBoss — the process
 the kernel eventually had to kill — was frozen once.
+`LastFrozenProcessSelector` now drops the resumed pid once
+`--blacklist-expiry-time` (default 60 s) has passed since the resume.  Re-picks
+inside that window still refresh the pid's blacklist entry; once it lapses they
+stop, so the entry can expire.  This settles the quiet-day pattern (150 of 163
+freezes on one electron renderer).  It does little for the six minutes of this
+incident itself, where the cycles were seconds apart and every re-pick of
+zimbra fell inside the window.
 
 **6. Keeping the terminal alive.** ❌ *open* — see [TODO.md](TODO.md).
 `sway` and `foot` are both whitelisted and both froze anyway.  The whitelist only

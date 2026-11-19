@@ -740,7 +740,7 @@ Example usage:
         dest="blacklist_expiry_time",
         type=float,
         metavar="SECONDS",
-        help="Seconds before a repeat-offender blacklist entry expires (default: 60.0)",
+        help="Seconds before a repeat-offender blacklist entry expires; also how long after a resume the resumed process stays the first suspect (default: 60.0)",
     )
     p.add_argument(
         "--blacklist-max-skip-count",
@@ -2106,23 +2106,34 @@ class LastFrozenProcessSelector(ProcessSelector):
     again, it would probably be smart to freeze that process again -
     and it's also a very cheap operation to do.
 
-    If refreezing the last unfrozen process helps, then we're good -
-    though it may potentially a problem that the same process is
-    selected all the time.
+    The preference only holds for `calm_period` seconds after the
+    resume.  Thrashing that starts later says nothing about the
+    resumed process, and returning to it anyway made the tool pick the
+    same harmless victim over and over while something else was
+    eating the memory.  Every hit also refreshes the process's
+    blacklist entry, so without the decay that entry would never
+    expire either.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, calm_period: float = 60.0) -> None:
         self.last_unfrozen_pid: tuple[int, ...] | list[int] | None = None
+        self.last_unfrozen_time: float = 0.0
+        self.calm_period: float = calm_period
 
     def update(self, prev: SystemState, cur: SystemState) -> None:
         if cur.unfrozen_pid:
             self.last_unfrozen_pid = cur.unfrozen_pid
+            self.last_unfrozen_time = time.time()
 
     def scan(self) -> tuple[int, ...] | list[int] | None:
         """
         If a process was just resumed and the system start thrashing again, it would probably be smart to freeze that process again.  This is also a very cheap operation
         """
         logging.debug("last unfrozen_pid is %s" % self.last_unfrozen_pid)
+        if self.last_unfrozen_pid and time.time() - self.last_unfrozen_time > self.calm_period:
+            logging.debug("last unfrozen_pid was resumed more than %ss ago - choosing afresh" % self.calm_period)
+            self.last_unfrozen_pid = None
+            return None
         if self.last_unfrozen_pid in get_all_frozen_pids():
             logging.debug("last unfrozen_pid is already frozen")
             return None
@@ -2524,8 +2535,12 @@ class GlobalProcessSelector(ProcessSelector):
         ## I'm not sure if we need all of those.  Perhaps it would make sense
         ## to shed some of the older obsoleted selecting methods (TODO).
         self.blacklist: FreezeBlacklist | None = blacklist
+        ## The window in which a re-offence counts as caused by the resume
+        ## is the same one the blacklist forgets an offender after.
         selectors: list[ProcessSelector] = [
-            LastFrozenProcessSelector(),
+            LastFrozenProcessSelector(calm_period=blacklist.expiry_time)
+            if blacklist is not None
+            else LastFrozenProcessSelector(),
         ]
         if blacklist is not None:
             selectors.append(BlacklistProcessSelector(blacklist))

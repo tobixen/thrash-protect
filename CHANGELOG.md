@@ -97,6 +97,11 @@ and a process that behaves for a whole expiry window starts over.  Expiry is
 now checked once per cycle rather than only when something is resumed, so an
 escalated hold really does lapse during a long event.
 
+After a resume, the resumed process stayed the first suspect until it exited,
+so a clog minutes later sent thrash-protect back to it instead of to the actual
+memory hog.  The preference now lapses `--blacklist-expiry-time` (default 60 s)
+after the resume.
+
 zram swap was detected as an SSD, and every page compressed into it was
 weighted eight times as heavily as the same page compressed into zswap.  On a
 zram-only laptop that froze processes on bursts of writes to zram with almost

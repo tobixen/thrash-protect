@@ -2799,6 +2799,83 @@ class TestBlacklistTrigger:
         assert bl.is_blacklisted(pids)
 
 
+class TestLastFrozenPreferenceDecays:
+    """The "refreeze what was just resumed" preference must not outlive a calm period.
+
+    Without a decay the selector returned to the same pid for ever, and since
+    every hit also refreshed its blacklist entry, the entry never expired either
+    (docs/incident-2026-09-03-swap-exhaustion.md, fix 5).
+    """
+
+    pids = (42,)
+    stat = thrash_protect.ProcessSelector.procstat(cmd="java", state="S", majflt=0, ppid=1)
+
+    def _resumed_at(self, selector, t):
+        cur = MagicMock()
+        cur.unfrozen_pid = self.pids
+        with patch("thrash_protect.time.time", return_value=t):
+            selector.update(MagicMock(), cur)
+
+    def _scan_at(self, selector, t):
+        with patch("thrash_protect.time.time", return_value=t):
+            with patch("thrash_protect.get_all_frozen_pids", return_value=[]):
+                with patch.object(thrash_protect.ProcessSelector, "readStat", return_value=self.stat):
+                    return selector.scan()
+
+    def test_reselected_soon_after_resume(self):
+        selector = thrash_protect.LastFrozenProcessSelector(calm_period=60.0)
+        self._resumed_at(selector, 1000.0)
+        assert self._scan_at(selector, 1059.0) == self.pids
+
+    def test_forgotten_after_calm_period(self):
+        selector = thrash_protect.LastFrozenProcessSelector(calm_period=60.0)
+        self._resumed_at(selector, 1000.0)
+        assert self._scan_at(selector, 1061.0) is None
+        ## cleared, not just skipped
+        assert selector.last_unfrozen_pid is None
+
+    def test_a_new_resume_restarts_the_window(self):
+        selector = thrash_protect.LastFrozenProcessSelector(calm_period=60.0)
+        self._resumed_at(selector, 1000.0)
+        self._resumed_at(selector, 1100.0)
+        assert self._scan_at(selector, 1150.0) == self.pids
+
+    def test_global_selector_uses_blacklist_expiry(self):
+        bl = thrash_protect.FreezeBlacklist(expiry_time=17.0)
+        gps = thrash_protect.GlobalProcessSelector(blacklist=bl)
+        last = next(s for s in gps.collection if isinstance(s, thrash_protect.LastFrozenProcessSelector))
+        assert last.calm_period == 17.0
+
+    def _last_frozen_only(self, bl):
+        gps = thrash_protect.GlobalProcessSelector(blacklist=bl)
+        gps.collection = [s for s in gps.collection if isinstance(s, thrash_protect.LastFrozenProcessSelector)]
+        prev = MagicMock(pagefaults=0, psi=None)
+        cur = MagicMock(unfrozen_pid=self.pids, pagefaults=0, cooldown_counter=0, psi=None)
+        with patch("thrash_protect.time.time", return_value=1000.0):
+            gps.update(prev, cur)
+        return gps
+
+    def test_stale_preference_does_not_blacklist(self):
+        """A stale preference must not reach FreezeBlacklist.add()."""
+        bl = thrash_protect.FreezeBlacklist(expiry_time=60.0)
+        gps = self._last_frozen_only(bl)
+        assert self._scan_at(gps, 2000.0) is None
+        assert not bl.is_blacklisted(self.pids)
+
+    def test_blacklist_entry_expires_once_preference_lapses(self):
+        """The loop this fixes: every re-pick renewed the entry, so it never expired."""
+        bl = thrash_protect.FreezeBlacklist(expiry_time=60.0)
+        gps = self._last_frozen_only(bl)
+        with patch("thrash_protect.time.time", return_value=1010.0):
+            assert self._scan_at(gps, 1010.0) == self.pids
+        assert bl.is_blacklisted(self.pids)
+        assert self._scan_at(gps, 1100.0) is None
+        assert bl.entries[self.pids].last_refreshed == 1010.0
+        with patch("thrash_protect.time.time", return_value=1100.0):
+            bl.expire()
+        assert not bl.is_blacklisted(self.pids)
+
+
 class TestBlacklistConfig:
     """Test blacklist configuration options."""
 
